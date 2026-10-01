@@ -965,8 +965,8 @@ def tela_criar_login():
     if enviar:
         if not nome.strip() or not usuario.strip():
             st.error("Informe o nome e o usuário.")
-        elif len(senha) < 8:
-            st.error("A senha deve ter pelo menos 8 caracteres.")
+        elif len(senha) < 1:
+            st.error("A senha deve ter pelo menos 1 caracteres.")
         elif senha != confirmar_senha:
             st.error("As senhas não coincidem.")
         else:
