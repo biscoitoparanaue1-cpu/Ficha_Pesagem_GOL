@@ -1071,6 +1071,26 @@ def tela_nova_ficha():
             r_nova = 0
             p_ant = 0
             r_ant = 0
+
+        if st.checkbox(
+            "Definir número da Pesagem e Revisão manualmente",
+            key=f"numeracao_manual_{prefixo}",
+        ):
+            col_pesagem, col_revisao = st.columns(2)
+            p_nova = col_pesagem.number_input(
+                "Número da Pesagem",
+                min_value=1,
+                value=max(1, int(p_nova)),
+                step=1,
+                key=f"pesagem_manual_{prefixo}",
+            )
+            r_nova = col_revisao.number_input(
+                "Número da Revisão",
+                min_value=0,
+                value=max(0, int(r_nova)),
+                step=1,
+                key=f"revisao_manual_{prefixo}",
+            )
             
         novo_registro, p_final, r_final = formulario_pesagem(prefixo, p_nova, r_nova, p_ant, r_ant, linha_existente=linha_base)
         
@@ -1078,14 +1098,24 @@ def tela_nova_ficha():
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if st.button("Salvar Ficha", type="primary", use_container_width=True):
-                novo_registro['Pesagem'] = str(int(p_final))
-                novo_registro['Revisao'] = str(int(r_final))
-                conn = sqlite3.connect('aeronaves.db')
-                pd.DataFrame([novo_registro]).to_sql('pesagens', conn, if_exists='append', index=False)
-                conn.close()
-                registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
-                st.cache_data.clear()
-                st.success("Ficha cadastrada com sucesso.")
+                ficha_existente = False
+                if not df_aero.empty:
+                    ficha_existente = (
+                        (df_aero['Pesagem_num'] == int(p_final))
+                        & (df_aero['Revisao_num'] == int(r_final))
+                    ).any()
+
+                if ficha_existente:
+                    st.error(f"Já existe uma ficha para {prefixo}, Pesagem {int(p_final)}, Revisão {int(r_final)}.")
+                else:
+                    novo_registro['Pesagem'] = str(int(p_final))
+                    novo_registro['Revisao'] = str(int(r_final))
+                    conn = sqlite3.connect('aeronaves.db')
+                    pd.DataFrame([novo_registro]).to_sql('pesagens', conn, if_exists='append', index=False)
+                    conn.close()
+                    registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
+                    st.cache_data.clear()
+                    st.success("Ficha cadastrada com sucesso.")
         with col_btn2:
             st.download_button(label="Exportar Prévia para Excel", data=st.session_state.get('excel_data_temp', b''), file_name=f"{prefixo}_Preview.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
