@@ -407,7 +407,7 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
                 'AIRCRAFT BASIC WEIGHT': {'weight': basic_weight, 'arm': basic_arm, 'moment': basic_moment}
             },
             "deductions": [{'desc': d["Descrição"], 'w': d["Peso [Kg]"], 'a': d["Arm [pol]"], 'm': d["Peso [Kg]"]*d["Arm [pol]"]} for d in deducoes_lista],
-            "additions": [{'desc': a["Descrição"], 'w': a["Peso [Kg]"], 'a': a["Arm [pol]"], 'm': d["Peso [Kg]"]*a["Arm [pol]"] + (momento_extra_flaps if "Flaps" in a["Descrição"] else 0)} for a in adicoes_lista]
+            "additions": [{'desc': a["Descrição"], 'w': a["Peso [Kg]"], 'a': a["Arm [pol]"], 'm': a["Peso [Kg]"]*a["Arm [pol]"] + (momento_extra_flaps if "Flaps" in a["Descrição"] else 0)} for a in adicoes_lista]
         }
         
         excel_data = gerar_excel_por_template(dados_excel, "exemplo_ficha.xlsx")
