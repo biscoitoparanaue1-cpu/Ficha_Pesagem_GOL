@@ -1,11 +1,3 @@
-import streamlit as st
-import pandas as pd
-import datetime
-import sqlite3
-import os
-import io
-import openpyxl
-
 # 1. CONFIGURAÇÃO INICIAL
 st.set_page_config(page_title="Pesagem e Balanceamento", layout="wide", initial_sidebar_state="expanded")
 
