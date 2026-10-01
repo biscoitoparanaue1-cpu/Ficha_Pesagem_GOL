@@ -2,6 +2,9 @@ import io
 import os
 import sqlite3
 import datetime
+import hashlib
+import hmac
+import secrets
 
 import openpyxl
 import pandas as pd
@@ -107,6 +110,160 @@ def carregar_tipos_aeronave():
 
 df_historico = carregar_dados_banco()
 dict_tipos_aeronave = carregar_tipos_aeronave()
+
+def inicializar_controle_acesso():
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS usuarios (
+                usuario TEXT PRIMARY KEY COLLATE NOCASE,
+                nome TEXT NOT NULL,
+                senha_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                nivel_acesso INTEGER NOT NULL,
+                criado_em TEXT NOT NULL
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS fluxo_fichas (
+                prefixo TEXT NOT NULL,
+                pesagem TEXT NOT NULL,
+                revisao TEXT NOT NULL,
+                gerado_por TEXT,
+                aprovado_por TEXT,
+                criado_em TEXT NOT NULL,
+                aprovado_em TEXT,
+                PRIMARY KEY (prefixo, pesagem, revisao)
+            )
+        ''')
+        usuario_existente = conn.execute('SELECT 1 FROM usuarios LIMIT 1').fetchone()
+        if not usuario_existente:
+            salt = secrets.token_hex(16)
+            senha_hash = hashlib.pbkdf2_hmac(
+                'sha256', b'123', bytes.fromhex(salt), 600000
+            ).hex()
+            conn.execute(
+                '''INSERT INTO usuarios
+                   (usuario, nome, senha_hash, salt, nivel_acesso, criado_em)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('engenharia', 'Engenharia GOL', senha_hash, salt, 1,
+                 datetime.datetime.now(datetime.timezone.utc).isoformat())
+            )
+
+def autenticar_usuario(usuario, senha):
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.row_factory = sqlite3.Row
+        registro = conn.execute(
+            'SELECT * FROM usuarios WHERE usuario = ?', (usuario.strip(),)
+        ).fetchone()
+    if not registro:
+        return None
+    senha_hash = hashlib.pbkdf2_hmac(
+        'sha256', senha.encode('utf-8'), bytes.fromhex(registro['salt']), 600000
+    ).hex()
+    if not hmac.compare_digest(senha_hash, registro['senha_hash']):
+        return None
+    return dict(registro)
+
+def criar_usuario(nome, usuario, senha, nivel_acesso):
+    salt = secrets.token_hex(16)
+    senha_hash = hashlib.pbkdf2_hmac(
+        'sha256', senha.encode('utf-8'), bytes.fromhex(salt), 600000
+    ).hex()
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.execute(
+            '''INSERT INTO usuarios
+               (usuario, nome, senha_hash, salt, nivel_acesso, criado_em)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (usuario.strip(), nome.strip(), senha_hash, salt, nivel_acesso,
+             datetime.datetime.now(datetime.timezone.utc).isoformat())
+        )
+
+def registrar_ficha(prefixo, pesagem, revisao, usuario):
+    agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.execute(
+            '''INSERT INTO fluxo_fichas
+               (prefixo, pesagem, revisao, gerado_por, criado_em)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(prefixo, pesagem, revisao) DO UPDATE SET
+                   gerado_por = excluded.gerado_por,
+                   aprovado_por = NULL,
+                   criado_em = excluded.criado_em,
+                   aprovado_em = NULL''',
+            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora)
+        )
+
+def buscar_fluxo_ficha(prefixo, pesagem, revisao):
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.row_factory = sqlite3.Row
+        registro = conn.execute(
+            '''SELECT fluxo_fichas.gerado_por AS gerador_usuario,
+                      gerador.nome AS gerador_nome,
+                      fluxo_fichas.aprovado_por AS aprovador_usuario,
+                      aprovador.nome AS aprovador_nome,
+                      fluxo_fichas.aprovado_em
+               FROM fluxo_fichas
+               LEFT JOIN usuarios AS gerador
+                   ON gerador.usuario = fluxo_fichas.gerado_por
+               LEFT JOIN usuarios AS aprovador
+                   ON aprovador.usuario = fluxo_fichas.aprovado_por
+               WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
+            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao))
+        ).fetchone()
+    if not registro:
+        return {
+            'gerador_usuario': None,
+            'gerador_nome': 'Não registrado',
+            'aprovador_nome': 'Pendente',
+            'aprovado_em': None,
+        }
+    return {
+        'gerador_usuario': registro['gerador_usuario'],
+        'gerador_nome': registro['gerador_nome'] or 'Não registrado',
+        'aprovador_nome': registro['aprovador_nome'] or 'Pendente',
+        'aprovado_em': registro['aprovado_em'],
+    }
+
+def carregar_fluxos_fichas():
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.row_factory = sqlite3.Row
+        registros = conn.execute(
+            '''SELECT fluxo_fichas.prefixo, fluxo_fichas.pesagem,
+                      fluxo_fichas.revisao,
+                      fluxo_fichas.gerado_por AS gerador_usuario,
+                      gerador.nome AS gerador_nome,
+                      fluxo_fichas.aprovado_por AS aprovador_usuario,
+                      aprovador.nome AS aprovador_nome
+               FROM fluxo_fichas
+               LEFT JOIN usuarios AS gerador
+                   ON gerador.usuario = fluxo_fichas.gerado_por
+               LEFT JOIN usuarios AS aprovador
+                   ON aprovador.usuario = fluxo_fichas.aprovado_por'''
+        ).fetchall()
+    return {
+        (safe_str(registro['prefixo']), safe_str(registro['pesagem']), safe_str(registro['revisao'])): {
+            'gerador_usuario': registro['gerador_usuario'],
+            'gerador_nome': registro['gerador_nome'] or 'Não registrado',
+            'aprovador_usuario': registro['aprovador_usuario'],
+            'aprovador_nome': registro['aprovador_nome'] or 'Pendente',
+        }
+        for registro in registros
+    }
+
+def aprovar_ficha(prefixo, pesagem, revisao, usuario):
+    agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.execute(
+            '''INSERT INTO fluxo_fichas
+               (prefixo, pesagem, revisao, aprovado_por, criado_em, aprovado_em)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(prefixo, pesagem, revisao) DO UPDATE SET
+                   aprovado_por = excluded.aprovado_por,
+                   aprovado_em = excluded.aprovado_em''',
+            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora, agora)
+        )
+
+inicializar_controle_acesso()
 
 # 3. FUNÇÃO DE EXPORTAÇÃO PARA EXCEL
 def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
@@ -226,6 +383,8 @@ def tela_consulta():
 
 def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
     st.subheader(f"Ficha Técnica: {prefixo} (Pesagem: {pesagem} | Revisão: {revisao})")
+    fluxo = buscar_fluxo_ficha(prefixo, pesagem, revisao)
+    st.caption(f"Gerada por: {fluxo['gerador_nome']} | Aprovada por: {fluxo['aprovador_nome']}")
     aba1, aba2, aba3, aba4, aba5 = st.tabs(["Dados Gerais", "Células de Carga", "Deductions", "Additions", "Weighing Report"])
     info_aero = dict_tipos_aeronave.get(prefixo, {})
 
@@ -736,6 +895,7 @@ def tela_nova_ficha():
                 conn = sqlite3.connect('aeronaves.db')
                 pd.DataFrame([novo_registro]).to_sql('pesagens', conn, if_exists='append', index=False)
                 conn.close()
+                registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
                 st.cache_data.clear()
                 st.success("Ficha cadastrada com sucesso.")
         with col_btn2:
@@ -782,10 +942,82 @@ def tela_edicao():
                         conn = sqlite3.connect('aeronaves.db')
                         pd.DataFrame([novo_registro]).to_sql('pesagens', conn, if_exists='append', index=False)
                         conn.close()
+                        registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
                         st.cache_data.clear()
                         st.success("Revisão salva com sucesso.")
                 with col_btn2:
                     st.download_button(label="Exportar Revisão para Excel", data=st.session_state.get('excel_data_temp', b''), file_name=f"{prefixo}_Revisao_{r_final}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+def tela_criar_login():
+    if st.session_state['nivel_acesso'] != 1:
+        st.error("Acesso restrito à Engenharia.")
+        return
+
+    st.title("Criar login")
+    with st.form("form_criar_login"):
+        nome = st.text_input("Nome completo")
+        usuario = st.text_input("Usuário")
+        senha = st.text_input("Senha", type="password")
+        confirmar_senha = st.text_input("Confirmar senha", type="password")
+        nivel = st.selectbox("Perfil", ["Consulta", "Engenharia"])
+        enviar = st.form_submit_button("Criar usuário", type="primary")
+
+    if enviar:
+        if not nome.strip() or not usuario.strip():
+            st.error("Informe o nome e o usuário.")
+        elif len(senha) < 8:
+            st.error("A senha deve ter pelo menos 8 caracteres.")
+        elif senha != confirmar_senha:
+            st.error("As senhas não coincidem.")
+        else:
+            try:
+                criar_usuario(nome, usuario, senha, 1 if nivel == "Engenharia" else 2)
+                st.success(f"Login criado para {nome.strip()}.")
+            except sqlite3.IntegrityError:
+                st.error("Esse nome de usuário já está cadastrado.")
+
+def tela_aprovar_fichas():
+    if st.session_state['nivel_acesso'] != 1:
+        st.error("Acesso restrito à Engenharia.")
+        return
+
+    st.title("Aprovar ficha de pesagem")
+    colunas_chave = ['Prefixo', 'Pesagem', 'Revisao']
+    if df_historico.empty or not all(coluna in df_historico.columns for coluna in colunas_chave):
+        st.info("Não há fichas disponíveis para aprovação.")
+        return
+
+    prefixos = sorted(df_historico['Prefixo'].dropna().astype(str).unique().tolist())
+    prefixo_selecionado = st.selectbox("Aeronave", prefixos)
+    fichas_aeronave = df_historico.loc[
+        df_historico['Prefixo'].astype(str) == prefixo_selecionado,
+        colunas_chave,
+    ].drop_duplicates()
+    fluxos = carregar_fluxos_fichas()
+    opcoes = {}
+    for _, ficha in fichas_aeronave.iterrows():
+        prefixo = safe_str(ficha['Prefixo'])
+        pesagem = safe_str(ficha['Pesagem'])
+        revisao = safe_str(ficha['Revisao'])
+        fluxo = fluxos.get((prefixo, pesagem, revisao), {'aprovador_usuario': None})
+        if not fluxo['aprovador_usuario']:
+            rotulo = f"{prefixo} | Pesagem {pesagem} | Revisão {revisao}"
+            opcoes[rotulo] = (prefixo, pesagem, revisao)
+
+    if not opcoes:
+        st.success("Todas as fichas desta aeronave estão aprovadas.")
+        return
+
+    selecionada = st.selectbox("Ficha pendente", list(opcoes))
+    prefixo, pesagem, revisao = opcoes[selecionada]
+    fluxo = buscar_fluxo_ficha(prefixo, pesagem, revisao)
+    st.write(f"Gerada por: {fluxo['gerador_nome']}")
+    if fluxo['gerador_usuario'] == st.session_state['usuario_id']:
+        st.warning("Quem gerou a ficha não pode aprová-la.")
+    elif st.button("Aprovar ficha", type="primary"):
+        aprovar_ficha(prefixo, pesagem, revisao, st.session_state['usuario_id'])
+        st.success("Ficha aprovada.")
+        st.rerun()
 
 # 5. ROTEAMENTO E BARRA LATERAL
 if not st.session_state['usuario_logado']:
@@ -794,13 +1026,16 @@ if not st.session_state['usuario_logado']:
         usuario = st.text_input("Usuário")
         senha = st.text_input("Senha", type="password")
         if st.form_submit_button("Acessar"):
-            if senha == "123":
+            registro_usuario = autenticar_usuario(usuario, senha)
+            if registro_usuario:
                 st.session_state['usuario_logado'] = True
-                st.session_state['nivel_acesso'] = 1 if usuario == "engenharia" else 2
-                st.session_state['nome_usuario'] = "Engenharia GOL" if usuario == "engenharia" else "Consulta"
+                st.session_state['usuario_id'] = registro_usuario['usuario']
+                st.session_state['nivel_acesso'] = registro_usuario['nivel_acesso']
+                st.session_state['nome_usuario'] = registro_usuario['nome']
+                st.session_state['pagina_atual'] = 'consulta'
                 st.rerun()
             else:
-                st.error("Credenciais inválidas.")
+                st.error("Usuário ou senha inválidos.")
 else:
     with st.sidebar:
         st.subheader("Menu Principal")
@@ -810,11 +1045,19 @@ else:
         if st.button("Nova Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'nova_ficha'
         if st.session_state['nivel_acesso'] == 1:
             if st.button("Editar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'edicao'
+            if st.button("Aprovar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'aprovar'
+            if st.button("Criar login", use_container_width=True): st.session_state['pagina_atual'] = 'criar_login'
         st.divider()
         if st.button("Sair do Sistema", use_container_width=True):
             st.session_state['usuario_logado'] = False
+            st.session_state['nivel_acesso'] = 0
+            st.session_state['usuario_id'] = ""
+            st.session_state['nome_usuario'] = ""
+            st.session_state['pagina_atual'] = 'consulta'
             st.rerun()
 
     if st.session_state['pagina_atual'] == 'consulta': tela_consulta()
     elif st.session_state['pagina_atual'] == 'nova_ficha': tela_nova_ficha()
     elif st.session_state['pagina_atual'] == 'edicao': tela_edicao()
+    elif st.session_state['pagina_atual'] == 'aprovar': tela_aprovar_fichas()
+    elif st.session_state['pagina_atual'] == 'criar_login': tela_criar_login()
