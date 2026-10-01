@@ -588,10 +588,184 @@ def get_real_col(possible_names):
             return n
     return possible_names[0]
 
+PRESET_OUTRO = "Outro (digitar)"
+PRESETS = {
+    "motivo": [
+        "5 Years Check",
+        "IFE Installation",
+        "New Painting",
+        "New Production Aircraft",
+        "Scheduled",
+        "Seats Reconfiguration",
+    ],
+    "pesado_por": ["GOL", "Boeing", "DIGEX", "Flightstar", "Aeroman", "Transavia"],
+    "local": [
+        "Lagoa Santa, MG - Brazil",
+        "Renton, WA - EUA",
+        "Seattle, WA - EUA",
+        "Jacksonville, FL - EUA",
+        "São José dos Campos, SP - Brazil",
+        "San Salvador - El Salvador",
+        "Amsterdam - Netherlands",
+        "Everett, WA - EUA",
+    ],
+    "config_lopa": [
+        "2Ku System and In-Seat Power Installation",
+        "2Ku System Installation",
+        "2Ku System, Nitrogen Generation System and In-Seat Power Installation",
+        "Carbon Brake Retrofit Program",
+        "Change of MTW and MTOW",
+        "In-Seat Power Installation",
+        "Leather Seats Cover and 2Ku System Installation",
+        "Leather Seats Cover Installation",
+        "Life vest compartments installation next to the PSUs",
+        "Radial Tires replacement (SB 737-32-1535)",
+        "Seats Reconfiguration",
+        "2Ku System, In-Seat Power and Leather Seats Cover Installation",
+        "Seats Replacement",
+        "Wiring Diagrams",
+        "Production Flight Emergency Equipment",
+        "Protective Carpet Runner",
+        "Plastic Seat Cover",
+        "Loto Kit",
+        "Seats Removal (168 Pax)",
+    ],
+    "lopa": [
+        "138 Pax + 10 Flight Crew",
+        "138 Pax + 8 Flight Crew",
+        "138 Pax + 9 Flight Crew",
+        "168 Pax + 9 Flight Crew",
+        "186 Pax + 10 Flight Crew",
+        "189 Pax + 10 Flight Crew",
+        "186 Pax + 9 Flight Crew",
+        "168 Pax + 10 Flight Crew",
+    ],
+    "deductions": [
+        "Down Lock, Nose Gear",
+        "Down Lock, Main Gear",
+        "Plumb Bob",
+        "In-seat Power Removal",
+        "Seats Removal (177 Pax)",
+        "Seats Removal (138 Pax)",
+        "Tail Jack Adaptors",
+        "Wing Jack Adaptors",
+        "Carbon Brake Retrofit Program (SB 737-32-1429)",
+        "Radial Tires Replacement (SB 737-32-1535)",
+        "Flaps 0 - 40° (Up when weighed)",
+        "Wiring Diagrams",
+        "Production Flight Emergency Equipment",
+        "Protective Carpet Runner",
+        "Plastic Seat Cover",
+        "Loto Kit",
+        "Leather Seats Cover Installation",
+        "Seats Removal (168 Pax)",
+    ],
+    "additions": [
+        "2Ku System Antenna Installation (SB 737-44-1016)",
+        "2Ku System Cabin Equip Installation (SB 737-44-1017)",
+        "Carbon Brake Retrofit Program (SB 737-32-1429)",
+        "Container, Oxygen Mask Spares",
+        "Disable Person Kit Aft (1 EA)",
+        "Dual navAero EFB System Installation",
+        "Emergency Care Kit (1 EA)",
+        "Emergency Medical Kit (1 EA)",
+        "First Aid Kit Aft (2 EA)",
+        "First Aid Kit Fwd (1 EA)",
+        "Flaps 0 - 40° (Up when weighed)",
+        "Fuel, Drain, Unusable (5.6 Gal)",
+        "Fuel, Trapped, Unusable (14.2 Gal)",
+        "Fuel, Trapped, Usable (5.5 Gal)",
+        "Fwd Cargo, Aft Bulkhead Panels",
+        "In-Seat Power Supply System (ISPSS) Installation",
+        "Seats Installation (138 Pax)",
+        "Seats Installation (186 Pax)",
+        "Seats Installation (177 Pax)",
+        "Lavatory Dry Supplies",
+        "Lavatory Pre-charge Fluid (6.0 Gal)",
+        "Life Vest Installation",
+        "Waste Container",
+        "Nitrogen Generation System Install. (SB 737-47-1003)",
+        "Oil, Auxiliary Power Unit (2.3 Gal)",
+        "Oil, Drain, Unusable Engine (6.6 Gal)",
+        "Oil, Drain, Usable Engine (10.2 Gal)",
+        "Oil, Integrated Drive Gen (4.4 Gal)",
+        "Oil, Trapped, Unusable Engine (1.0 Gal)",
+        "Water, Potable (62.6 Gal)",
+        "Water, Potable (42.2 Gal)",
+        "Water, Potable (52.2 Gal)",
+        "Oven Tray (8 EA)",
+        "Oxigen Mask, Disposable (2 EA)",
+        "Oxigen Mask, Disposable (3 EA)",
+        "Oxygen Access Panel",
+        "Oxygen Bottle, Portable (2 EA)",
+        "Oxygen Cilinder Assy",
+        "Oxygen Cilinder Charge (18 EA)",
+        "Sat LINK Communication Management System",
+        "Jungle Survival Kit Aft (1 EA)",
+        "Jungle Survival Kit Aft (2 EA)",
+        "Jungle Survival Kit Fwd (2 EA)",
+        "Securelink/ MQAR System",
+        "Standard Container",
+        "Toillet Chemicals",
+        "Operations Manual",
+        "Oven",
+        "Oven Rack",
+        "Wheelchair (1 EA)",
+    ],
+}
+
+
+def campo_com_preset(container, label, valor, opcoes, key):
+    valor = safe_str(valor)
+    valor_inicial = valor if valor in opcoes else (PRESET_OUTRO if valor else "")
+    escolhas = [""] + opcoes + [PRESET_OUTRO]
+    escolha = container.selectbox(
+        label,
+        escolhas,
+        index=escolhas.index(valor_inicial),
+        key=f"{key}_preset",
+    )
+    if escolha == PRESET_OUTRO:
+        valor_manual = valor if valor not in opcoes else ""
+        return container.text_input(
+            f"{label} personalizado",
+            value=valor_manual,
+            key=f"{key}_manual",
+        )
+    return escolha
+
+
+def preparar_tabela_preset(itens, opcoes):
+    linhas = []
+    for item in itens:
+        descricao = safe_str(item.get("Descrição", ""))
+        linhas.append({
+            "Preset": descricao if descricao in opcoes else (PRESET_OUTRO if descricao else ""),
+            "Descrição personalizada": descricao if descricao and descricao not in opcoes else "",
+            "Peso (Kg)": item.get("Peso (Kg)", 0.0),
+            "Braço (in)": item.get("Braço (in)", 0.0),
+            "Momento (kg.in)": item.get("Momento (kg.in)", 0.0),
+        })
+    return pd.DataFrame(linhas, columns=[
+        "Preset", "Descrição personalizada", "Peso (Kg)", "Braço (in)", "Momento (kg.in)"
+    ])
+
+
+def aplicar_descricao_preset(tabela):
+    tabela = tabela.copy()
+    tabela["Descrição"] = tabela.apply(
+        lambda linha: safe_str(linha.get("Descrição personalizada", ""))
+        if linha.get("Preset") == PRESET_OUTRO
+        else safe_str(linha.get("Preset", "")),
+        axis=1,
+    )
+    return tabela
+
 def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, r_anterior, linha_existente=None):
     if linha_existente is None: linha_existente = {}
     info_aero = dict_tipos_aeronave.get(prefixo_selecionado, {})
     tipo_a = info_aero.get('modelo', "")
+    form_key = f"{prefixo_selecionado}_{p_sugerida}_{r_sugerida}"
 
     aba1, aba2, aba3, aba4, aba5 = st.tabs(["Dados da Ficha", "Células de Carga", "Deductions", "Additions", "Preview"])
 
@@ -604,23 +778,23 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
 
         c1, c2, c3 = st.columns(3)
         data_emissao = c1.date_input("Data de emissão:", value=datetime.date.today())
-        pesado_por = c2.text_input("Pesado por:", value=safe_str(linha_existente.get(get_real_col(['Pesado Por', 'WEIGHED BY']), '')))
-        local = c3.text_input("Local da pesagem:", value=safe_str(linha_existente.get(get_real_col(['Local da pesagem']), '')))
+        pesado_por = campo_com_preset(c2, "Pesado por:", linha_existente.get(get_real_col(['Pesado Por', 'WEIGHED BY']), ''), PRESETS["pesado_por"], f"{form_key}_pesado_por")
+        local = campo_com_preset(c3, "Local da pesagem:", linha_existente.get(get_real_col(['Local da pesagem']), ''), PRESETS["local"], f"{form_key}_local")
         
         c4, c5, c6 = st.columns(3)
         key_data_pes = get_real_col(['Data_da_Pesagem', 'Data da ficha'])
         val_pesagem = pd.to_datetime(linha_existente.get(key_data_pes)).date() if pd.notna(linha_existente.get(key_data_pes)) else datetime.date.today()
         data_pesagem = c4.date_input("Data da pesagem:", value=val_pesagem)
         
-        lopa = c5.text_input("LOPA:", value=safe_str(linha_existente.get(get_real_col([' LOPA', 'LOPA']), '')))
-        config_lopa = c6.text_input("Configuração LOPA:", value=safe_str(linha_existente.get(get_real_col(['Configuração LOPA ', 'Configuração LOPA']), '')))
+        lopa = campo_com_preset(c5, "LOPA:", linha_existente.get(get_real_col([' LOPA', 'LOPA']), ''), PRESETS["lopa"], f"{form_key}_lopa")
+        config_lopa = campo_com_preset(c6, "Configuração LOPA:", linha_existente.get(get_real_col(['Configuração LOPA ', 'Configuração LOPA']), ''), PRESETS["config_lopa"], f"{form_key}_config_lopa")
         
         c7, c8, c9 = st.columns(3)
         vrbl = c7.text_input("VRBL. NUMBER:", value=safe_str(linha_existente.get(get_real_col(['VRBL', 'VRBL NUMBER']), info_aero.get('vrbl', ''))))
         serial = c8.text_input("SERIAL NUMBER:", value=safe_str(linha_existente.get(get_real_col(['SERIAL', 'SERIAL NUMBER']), info_aero.get('serial', ''))))
         line = c9.text_input("LINE NUMBER:", value=safe_str(linha_existente.get(get_real_col(['LINE', 'LINE NUMBER']), info_aero.get('line', ''))))
 
-        razao = st.text_input("Razão para emissão:", value=safe_str(linha_existente.get(get_real_col(['Motivo', 'Razão']), '')))
+        razao = campo_com_preset(st, "Razão para emissão:", linha_existente.get(get_real_col(['Motivo', 'Razão']), ''), PRESETS["motivo"], f"{form_key}_motivo")
 
     with aba2:
         st.markdown("**Pesagem 01**")
@@ -662,15 +836,22 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
                 
         if not ded_ex:
             ded_ex = [{"Descrição": "Fuel (Usable)", "Peso (Kg)": 0.0, "Braço (in)": 660.5, "Momento (kg.in)": 0.0}]
-            
-        df_ded = pd.DataFrame(ded_ex)
+
+        df_ded = preparar_tabela_preset(ded_ex, PRESETS["deductions"])
         st.info("💡 **Dica:** O valor visual do Momento na tabela é calculado com os dados iniciais.")
-        deducoes_editadas = st.data_editor(
-            df_ded, 
+        deducoes_editadas = aplicar_descricao_preset(st.data_editor(
+            df_ded,
             num_rows="dynamic", 
             use_container_width=True,
-            column_config={"Momento (kg.in)": st.column_config.NumberColumn(disabled=True)}
-        )
+            key=f"{form_key}_deductions",
+            column_config={
+                "Preset": st.column_config.SelectboxColumn(
+                    "Descrição (preset)", options=[""] + PRESETS["deductions"] + [PRESET_OUTRO]
+                ),
+                "Descrição personalizada": st.column_config.TextColumn("Descrição personalizada"),
+                "Momento (kg.in)": st.column_config.NumberColumn(disabled=True),
+            },
+        ))
 
     with aba4:
         momento_extra_flaps = 0
@@ -690,14 +871,21 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         if not add_ex:
             add_ex = [{"Descrição": "Flaps 0 - 40° (up when weighed)", "Peso (Kg)": 0.0, "Braço (in)": 0.0, "Momento (kg.in)": momento_extra_flaps}]
 
-        df_add = pd.DataFrame(add_ex)
+        df_add = preparar_tabela_preset(add_ex, PRESETS["additions"])
         st.info(f"💡 **Dica:** O momento do Flap será exibido automaticamente na coluna 'Momento' sempre que houver a palavra 'Flaps' na descrição.")
-        adicoes_editadas = st.data_editor(
-            df_add, 
+        adicoes_editadas = aplicar_descricao_preset(st.data_editor(
+            df_add,
             num_rows="dynamic", 
             use_container_width=True,
-            column_config={"Momento (kg.in)": st.column_config.NumberColumn(disabled=True)}
-        )
+            key=f"{form_key}_additions",
+            column_config={
+                "Preset": st.column_config.SelectboxColumn(
+                    "Descrição (preset)", options=[""] + PRESETS["additions"] + [PRESET_OUTRO]
+                ),
+                "Descrição personalizada": st.column_config.TextColumn("Descrição personalizada"),
+                "Momento (kg.in)": st.column_config.NumberColumn(disabled=True),
+            },
+        ))
 
     with aba5:
         lh_val = (p1_lhm + p1_lhm2 + p2_lhm + p2_lhm2) / 2
