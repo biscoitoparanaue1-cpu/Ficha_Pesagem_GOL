@@ -1237,6 +1237,80 @@ def tela_aprovar_fichas():
         st.success("Ficha aprovada.")
         st.rerun()
 
+def excluir_ficha(prefixo, pesagem, revisao):
+    with sqlite3.connect('aeronaves.db') as conn:
+        colunas = {registro[1] for registro in conn.execute('PRAGMA table_info(pesagens)')}
+        coluna_revisao = 'Revisao' if 'Revisao' in colunas else 'revisao'
+        if not {'Prefixo', 'Pesagem', coluna_revisao}.issubset(colunas):
+            raise sqlite3.OperationalError('As colunas de identificação da ficha não foram encontradas.')
+
+        cursor = conn.execute(
+            f'''DELETE FROM pesagens
+                WHERE CAST(Prefixo AS TEXT) = ?
+                  AND CAST(Pesagem AS TEXT) = ?
+                  AND CAST("{coluna_revisao}" AS TEXT) = ?''',
+            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
+        )
+        quantidade = cursor.rowcount
+        if quantidade:
+            conn.execute(
+                '''DELETE FROM fluxo_fichas
+                   WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
+                (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
+            )
+    return quantidade
+
+
+def tela_excluir_ficha():
+    if st.session_state['nivel_acesso'] != 1:
+        st.error("Acesso restrito à Engenharia.")
+        return
+
+    st.title("Excluir ficha")
+    colunas_chave = ['Prefixo', 'Pesagem', 'Revisao']
+    if df_historico.empty or not all(coluna in df_historico.columns for coluna in colunas_chave):
+        st.info("Não há fichas disponíveis para exclusão.")
+        return
+
+    prefixos = sorted(df_historico['Prefixo'].dropna().astype(str).unique().tolist())
+    prefixo = st.selectbox("Aeronave", prefixos, key="excluir_prefixo")
+    fichas = df_historico.loc[
+        df_historico['Prefixo'].astype(str) == prefixo,
+        ['Pesagem', 'Revisao'],
+    ].dropna().astype(str).drop_duplicates()
+    opcoes = {
+        f"Pesagem {linha.Pesagem} | Revisão {linha.Revisao}": (linha.Pesagem, linha.Revisao)
+        for linha in fichas.itertuples(index=False)
+    }
+    if not opcoes:
+        st.info("Não há fichas para esta aeronave.")
+        return
+
+    selecionada = st.selectbox("Ficha", list(opcoes), key="excluir_ficha")
+    pesagem, revisao = opcoes[selecionada]
+    fluxo = buscar_fluxo_ficha(prefixo, pesagem, revisao)
+    st.write(f"Gerada por: {fluxo['gerador_nome']}")
+    st.write(f"Aprovada por: {fluxo['aprovador_nome']}")
+
+    with st.form("form_excluir_ficha"):
+        st.warning("A exclusão é permanente e também remove os dados de aprovação desta ficha.")
+        confirmar = st.checkbox(
+            f"Confirmo excluir {prefixo}, Pesagem {pesagem}, Revisão {revisao}."
+        )
+        enviar = st.form_submit_button("Excluir ficha", type="primary")
+
+    if enviar:
+        if not confirmar:
+            st.error("Marque a confirmação para excluir a ficha.")
+        else:
+            removidas = excluir_ficha(prefixo, pesagem, revisao)
+            if removidas:
+                st.cache_data.clear()
+                st.success(f"Ficha excluída. Registros removidos: {removidas}.")
+                st.rerun()
+            else:
+                st.error("A ficha não foi encontrada no banco de dados.")
+
 # 5. ROTEAMENTO E BARRA LATERAL
 if not st.session_state['usuario_logado']:
     st.title("Sistema de Pesagem e Balanceamento")
@@ -1265,6 +1339,7 @@ else:
             if st.button("Editar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'edicao'
             if st.button("Aprovar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'aprovar'
             if st.button("Criar login", use_container_width=True): st.session_state['pagina_atual'] = 'criar_login'
+            if st.button("Excluir ficha", use_container_width=True): st.session_state['pagina_atual'] = 'excluir'
         st.divider()
         if st.button("Sair do Sistema", use_container_width=True):
             st.session_state['usuario_logado'] = False
@@ -1279,3 +1354,4 @@ else:
     elif st.session_state['pagina_atual'] == 'edicao': tela_edicao()
     elif st.session_state['pagina_atual'] == 'aprovar': tela_aprovar_fichas()
     elif st.session_state['pagina_atual'] == 'criar_login': tela_criar_login()
+    elif st.session_state['pagina_atual'] == 'excluir': tela_excluir_ficha()
