@@ -300,7 +300,7 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
             lh_2_p2 = safe_float(row.get('Peso MLG LH2 pesagem 2', 0))
             rh_1 = safe_float(row.get('Peso MLG RH 1 ', 0))
             rh_2 = safe_float(row.get('Peso MLG RH 2', 0))
-            rh_1_p2 = safe_float(row.get('Peso MLG RH 1 pesagem 2', 0))
+            rh_1_p2 = safe_float(row.get('Peso MLG RH 1  pesagem 2', row.get('Peso MLG RH 1 pesagem 2', 0)))
             rh_2_p2 = safe_float(row.get('Peso MLG RH 2 pesagem 2', 0))
             nose_lh_1 = safe_float(row.get('Peso nariz LH', 0))
             nose_lh_2 = safe_float(row.get('Peso nariz LH pesagem 2', 0))
@@ -479,7 +479,7 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         p2_c1, p2_c2, p2_c3, p2_c4 = st.columns(4)
         p2_nlh = p2_c1.number_input("Nariz LH P2", value=safe_float(linha_existente.get(get_real_col(['Peso nariz LH pesagem 2']), 0.0)), step=10.0)
         p2_nrh = p2_c2.number_input("Nariz RH P2", value=safe_float(linha_existente.get(get_real_col(['Peso Nariz RH pesagem 2']), 0.0)), step=10.0)
-        p2_rhm = p2_c3.number_input("RH MLG 1 P2", value=safe_float(linha_existente.get(get_real_col(['Peso MLG RH 1 pesagem 2']), 0.0)), step=10.0)
+        p2_rhm = p2_c3.number_input("RH MLG 1 P2", value=safe_float(linha_existente.get(get_real_col(['Peso MLG RH 1  pesagem 2', 'Peso MLG RH 1 pesagem 2']), 0.0)), step=10.0)
         p2_lhm = p2_c4.number_input("LH MLG 1 P2", value=safe_float(linha_existente.get(get_real_col(['Peso MLG LH 1 pesagem 2']), 0.0)), step=10.0)
 
         p2_c5, p2_c6, p2_c7, p2_c8 = st.columns(4)
@@ -638,7 +638,7 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
     
     novo_registro[get_real_col(['Peso nariz LH pesagem 2'])] = p2_nlh
     novo_registro[get_real_col(['Peso Nariz RH pesagem 2'])] = p2_nrh
-    novo_registro[get_real_col(['Peso MLG RH 1 pesagem 2'])] = p2_rhm
+    novo_registro[get_real_col(['Peso MLG RH 1  pesagem 2', 'Peso MLG RH 1 pesagem 2'])] = p2_rhm
     novo_registro[get_real_col(['Peso MLG LH 1 pesagem 2'])] = p2_lhm
     novo_registro[get_real_col(['Peso MLG RH 2 pesagem 2'])] = p2_rhm2
     novo_registro[get_real_col(['Peso MLG LH2 pesagem 2'])] = p2_lhm2
@@ -651,10 +651,21 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         novo_registro[get_real_col([f'Deductions description {i}'])] = None
         novo_registro[get_real_col([f'Deductions Weigth {i}'])] = None
         novo_registro[get_real_col([f'Deductions arm {i}'])] = None
-    for i, row in enumerate(deducoes_editadas.to_dict('records')):
-        novo_registro[get_real_col([f'Deductions description {i+1}'])] = row.get('Descrição')
-        novo_registro[get_real_col([f'Deductions Weigth {i+1}'])] = row.get('Peso (Kg)')
-        novo_registro[get_real_col([f'Deductions arm {i+1}'])] = row.get('Braço (in)')
+    slots_deducoes = [
+        i for i in range(1, 16)
+        if not len(df_historico.columns) or all(
+            coluna in df_historico.columns
+            for coluna in (
+                f'Deductions description {i}',
+                f'Deductions Weigth {i}',
+                f'Deductions arm {i}',
+            )
+        )
+    ]
+    for i, row in zip(slots_deducoes, deducoes_editadas.to_dict('records')):
+        novo_registro[get_real_col([f'Deductions description {i}'])] = row.get('Descrição')
+        novo_registro[get_real_col([f'Deductions Weigth {i}'])] = row.get('Peso (Kg)')
+        novo_registro[get_real_col([f'Deductions arm {i}'])] = row.get('Braço (in)')
 
     for i in range(1, 17):
         novo_registro[get_real_col([f'Additions Description {i}'])] = None
