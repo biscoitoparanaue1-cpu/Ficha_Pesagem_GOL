@@ -1,3 +1,12 @@
+import io
+import os
+import sqlite3
+import datetime
+
+import openpyxl
+import pandas as pd
+import streamlit as st
+
 # 1. CONFIGURAÇÃO INICIAL
 st.set_page_config(page_title="Pesagem e Balanceamento", layout="wide", initial_sidebar_state="expanded")
 
@@ -196,7 +205,6 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
 
 # 4. TELAS E FUNCIONALIDADES
 
-# Adicionada de volta a função da tela de consulta que havia sido apagada
 def tela_consulta():
     st.title("Consulta de Histórico")
     prefixos_unicos = sorted(df_historico['Prefixo'].dropna().unique().tolist()) if 'Prefixo' in df_historico.columns else []
@@ -292,7 +300,7 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
             lh_2_p2 = safe_float(row.get('Peso MLG LH2 pesagem 2', 0))
             rh_1 = safe_float(row.get('Peso MLG RH 1 ', 0))
             rh_2 = safe_float(row.get('Peso MLG RH 2', 0))
-            rh_1_p2 = safe_float(row.get('Peso MLG RH 1  pesagem 2', 0))
+            rh_1_p2 = safe_float(row.get('Peso MLG RH 1 pesagem 2', 0))
             rh_2_p2 = safe_float(row.get('Peso MLG RH 2 pesagem 2', 0))
             nose_lh_1 = safe_float(row.get('Peso nariz LH', 0))
             nose_lh_2 = safe_float(row.get('Peso nariz LH pesagem 2', 0))
@@ -399,7 +407,7 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
                 'AIRCRAFT BASIC WEIGHT': {'weight': basic_weight, 'arm': basic_arm, 'moment': basic_moment}
             },
             "deductions": [{'desc': d["Descrição"], 'w': d["Peso [Kg]"], 'a': d["Arm [pol]"], 'm': d["Peso [Kg]"]*d["Arm [pol]"]} for d in deducoes_lista],
-            "additions": [{'desc': a["Descrição"], 'w': a["Peso [Kg]"], 'a': a["Arm [pol]"], 'm': a["Peso [Kg]"]*a["Arm [pol]"] + (momento_extra_flaps if "Flaps" in a["Descrição"] else 0)} for a in adicoes_lista]
+            "additions": [{'desc': a["Descrição"], 'w': a["Peso [Kg]"], 'a': a["Arm [pol]"], 'm': d["Peso [Kg]"]*a["Arm [pol]"] + (momento_extra_flaps if "Flaps" in a["Descrição"] else 0)} for a in adicoes_lista]
         }
         
         excel_data = gerar_excel_por_template(dados_excel, "exemplo_ficha.xlsx")
@@ -471,7 +479,7 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         p2_c1, p2_c2, p2_c3, p2_c4 = st.columns(4)
         p2_nlh = p2_c1.number_input("Nariz LH P2", value=safe_float(linha_existente.get(get_real_col(['Peso nariz LH pesagem 2']), 0.0)), step=10.0)
         p2_nrh = p2_c2.number_input("Nariz RH P2", value=safe_float(linha_existente.get(get_real_col(['Peso Nariz RH pesagem 2']), 0.0)), step=10.0)
-        p2_rhm = p2_c3.number_input("RH MLG 1 P2", value=safe_float(linha_existente.get(get_real_col(['Peso MLG RH 1  pesagem 2', 'Peso MLG RH 1 pesagem 2']), 0.0)), step=10.0)
+        p2_rhm = p2_c3.number_input("RH MLG 1 P2", value=safe_float(linha_existente.get(get_real_col(['Peso MLG RH 1 pesagem 2']), 0.0)), step=10.0)
         p2_lhm = p2_c4.number_input("LH MLG 1 P2", value=safe_float(linha_existente.get(get_real_col(['Peso MLG LH 1 pesagem 2']), 0.0)), step=10.0)
 
         p2_c5, p2_c6, p2_c7, p2_c8 = st.columns(4)
@@ -630,7 +638,7 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
     
     novo_registro[get_real_col(['Peso nariz LH pesagem 2'])] = p2_nlh
     novo_registro[get_real_col(['Peso Nariz RH pesagem 2'])] = p2_nrh
-    novo_registro[get_real_col(['Peso MLG RH 1  pesagem 2', 'Peso MLG RH 1 pesagem 2'])] = p2_rhm
+    novo_registro[get_real_col(['Peso MLG RH 1 pesagem 2'])] = p2_rhm
     novo_registro[get_real_col(['Peso MLG LH 1 pesagem 2'])] = p2_lhm
     novo_registro[get_real_col(['Peso MLG RH 2 pesagem 2'])] = p2_rhm2
     novo_registro[get_real_col(['Peso MLG LH2 pesagem 2'])] = p2_lhm2
