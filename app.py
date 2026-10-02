@@ -1,9 +1,9 @@
 import io
 import os
-import sqlite3
 import datetime
 import hashlib
 import hmac
+import json
 import secrets
 
 import openpyxl
@@ -11,6 +11,8 @@ import pandas as pd
 import streamlit as st
 from openpyxl.drawing.image import Image as ExcelImage
 from PIL import Image as PillowImage, UnidentifiedImageError
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 # 1. CONFIGURAÇÃO INICIAL
 st.set_page_config(page_title="Pesagem e Balanceamento", layout="wide", initial_sidebar_state="expanded")
@@ -205,37 +207,140 @@ def calcular_level_correction(angulo, peso_base):
     return valor_correspondente, -valor_correspondente * peso_base, "deductions"
 
 # 2. CONEXÃO E CARREGAMENTO DOS BANCOS DE DADOS
+@st.cache_resource
+def obter_conexao_postgresql():
+    return st.connection("postgresql", type="sql")
+
+
+class LinhaBanco:
+    def __init__(self, linha):
+        self._valores = tuple(linha)
+        self._mapeamento = dict(linha._mapping)
+
+    def __getitem__(self, chave):
+        if isinstance(chave, int):
+            return self._valores[chave]
+        return self._mapeamento[chave]
+
+    def __iter__(self):
+        return iter(self._valores)
+
+    def keys(self):
+        return self._mapeamento.keys()
+
+
+class ResultadoBanco:
+    def __init__(self, resultado):
+        self._resultado = resultado
+        self.rowcount = resultado.rowcount
+
+    def fetchone(self):
+        linha = self._resultado.fetchone()
+        return LinhaBanco(linha) if linha is not None else None
+
+    def fetchall(self):
+        return [LinhaBanco(linha) for linha in self._resultado.fetchall()]
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+class ConexaoPostgreSQL:
+    def __init__(self):
+        self._sessao = obter_conexao_postgresql().session
+
+    @property
+    def row_factory(self):
+        return None
+
+    @row_factory.setter
+    def row_factory(self, _valor):
+        pass
+
+    @staticmethod
+    def _preparar(sql, parametros):
+        if parametros is None or isinstance(parametros, dict):
+            return sql, parametros or {}
+        partes = sql.split("?")
+        if len(partes) - 1 != len(parametros):
+            raise ValueError("A quantidade de parâmetros SQL não corresponde aos placeholders.")
+        consulta = partes[0]
+        valores = {}
+        for indice, valor in enumerate(parametros):
+            nome = f"param_{indice}"
+            consulta += f":{nome}{partes[indice + 1]}"
+            valores[nome] = valor
+        return consulta, valores
+
+    def execute(self, sql, parametros=None):
+        consulta, valores = self._preparar(sql, parametros)
+        return ResultadoBanco(self._sessao.execute(text(consulta), valores))
+
+    def executemany(self, sql, sequencias):
+        if not sequencias:
+            return None
+        consulta, _ = self._preparar(sql, sequencias[0])
+        valores = [self._preparar(sql, linha)[1] for linha in sequencias]
+        return ResultadoBanco(self._sessao.execute(text(consulta), valores))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, tipo_erro, _erro, _rastreio):
+        try:
+            if tipo_erro is None:
+                self._sessao.commit()
+            else:
+                self._sessao.rollback()
+        finally:
+            self._sessao.close()
+
+    def close(self):
+        self._sessao.commit()
+        self._sessao.close()
+
+
+def conectar_banco():
+    return ConexaoPostgreSQL()
+
+
+def inserir_ficha(registro):
+    def normalizar_json(valor):
+        if valor is None:
+            return None
+        if isinstance(valor, dict):
+            return {str(chave): normalizar_json(item) for chave, item in valor.items()}
+        if isinstance(valor, (list, tuple)):
+            return [normalizar_json(item) for item in valor]
+        if hasattr(valor, "item"):
+            return normalizar_json(valor.item())
+        if pd.isna(valor):
+            return None
+        if isinstance(valor, (datetime.date, datetime.datetime)):
+            return valor.isoformat()
+        return valor
+
+    with conectar_banco() as conn:
+        conn.execute(
+            "INSERT INTO pesagens (dados) VALUES (CAST(? AS JSONB))",
+            (json.dumps(normalizar_json(registro), ensure_ascii=False, allow_nan=False),),
+        )
+
+
 @st.cache_data
 def carregar_dados_banco():
-    db_path = 'aeronaves.db'
-    excel_path = 'Cópia de Ficha_Pesagem_v2.xlsm'
-    
-    if not os.path.exists(db_path) and os.path.exists(excel_path):
-        try:
-            df_excel = pd.read_excel(excel_path, sheet_name='Planilha1')
-            conn = sqlite3.connect(db_path)
-            df_excel.to_sql('pesagens', conn, if_exists='replace', index=False)
-            conn.close()
-        except Exception as e:
-            st.error(f"Erro ao converter a planilha para o banco de dados: {e}")
-
-    if os.path.exists(db_path):
-        try:
-            conn = sqlite3.connect(db_path)
-            df = pd.read_sql("SELECT * FROM pesagens", conn)
-            conn.close()
-            
-            if 'revisao' in df.columns and 'Revisao' not in df.columns:
-                df = df.rename(columns={'revisao': 'Revisao'})
-            if 'Pesagem' in df.columns:
-                df['Pesagem'] = df['Pesagem'].astype(str)
-            if 'Revisao' in df.columns:
-                df['Revisao'] = df['Revisao'].astype(str)
-            return df
-        except Exception as e:
-            st.error(f"Erro ao ler o banco de dados SQLite: {e}")
-            
-    return pd.DataFrame()
+    with conectar_banco() as conn:
+        registros = conn.execute(
+            "SELECT dados FROM pesagens ORDER BY id"
+        ).fetchall()
+    df = pd.DataFrame([registro[0] for registro in registros])
+    if 'revisao' in df.columns and 'Revisao' not in df.columns:
+        df = df.rename(columns={'revisao': 'Revisao'})
+    if 'Pesagem' in df.columns:
+        df['Pesagem'] = df['Pesagem'].astype(str)
+    if 'Revisao' in df.columns:
+        df['Revisao'] = df['Revisao'].astype(str)
+    return df
 
 @st.cache_data
 def carregar_tipos_aeronave():
@@ -293,7 +398,6 @@ def carregar_tipos_aeronave():
     except Exception as e:
         return {}
 
-df_historico = carregar_dados_banco()
 dict_tipos_aeronave = carregar_tipos_aeronave()
 
 def obter_senha_admin_inicial():
@@ -307,16 +411,26 @@ def obter_senha_admin_inicial():
 
 
 def inicializar_controle_acesso():
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS pesagens (
+                id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                dados JSONB NOT NULL
+            )
+        ''')
         conn.execute('''
             CREATE TABLE IF NOT EXISTS usuarios (
-                usuario TEXT PRIMARY KEY COLLATE NOCASE,
+                usuario TEXT PRIMARY KEY,
                 nome TEXT NOT NULL,
                 senha_hash TEXT NOT NULL,
                 salt TEXT NOT NULL,
                 nivel_acesso INTEGER NOT NULL,
                 criado_em TEXT NOT NULL
             )
+        ''')
+        conn.execute('''
+            CREATE UNIQUE INDEX IF NOT EXISTS usuarios_usuario_casefold_uidx
+            ON usuarios (lower(usuario))
         ''')
         conn.execute('''
             CREATE TABLE IF NOT EXISTS fluxo_fichas (
@@ -344,8 +458,8 @@ def inicializar_controle_acesso():
         ''')
         conn.execute('''
             CREATE TABLE IF NOT EXISTS assinaturas_usuarios (
-                usuario TEXT PRIMARY KEY COLLATE NOCASE,
-                imagem_png BLOB NOT NULL,
+                usuario TEXT PRIMARY KEY,
+                imagem_png BYTEA NOT NULL,
                 atualizado_em TEXT NOT NULL,
                 FOREIGN KEY (usuario) REFERENCES usuarios(usuario) ON DELETE CASCADE
             )
@@ -371,10 +485,10 @@ def inicializar_controle_acesso():
                      datetime.datetime.now(datetime.timezone.utc).isoformat())
                 )
 def autenticar_usuario(usuario, senha):
-    with sqlite3.connect('aeronaves.db') as conn:
-        conn.row_factory = sqlite3.Row
+    with conectar_banco() as conn:
         registro = conn.execute(
-            'SELECT * FROM usuarios WHERE usuario = ?', (usuario.strip(),)
+            'SELECT * FROM usuarios WHERE lower(usuario) = lower(?)',
+            (usuario.strip(),),
         ).fetchone()
     if not registro:
         return None
@@ -394,7 +508,7 @@ def autenticar_usuario(usuario, senha):
         senha_hash = hashlib.pbkdf2_hmac(
             'sha256', senha_inicial.encode('utf-8'), bytes.fromhex(salt), 600000
         ).hex()
-        with sqlite3.connect('aeronaves.db') as conn:
+        with conectar_banco() as conn:
             conn.execute(
                 'UPDATE usuarios SET senha_hash = ?, salt = ? WHERE usuario = ?',
                 (senha_hash, salt, registro['usuario']),
@@ -409,7 +523,7 @@ def criar_usuario(nome, usuario, senha, nivel_acesso):
     senha_hash = hashlib.pbkdf2_hmac(
         'sha256', senha.encode('utf-8'), bytes.fromhex(salt), 600000
     ).hex()
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
         conn.execute(
             '''INSERT INTO usuarios
                (usuario, nome, senha_hash, salt, nivel_acesso, criado_em)
@@ -420,15 +534,14 @@ def criar_usuario(nome, usuario, senha, nivel_acesso):
 
 
 def listar_usuarios_assinaturas():
-    with sqlite3.connect('aeronaves.db') as conn:
-        conn.row_factory = sqlite3.Row
+    with conectar_banco() as conn:
         registros = conn.execute(
             '''SELECT usuarios.usuario, usuarios.nome, usuarios.nivel_acesso,
                       assinaturas_usuarios.atualizado_em
                FROM usuarios
                LEFT JOIN assinaturas_usuarios
                    ON assinaturas_usuarios.usuario = usuarios.usuario
-               ORDER BY usuarios.nome COLLATE NOCASE'''
+               ORDER BY lower(usuarios.nome)'''
         ).fetchall()
     return [dict(registro) for registro in registros]
 
@@ -436,7 +549,7 @@ def listar_usuarios_assinaturas():
 def carregar_assinatura_usuario(usuario):
     if not usuario:
         return None
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
         registro = conn.execute(
             'SELECT imagem_png FROM assinaturas_usuarios WHERE usuario = ?',
             (usuario,),
@@ -446,19 +559,19 @@ def carregar_assinatura_usuario(usuario):
 
 def salvar_assinatura_usuario(usuario, imagem_png):
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
         conn.execute(
             '''INSERT INTO assinaturas_usuarios (usuario, imagem_png, atualizado_em)
                VALUES (?, ?, ?)
                ON CONFLICT(usuario) DO UPDATE SET
                    imagem_png = excluded.imagem_png,
                    atualizado_em = excluded.atualizado_em''',
-            (usuario, sqlite3.Binary(imagem_png), agora),
+            (usuario, imagem_png, agora),
         )
 
 
 def remover_assinatura_usuario(usuario):
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
         conn.execute(
             'DELETE FROM assinaturas_usuarios WHERE usuario = ?',
             (usuario,),
@@ -489,7 +602,7 @@ def normalizar_imagem_assinatura(imagem):
 
 def registrar_ficha(prefixo, pesagem, revisao, usuario):
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
         conn.execute(
             '''INSERT INTO fluxo_fichas
                (prefixo, pesagem, revisao, gerado_por, criado_em)
@@ -503,8 +616,7 @@ def registrar_ficha(prefixo, pesagem, revisao, usuario):
         )
 
 def buscar_fluxo_ficha(prefixo, pesagem, revisao):
-    with sqlite3.connect('aeronaves.db') as conn:
-        conn.row_factory = sqlite3.Row
+    with conectar_banco() as conn:
         registro = conn.execute(
             '''SELECT fluxo_fichas.gerado_por AS gerador_usuario,
                       gerador.nome AS gerador_nome,
@@ -540,8 +652,7 @@ def buscar_fluxo_ficha(prefixo, pesagem, revisao):
     }
 
 def carregar_fluxos_fichas():
-    with sqlite3.connect('aeronaves.db') as conn:
-        conn.row_factory = sqlite3.Row
+    with conectar_banco() as conn:
         registros = conn.execute(
             '''SELECT fluxo_fichas.prefixo, fluxo_fichas.pesagem,
                       fluxo_fichas.revisao,
@@ -571,8 +682,7 @@ def carregar_fluxos_fichas():
 
 
 def carregar_campos_com_erro(prefixo, pesagem, revisao):
-    with sqlite3.connect('aeronaves.db') as conn:
-        conn.row_factory = sqlite3.Row
+    with conectar_banco() as conn:
         registros = conn.execute(
             '''SELECT campos_com_erro.campo, campos_com_erro.descricao,
                       campos_com_erro.marcado_por, usuarios.nome AS marcador_nome
@@ -591,7 +701,7 @@ def carregar_campos_com_erro(prefixo, pesagem, revisao):
 
 def listar_fichas_pendentes():
     fluxos = carregar_fluxos_fichas()
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
         registros_erros = conn.execute(
             '''SELECT prefixo, pesagem, revisao, campo, descricao
                FROM campos_com_erro
@@ -673,7 +783,7 @@ def salvar_campos_com_erro(prefixo, pesagem, revisao, campos, usuario):
         normalizar_chave_ficha(pesagem),
         normalizar_chave_ficha(revisao),
     )
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
         conn.execute(
             '''DELETE FROM campos_com_erro
                WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
@@ -691,7 +801,7 @@ def salvar_campos_com_erro(prefixo, pesagem, revisao, campos, usuario):
 
 
 def limpar_campos_com_erro(prefixo, pesagem, revisao):
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
         conn.execute(
             '''DELETE FROM campos_com_erro
                WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
@@ -704,7 +814,7 @@ def limpar_campos_com_erro(prefixo, pesagem, revisao):
 
 def aprovar_ficha(prefixo, pesagem, revisao, usuario):
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with sqlite3.connect('aeronaves.db') as conn:
+    with conectar_banco() as conn:
         conn.execute(
             '''INSERT INTO fluxo_fichas
                (prefixo, pesagem, revisao, aprovado_por, criado_em, aprovado_em)
@@ -716,6 +826,7 @@ def aprovar_ficha(prefixo, pesagem, revisao, usuario):
         )
 
 inicializar_controle_acesso()
+df_historico = carregar_dados_banco()
 
 # 3. FUNÇÃO DE EXPORTAÇÃO PARA EXCEL
 def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
@@ -2152,9 +2263,7 @@ def tela_nova_ficha():
                 else:
                     novo_registro['Pesagem'] = str(int(p_final))
                     novo_registro['Revisao'] = str(int(r_final))
-                    conn = sqlite3.connect('aeronaves.db')
-                    pd.DataFrame([novo_registro]).to_sql('pesagens', conn, if_exists='append', index=False)
-                    conn.close()
+                    inserir_ficha(novo_registro)
                     registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
                     if correcao_selecionada:
                         limpar_campos_com_erro(prefixo, p_ant, r_ant)
@@ -2206,9 +2315,7 @@ def tela_edicao():
                         fluxo_origem = buscar_fluxo_ficha(prefixo, pesagem, revisao)
                         novo_registro['Pesagem'] = str(int(p_final))
                         novo_registro['Revisao'] = str(int(r_final))
-                        conn = sqlite3.connect('aeronaves.db')
-                        pd.DataFrame([novo_registro]).to_sql('pesagens', conn, if_exists='append', index=False)
-                        conn.close()
+                        inserir_ficha(novo_registro)
                         registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
                         if fluxo_origem['gerador_usuario'] == st.session_state['usuario_id']:
                             limpar_campos_com_erro(prefixo, pesagem, revisao)
@@ -2242,7 +2349,7 @@ def tela_criar_login():
             try:
                 criar_usuario(nome, usuario, senha, 1 if nivel == "Engenharia" else 2)
                 st.success(f"Login criado para {nome.strip()}.")
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 st.error("Esse nome de usuário já está cadastrado.")
 
 
@@ -2389,17 +2496,12 @@ def tela_aprovar_fichas():
             )
 
 def excluir_ficha(prefixo, pesagem, revisao):
-    with sqlite3.connect('aeronaves.db') as conn:
-        colunas = {registro[1] for registro in conn.execute('PRAGMA table_info(pesagens)')}
-        coluna_revisao = 'Revisao' if 'Revisao' in colunas else 'revisao'
-        if not {'Prefixo', 'Pesagem', coluna_revisao}.issubset(colunas):
-            raise sqlite3.OperationalError('As colunas de identificação da ficha não foram encontradas.')
-
+    with conectar_banco() as conn:
         cursor = conn.execute(
-            f'''DELETE FROM pesagens
-                WHERE CAST(Prefixo AS TEXT) = ?
-                  AND CAST(Pesagem AS TEXT) = ?
-                  AND CAST("{coluna_revisao}" AS TEXT) = ?''',
+            '''DELETE FROM pesagens
+                WHERE dados ->> 'Prefixo' = ?
+                  AND dados ->> 'Pesagem' = ?
+                  AND COALESCE(dados ->> 'Revisao', dados ->> 'revisao') = ?''',
             (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
         )
         quantidade = cursor.rowcount
