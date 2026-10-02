@@ -984,18 +984,24 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row, modo_aprovacao
 
         if modo_aprovacao:
             st.divider()
-            st.subheader("Aprovação")
+            st.subheader("Etapa final: aprovação")
             if campos_pendentes:
                 st.error("A aprovação está bloqueada até o emissor corrigir os campos sinalizados.")
             elif fluxo['gerador_usuario'] == st.session_state['usuario_id']:
                 st.warning("Quem emitiu a ficha não pode aprová-la.")
-            elif st.button(
-                "Aprovar ficha",
-                type="primary",
-                key=f"aprovar_{prefixo}_{pesagem}_{revisao}",
-            ):
-                aprovar_ficha(prefixo, pesagem, revisao, st.session_state['usuario_id'])
-                st.rerun()
+            else:
+                conferiu_cg = st.checkbox(
+                    "Confirmo que revisei os dados da ficha e conferi o valor do C.G. (% MAC).",
+                    key=f"conferiu_cg_{prefixo}_{pesagem}_{revisao}",
+                )
+                if st.button(
+                    "Aprovar ficha",
+                    type="primary",
+                    disabled=not conferiu_cg,
+                    key=f"aprovar_{prefixo}_{pesagem}_{revisao}",
+                ):
+                    aprovar_ficha(prefixo, pesagem, revisao, st.session_state['usuario_id'])
+                    st.rerun()
 
 # Função auxiliar para mapear as colunas corretas do Banco de Dados
 def get_real_col(possible_names):
@@ -1721,8 +1727,12 @@ def tela_edicao():
                     campo['campo']: campo
                     for campo in carregar_campos_com_erro(prefixo, pesagem, revisao)
                 }
-                with st.expander("Sinalizar campos com erro", expanded=bool(sinalizacoes_atuais)):
+                with st.expander("Sinalizar campos para correção pelo emissor", expanded=bool(sinalizacoes_atuais)):
                     with st.form(f"form_sinalizar_{prefixo}_{pesagem}_{revisao}"):
+                        st.caption(
+                            "Marque somente os campos incorretos. O emissor deverá corrigir "
+                            "os campos sinalizados antes da aprovação."
+                        )
                         campos_marcados = {}
                         for grupo, campos in grupos_campos.items():
                             if not campos:
@@ -1731,7 +1741,7 @@ def tela_edicao():
                             colunas_checkboxes = st.columns(2)
                             for indice, (campo, rotulo) in enumerate(campos):
                                 campos_marcados[campo] = colunas_checkboxes[indice % 2].checkbox(
-                                    rotulo,
+                                    f"Com erro — {rotulo}",
                                     value=campo in sinalizacoes_atuais,
                                     key=f"erro_{prefixo}_{pesagem}_{revisao}_{campo}",
                                 )
