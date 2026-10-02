@@ -37,6 +37,162 @@ def safe_float(val):
 def safe_str(val):
     return "" if pd.isna(val) else str(val).strip()
 
+
+def safe_identifier(val):
+    if pd.isna(val):
+        return ""
+    if pd.api.types.is_number(val) and float(val).is_integer():
+        return str(int(val))
+    return str(val).strip()
+
+
+def momento_flaps_do_registro(registro):
+    descricoes_flaps = [
+        safe_str(registro.get(f"Additions Description {indice}", ""))
+        for indice in range(1, 17)
+    ]
+    if not any("flap" in descricao.casefold() for descricao in descricoes_flaps):
+        return None
+
+    momento = safe_float(registro.get("Adction LAP", 0))
+    if momento > 0:
+        return momento
+
+    for indice, descricao in enumerate(descricoes_flaps, start=1):
+        if "flap" in descricao.casefold():
+            momento = safe_float(registro.get(f"Additions arm {indice}", 0))
+            if momento > 0:
+                return momento
+    return None
+
+
+@st.cache_data
+def buscar_momento_flaps_banco(prefixo, tipo_aeronave):
+    df = carregar_dados_banco()
+    if df.empty or "Tipo_aeronave" not in df.columns:
+        return 0.0
+
+    df = df.copy()
+    coluna_revisao = "Revisao" if "Revisao" in df.columns else "revisao"
+    df["_pesagem_num"] = pd.to_numeric(df.get("Pesagem"), errors="coerce").fillna(-1)
+    df["_revisao_num"] = pd.to_numeric(df.get(coluna_revisao), errors="coerce").fillna(-1)
+
+    if prefixo and "Prefixo" in df.columns:
+        historico_prefixo = df.loc[
+            df["Prefixo"].astype(str).str.strip().str.casefold()
+            == safe_str(prefixo).casefold()
+        ].sort_values(["_pesagem_num", "_revisao_num"], ascending=False)
+        for _, registro in historico_prefixo.iterrows():
+            momento = momento_flaps_do_registro(registro)
+            if momento is not None:
+                return momento
+
+    modelo = safe_str(tipo_aeronave).casefold()
+    historico_modelo = df.loc[
+        df["Tipo_aeronave"].astype(str).str.strip().str.casefold() == modelo
+    ]
+    momentos = [
+        momento
+        for _, registro in historico_modelo.iterrows()
+        if (momento := momento_flaps_do_registro(registro)) is not None
+    ]
+    if not momentos:
+        return 0.0
+
+    frequencias = pd.Series(momentos).value_counts()
+    maior_frequencia = frequencias.max()
+    return float(max(frequencias[frequencias == maior_frequencia].index))
+
+
+def converter_unidade_canela(unidade_key, unidade_anterior_key, chaves_valores):
+    unidade_anterior = st.session_state.get(unidade_anterior_key, "in")
+    unidade_atual = st.session_state.get(unidade_key, unidade_anterior)
+    if unidade_atual != unidade_anterior:
+        fator = 25.4 if unidade_anterior == "in" else 1 / 25.4
+        for chave in chaves_valores:
+            if chave in st.session_state:
+                st.session_state[chave] *= fator
+        st.session_state[unidade_anterior_key] = unidade_atual
+
+
+def valor_canela_em_polegadas(valor, unidade):
+    return valor / 25.4 if unidade == "mm" else valor
+
+
+def separar_campos_lopa(registro):
+    valores = [
+        safe_str(registro.get(" LOPA", registro.get("LOPA", ""))),
+        safe_str(registro.get("Configuração LOPA ", registro.get("Configuração LOPA", ""))),
+    ]
+    valores = [
+        valor for valor in valores
+        if valor and valor.casefold() not in {"lopa", "configuração lopa"}
+    ]
+    codigo_lopa = next(
+        (valor for valor in valores if valor.upper().startswith("GLP-")), ""
+    )
+    configuracao = next(
+        (valor for valor in valores if not valor.upper().startswith("GLP-")), ""
+    )
+    return codigo_lopa, configuracao
+
+
+LEVEL_CORRECTION_VALUES = {
+    "-2": 3.0,
+    "-1 7/8": 2.8,
+    "-1 3/4": 2.7,
+    "-1 5/8": 2.5,
+    "-1 1/2": 2.3,
+    "-1 3/8": 2.1,
+    "-1 1/4": 1.9,
+    "-1 1/8": 1.7,
+    "-1": 1.5,
+    "-7/8": 1.3,
+    "-3/4": 1.1,
+    "-5/8": 0.9,
+    "-1/2": 0.8,
+    "-3/8": 0.6,
+    "-1/4": 0.4,
+    "-1/8": 0.2,
+    "0": 0.0,
+    "1/8": -0.2,
+    "1/4": -0.4,
+    "3/8": -0.6,
+    "1/2": -0.8,
+    "5/8": -0.9,
+    "3/4": -1.1,
+    "7/8": -1.3,
+    "1": -1.5,
+    "1 1/8": -1.7,
+    "1 1/4": -1.9,
+    "1 3/8": -2.1,
+    "1 1/2": -2.3,
+    "1 5/8": -2.5,
+    "1 3/4": -2.7,
+    "1 7/8": -2.8,
+    "2": -3.0,
+}
+LEVEL_CORRECTION_LABEL = "Level Correction (Value added to CG)"
+
+
+def normalizar_angulo_level_correction(angulo):
+    angulo = safe_str(angulo).replace("\xa0", " ")
+    angulo = " ".join(angulo.split())
+    if angulo.endswith(".0") and angulo[:-2] in LEVEL_CORRECTION_VALUES:
+        angulo = angulo[:-2]
+    return angulo if angulo in LEVEL_CORRECTION_VALUES else ""
+
+
+def calcular_level_correction(angulo, peso_base):
+    angulo = normalizar_angulo_level_correction(angulo)
+    if not angulo:
+        return 0.0, 0.0, None
+
+    valor_correspondente = LEVEL_CORRECTION_VALUES[angulo]
+    if angulo.startswith("-"):
+        return valor_correspondente, valor_correspondente * peso_base, "additions"
+    return valor_correspondente, -valor_correspondente * peso_base, "deductions"
+
 # 2. CONEXÃO E CARREGAMENTO DOS BANCOS DE DADOS
 @st.cache_data
 def carregar_dados_banco():
@@ -84,7 +240,25 @@ def carregar_tipos_aeronave():
         col_armnose = 'ARMNOSE' if 'ARMNOSE' in df_tipos.columns else None
         
         col_vrbl = next((c for c in df_tipos.columns if 'VRBL' in str(c).upper() or 'VRBL NUMBER' in str(c).upper()), None)
-        col_serial = next((c for c in df_tipos.columns if 'SERIAL' in str(c).upper()), None)
+        nomes_colunas = {
+            coluna: " ".join(str(coluna).replace("\n", " ").split()).upper()
+            for coluna in df_tipos.columns
+        }
+        col_serial = next(
+            (
+                coluna for coluna, nome in nomes_colunas.items()
+                if nome in {"S/N", "SERIAL", "SERIAL NUMBER"}
+            ),
+            None,
+        )
+        if col_serial is None:
+            col_serial = next(
+                (
+                    coluna for coluna, nome in nomes_colunas.items()
+                    if "SERIAL" in nome and "ENGINE" not in nome
+                ),
+                None,
+            )
         col_line = next((c for c in df_tipos.columns if 'LINE' in str(c).upper()), None)
         
         dict_aero = {}
@@ -100,9 +274,9 @@ def carregar_tipos_aeronave():
                 dict_aero[prefixo] = {
                     'modelo': modelo, 
                     'armnose': arm_nose,
-                    'vrbl': str(row[col_vrbl]) if col_vrbl and pd.notna(row[col_vrbl]) else "",
-                    'serial': str(row[col_serial]) if col_serial and pd.notna(row[col_serial]) else "",
-                    'line': str(row[col_line]) if col_line and pd.notna(row[col_line]) else ""
+                    'vrbl': safe_identifier(row[col_vrbl]) if col_vrbl else "",
+                    'serial': safe_identifier(row[col_serial]) if col_serial else "",
+                    'line': safe_identifier(row[col_line]) if col_line else ""
                 }
         return dict_aero
     except Exception as e:
@@ -110,6 +284,16 @@ def carregar_tipos_aeronave():
 
 df_historico = carregar_dados_banco()
 dict_tipos_aeronave = carregar_tipos_aeronave()
+
+def obter_senha_admin_inicial():
+    senha = os.environ.get("INITIAL_ADMIN_PASSWORD")
+    if senha:
+        return senha
+    try:
+        return st.secrets.get("INITIAL_ADMIN_PASSWORD")
+    except Exception:
+        return None
+
 
 def inicializar_controle_acesso():
     with sqlite3.connect('aeronaves.db') as conn:
@@ -137,17 +321,33 @@ def inicializar_controle_acesso():
         ''')
         usuario_existente = conn.execute('SELECT 1 FROM usuarios LIMIT 1').fetchone()
         if not usuario_existente:
-            salt = secrets.token_hex(16)
-            senha_hash = hashlib.pbkdf2_hmac(
-                'sha256', b'123', bytes.fromhex(salt), 600000
-            ).hex()
-            conn.execute(
-                '''INSERT INTO usuarios
-                   (usuario, nome, senha_hash, salt, nivel_acesso, criado_em)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('engenharia', 'Engenharia GOL', senha_hash, salt, 1,
-                 datetime.datetime.now(datetime.timezone.utc).isoformat())
-            )
+            senha_inicial = obter_senha_admin_inicial()
+            if not senha_inicial or len(senha_inicial) < 12:
+                st.error(
+                    "Configure INITIAL_ADMIN_PASSWORD com pelo menos 12 caracteres "
+                    "em Streamlit Secrets para criar o primeiro usuário de Engenharia."
+                )
+            else:
+                salt = secrets.token_hex(16)
+                senha_hash = hashlib.pbkdf2_hmac(
+                    'sha256', senha_inicial.encode('utf-8'), bytes.fromhex(salt), 600000
+                ).hex()
+                conn.execute(
+                    '''INSERT INTO usuarios
+                       (usuario, nome, senha_hash, salt, nivel_acesso, criado_em)
+                       VALUES (?, ?, ?, ?, ?, ?)''',
+                    ('engenharia', 'Engenharia GOL', senha_hash, salt, 1,
+                     datetime.datetime.now(datetime.timezone.utc).isoformat())
+                )
+        elif not obter_senha_admin_inicial():
+            usuario_admin = conn.execute(
+                'SELECT 1 FROM usuarios WHERE usuario = ?', ('engenharia',)
+            ).fetchone()
+            if usuario_admin:
+                st.warning(
+                    "Configure INITIAL_ADMIN_PASSWORD em Streamlit Secrets para "
+                    "ativar o acesso inicial de Engenharia."
+                )
 
 def autenticar_usuario(usuario, senha):
     with sqlite3.connect('aeronaves.db') as conn:
@@ -161,7 +361,27 @@ def autenticar_usuario(usuario, senha):
         'sha256', senha.encode('utf-8'), bytes.fromhex(registro['salt']), 600000
     ).hex()
     if not hmac.compare_digest(senha_hash, registro['senha_hash']):
-        return None
+        senha_inicial = obter_senha_admin_inicial()
+        if (
+            registro['usuario'].casefold() != 'engenharia'
+            or not senha_inicial
+            or len(senha_inicial) < 12
+            or not hmac.compare_digest(senha, senha_inicial)
+        ):
+            return None
+
+        salt = secrets.token_hex(16)
+        senha_hash = hashlib.pbkdf2_hmac(
+            'sha256', senha_inicial.encode('utf-8'), bytes.fromhex(salt), 600000
+        ).hex()
+        with sqlite3.connect('aeronaves.db') as conn:
+            conn.execute(
+                'UPDATE usuarios SET senha_hash = ?, salt = ? WHERE usuario = ?',
+                (senha_hash, salt, registro['usuario']),
+            )
+        registro = dict(registro)
+        registro['senha_hash'] = senha_hash
+        registro['salt'] = salt
     return dict(registro)
 
 def criar_usuario(nome, usuario, senha, nivel_acesso):
@@ -387,6 +607,7 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
     st.caption(f"Gerada por: {fluxo['gerador_nome']} | Aprovada por: {fluxo['aprovador_nome']}")
     aba1, aba2, aba3, aba4, aba5 = st.tabs(["Dados Gerais", "Células de Carga", "Deductions", "Additions", "Weighing Report"])
     info_aero = dict_tipos_aeronave.get(prefixo, {})
+    lopa, config_lopa = separar_campos_lopa(row)
 
     with aba1:
         c_p, c_r = st.columns(2)
@@ -400,8 +621,8 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
         
         c4, c5, c6 = st.columns(3)
         c4.text_input("Data da pesagem:", value=safe_str(row.get('Data_da_Pesagem', '')), disabled=True)
-        c5.text_input("LOPA:", value=safe_str(row.get(' LOPA', row.get('LOPA', ''))), disabled=True)
-        c6.text_input("Configuração LOPA:", value=safe_str(row.get('Configuração LOPA ', '')), disabled=True)
+        c5.text_input("LOPA:", value=lopa, disabled=True)
+        c6.text_input("Configuração LOPA:", value=config_lopa, disabled=True)
         
         c7, c8, c9 = st.columns(3)
         c7.text_input("VRBL. NUMBER:", value=safe_str(row.get('VRBL', info_aero.get('vrbl', ''))), disabled=True)
@@ -495,18 +716,31 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
         tot_reg_moment = m_lh + m_rh + m_nose + m_tail
         tot_reg_arm = tot_reg_moment / tot_reg_weight if tot_reg_weight > 0 else 0.0
 
+        level_correction_angle = normalizar_angulo_level_correction(
+            row.get('Graus correção do cg', '')
+        )
+        level_correction_factor, level_correction_moment, level_correction_side = (
+            calcular_level_correction(level_correction_angle, tot_reg_weight)
+        )
+
         ded_weight = sum([item["Peso [Kg]"] for item in deducoes_lista])
         ded_moment = sum([item["Peso [Kg]"] * item["Arm [pol]"] for item in deducoes_lista])
+        if level_correction_side == "deductions":
+            ded_moment += level_correction_moment
         ded_arm = ded_moment / ded_weight if ded_weight > 0 else 0.0
 
-        momento_extra_flaps = 0
-        flaps_ativo = any("Flaps" in str(item.get("Descrição", "")) for item in adicoes_lista)
+        flaps_ativo = any("flap" in str(item.get("Descrição", "")).casefold() for item in adicoes_lista)
+        momento_extra_flaps = 0.0
         if flaps_ativo:
-            if tipo_aeronave == "B737-MAX": momento_extra_flaps = 6190
-            elif tipo_aeronave in ["B737-800", "B737-800SFP", "737-800", "B737-700"]: momento_extra_flaps = 5930
+            momento_extra_flaps = (
+                momento_flaps_do_registro(row)
+                or buscar_momento_flaps_banco(prefixo, tipo_aeronave)
+            )
 
         add_weight = sum([item["Peso [Kg]"] for item in adicoes_lista])
         add_moment = sum([item["Peso [Kg]"] * item["Arm [pol]"] for item in adicoes_lista]) + momento_extra_flaps
+        if level_correction_side == "additions":
+            add_moment += level_correction_moment
         add_arm = add_moment / add_weight if add_weight > 0 else 0.0
 
         basic_weight = tot_reg_weight + add_weight - ded_weight
@@ -515,10 +749,10 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
         cg_mac = ((basic_arm - 627.1) / 1.558) if basic_arm > 0 else 0.0
 
         report_data = {
-            "Reaction / Item": ["LH", "RH", "NOSE", "TAIL", "TOTAL REGISTERED", "DEDUCTIONS", "ADDITIONS", "AIRCRAFT BASIC WEIGHT"],
-            "Weight (kg)": [lh, rh, nose, tail, tot_reg_weight, ded_weight, add_weight, basic_weight],
-            "Arm (inch)": [arm_b_lh, arm_b_rh, arm_a, arm_c, tot_reg_arm, ded_arm, add_arm, basic_arm],
-            "Moment (kg x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_moment, ded_moment, add_moment, basic_moment]
+            "Reaction / Item": ["LH", "RH", "NOSE", "TAIL", "TOTAL REGISTERED", "LEVEL CORRECTION", "DEDUCTIONS", "ADDITIONS", "AIRCRAFT BASIC WEIGHT"],
+            "Weight (kg)": [lh, rh, nose, tail, tot_reg_weight, 0.0, ded_weight, add_weight, basic_weight],
+            "Arm (inch)": [arm_b_lh, arm_b_rh, arm_a, arm_c, tot_reg_arm, level_correction_factor, ded_arm, add_arm, basic_arm],
+            "Moment (kg x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_moment, level_correction_moment, ded_moment, add_moment, basic_moment]
         }
         st.dataframe(pd.DataFrame(report_data), use_container_width=True, hide_index=True)
 
@@ -541,11 +775,31 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
         
         ultima_p = str(int(df_prev.iloc[-1]['Pesagem_num'])) if not df_prev.empty else ""
         ultima_r = str(int(df_prev.iloc[-1]['Revisao_num'])) if not df_prev.empty else ""
+        lopa, config_lopa = separar_campos_lopa(row)
+
+        deducoes_excel = [
+            {'desc': d["Descrição"], 'w': d["Peso [Kg]"], 'a': d["Arm [pol]"], 'm': d["Peso [Kg]"] * d["Arm [pol]"]}
+            for d in deducoes_lista
+        ]
+        adicoes_excel = [
+            {'desc': a["Descrição"], 'w': a["Peso [Kg]"], 'a': a["Arm [pol]"], 'm': a["Peso [Kg]"] * a["Arm [pol]"] + (momento_extra_flaps if "flap" in a["Descrição"].casefold() else 0)}
+            for a in adicoes_lista
+        ]
+        if level_correction_side == "deductions":
+            deducoes_excel.append({
+                'desc': LEVEL_CORRECTION_LABEL, 'w': 0.0,
+                'a': level_correction_factor, 'm': level_correction_moment,
+            })
+        elif level_correction_side == "additions":
+            adicoes_excel.append({
+                'desc': LEVEL_CORRECTION_LABEL, 'w': 0.0,
+                'a': level_correction_factor, 'm': level_correction_moment,
+            })
 
         dados_excel = {
             "prefixo": prefixo, "modelo": tipo_aeronave, "pesado_por": safe_str(row.get('Pesado Por', '')),
             "local": safe_str(row.get('Local da pesagem', '')), "data": safe_str(row.get('Data_da_Pesagem', '')),
-            "config_lopa": safe_str(row.get('Configuração LOPA ', '')), "lopa": safe_str(row.get(' LOPA', '')),
+            "config_lopa": config_lopa, "lopa": lopa,
             "razao": safe_str(row.get('Motivo', '')), "cg_mac": cg_mac,
             "arm_a": arm_a, "arm_b_lh": arm_b_lh, "arm_b_rh": arm_b_rh,
             "issue_date": safe_str(row.get('Data da ficha', '')),
@@ -565,8 +819,8 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
                 'ADDITIONS': {'weight': add_weight, 'arm': add_arm, 'moment': add_moment},
                 'AIRCRAFT BASIC WEIGHT': {'weight': basic_weight, 'arm': basic_arm, 'moment': basic_moment}
             },
-            "deductions": [{'desc': d["Descrição"], 'w': d["Peso [Kg]"], 'a': d["Arm [pol]"], 'm': d["Peso [Kg]"]*d["Arm [pol]"]} for d in deducoes_lista],
-            "additions": [{'desc': a["Descrição"], 'w': a["Peso [Kg]"], 'a': a["Arm [pol]"], 'm': a["Peso [Kg]"]*a["Arm [pol]"] + (momento_extra_flaps if "Flaps" in a["Descrição"] else 0)} for a in adicoes_lista]
+            "deductions": deducoes_excel,
+            "additions": adicoes_excel
         }
         
         excel_data = gerar_excel_por_template(dados_excel, "exemplo_ficha.xlsx")
@@ -588,7 +842,6 @@ def get_real_col(possible_names):
             return n
     return possible_names[0]
 
-PRESET_OUTRO = "Outro (digitar)"
 PRESETS = {
     "motivo": [
         "5 Years Check",
@@ -609,37 +862,8 @@ PRESETS = {
         "Amsterdam - Netherlands",
         "Everett, WA - EUA",
     ],
-    "config_lopa": [
-        "2Ku System and In-Seat Power Installation",
-        "2Ku System Installation",
-        "2Ku System, Nitrogen Generation System and In-Seat Power Installation",
-        "Carbon Brake Retrofit Program",
-        "Change of MTW and MTOW",
-        "In-Seat Power Installation",
-        "Leather Seats Cover and 2Ku System Installation",
-        "Leather Seats Cover Installation",
-        "Life vest compartments installation next to the PSUs",
-        "Radial Tires replacement (SB 737-32-1535)",
-        "Seats Reconfiguration",
-        "2Ku System, In-Seat Power and Leather Seats Cover Installation",
-        "Seats Replacement",
-        "Wiring Diagrams",
-        "Production Flight Emergency Equipment",
-        "Protective Carpet Runner",
-        "Plastic Seat Cover",
-        "Loto Kit",
-        "Seats Removal (168 Pax)",
-    ],
-    "lopa": [
-        "138 Pax + 10 Flight Crew",
-        "138 Pax + 8 Flight Crew",
-        "138 Pax + 9 Flight Crew",
-        "168 Pax + 9 Flight Crew",
-        "186 Pax + 10 Flight Crew",
-        "189 Pax + 10 Flight Crew",
-        "186 Pax + 9 Flight Crew",
-        "168 Pax + 10 Flight Crew",
-    ],
+    "config_lopa": [],
+    "lopa": [],
     "deductions": [
         "Down Lock, Nose Gear",
         "Down Lock, Main Gear",
@@ -714,52 +938,146 @@ PRESETS = {
     ],
 }
 
+valores_lopa_historico = set()
+for coluna in (" LOPA", "LOPA", "Configuração LOPA ", "Configuração LOPA"):
+    if coluna in df_historico.columns:
+        valores_lopa_historico.update(
+            safe_str(valor)
+            for valor in df_historico[coluna].dropna().tolist()
+            if safe_str(valor).casefold() not in {"lopa", "configuração lopa"}
+        )
+
+PRESETS["lopa"] = sorted(
+    {
+        valor for valor in valores_lopa_historico
+        if valor.upper().startswith("GLP-")
+    } | {"GLP-MAX8-001-XMC"},
+    key=str.casefold,
+)
+PRESETS["config_lopa"] = sorted(
+    {
+        valor for valor in valores_lopa_historico
+        if not valor.upper().startswith("GLP-")
+    } | {"186 Pax + 10 Flight Crew"},
+    key=str.casefold,
+)
+
 
 def campo_com_preset(container, label, valor, opcoes, key):
     valor = safe_str(valor)
-    valor_inicial = valor if valor in opcoes else (PRESET_OUTRO if valor else "")
-    escolhas = [""] + opcoes + [PRESET_OUTRO]
-    escolha = container.selectbox(
+    escolhas = [""] + list(opcoes)
+    if valor and valor not in escolhas:
+        escolhas.insert(1, valor)
+    return container.selectbox(
         label,
         escolhas,
-        index=escolhas.index(valor_inicial),
-        key=f"{key}_preset",
+        index=escolhas.index(valor) if valor else 0,
+        key=key,
+        accept_new_options=True,
+        placeholder="Digite ou selecione",
     )
-    if escolha == PRESET_OUTRO:
-        valor_manual = valor if valor not in opcoes else ""
-        return container.text_input(
-            f"{label} personalizado",
-            value=valor_manual,
-            key=f"{key}_manual",
+
+
+def renderizar_editor_itens(container, itens, opcoes, key, momento_flaps=0):
+    colunas = ["Descrição", "Peso (Kg)", "Braço (in)", "Momento (kg.in)"]
+    quantidade_inicial = max(len(itens), 1)
+    chave_linhas = f"{key}_linhas"
+    chave_proximo_id = f"{key}_proximo_id"
+    if chave_linhas not in st.session_state:
+        quantidade_anterior = max(
+            quantidade_inicial,
+            st.session_state.get(f"{key}_quantidade", quantidade_inicial),
         )
-    return escolha
+        st.session_state[chave_linhas] = [str(indice) for indice in range(quantidade_anterior)]
+        st.session_state[chave_proximo_id] = quantidade_anterior
 
+    ids_linhas = list(st.session_state[chave_linhas])
+    cabecalho = container.columns([4, 1, 1, 1, 0.9])
+    for coluna, titulo in zip(cabecalho, [*colunas, "Ação"]):
+        coluna.caption(titulo)
 
-def preparar_tabela_preset(itens, opcoes):
     linhas = []
-    for item in itens:
-        descricao = safe_str(item.get("Descrição", ""))
-        linhas.append({
-            "Preset": descricao if descricao in opcoes else (PRESET_OUTRO if descricao else ""),
-            "Descrição personalizada": descricao if descricao and descricao not in opcoes else "",
-            "Peso (Kg)": item.get("Peso (Kg)", 0.0),
-            "Braço (in)": item.get("Braço (in)", 0.0),
-            "Momento (kg.in)": item.get("Momento (kg.in)", 0.0),
-        })
-    return pd.DataFrame(linhas, columns=[
-        "Preset", "Descrição personalizada", "Peso (Kg)", "Braço (in)", "Momento (kg.in)"
-    ])
+    for posicao, id_linha in enumerate(ids_linhas):
+        indice_item = int(id_linha) if id_linha.isdigit() else len(itens)
+        item = itens[indice_item] if indice_item < len(itens) else {}
+        descricao_inicial = safe_str(item.get("Descrição", ""))
+        escolhas = [""] + list(opcoes)
+        if descricao_inicial and descricao_inicial not in escolhas:
+            escolhas.append(descricao_inicial)
 
+        descricao_col, peso_col, braco_col, momento_col, excluir_col = container.columns([4, 1, 1, 1, 0.9])
+        descricao = descricao_col.selectbox(
+            f"Descrição, linha {posicao + 1}",
+            escolhas,
+            index=escolhas.index(descricao_inicial),
+            key=f"{key}_{id_linha}_descricao",
+            accept_new_options=True,
+            placeholder="Digite ou selecione",
+            label_visibility="collapsed",
+        )
+        peso = peso_col.number_input(
+            f"Peso (Kg), linha {posicao + 1}",
+            value=safe_float(item.get("Peso (Kg)", 0.0)),
+            step=0.1,
+            key=f"{key}_{id_linha}_peso",
+            label_visibility="collapsed",
+        )
+        braco = braco_col.number_input(
+            f"Braço (in), linha {posicao + 1}",
+            value=safe_float(item.get("Braço (in)", 0.0)),
+            step=0.1,
+            key=f"{key}_{id_linha}_braco",
+            label_visibility="collapsed",
+        )
 
-def aplicar_descricao_preset(tabela):
-    tabela = tabela.copy()
-    tabela["Descrição"] = tabela.apply(
-        lambda linha: safe_str(linha.get("Descrição personalizada", ""))
-        if linha.get("Preset") == PRESET_OUTRO
-        else safe_str(linha.get("Preset", "")),
-        axis=1,
+        descricao = safe_str(descricao)
+        momento = peso * braco
+        if momento_flaps and "flap" in descricao.casefold():
+            momento += momento_flaps
+        momento_col.write(f"{momento:,.2f}")
+
+        if descricao:
+            linhas.append({
+                "Descrição": descricao,
+                "Peso (Kg)": peso,
+                "Braço (in)": braco,
+                "Momento (kg.in)": momento,
+            })
+
+        excluir_col.button(
+            "",
+            key=f"{key}_{id_linha}_excluir",
+            help="Excluir esta linha",
+            on_click=excluir_linha,
+            args=(chave_linhas, key, id_linha),
+            type="tertiary",
+            icon=":material/delete:",
+        )
+
+    adicionar_col, _ = container.columns(2)
+    adicionar_col.button(
+        "Adicionar item",
+        key=f"{key}_adicionar",
+        on_click=adicionar_linha,
+        args=(chave_linhas, chave_proximo_id),
     )
-    return tabela
+    return pd.DataFrame(linhas, columns=colunas)
+
+
+def adicionar_linha(chave_linhas, chave_proximo_id):
+    novo_id = st.session_state[chave_proximo_id]
+    st.session_state[chave_linhas] = [
+        *st.session_state[chave_linhas], f"extra_{novo_id}"
+    ]
+    st.session_state[chave_proximo_id] = novo_id + 1
+
+
+def excluir_linha(chave_linhas, prefixo_widget, id_linha):
+    st.session_state[chave_linhas] = [
+        linha for linha in st.session_state[chave_linhas] if linha != id_linha
+    ]
+    for campo in ("descricao", "peso", "braco"):
+        st.session_state.pop(f"{prefixo_widget}_{id_linha}_{campo}", None)
 
 def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, r_anterior, linha_existente=None):
     if linha_existente is None: linha_existente = {}
@@ -767,7 +1085,7 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
     tipo_a = info_aero.get('modelo', "")
     form_key = f"{prefixo_selecionado}_{p_sugerida}_{r_sugerida}"
 
-    aba1, aba2, aba3, aba4, aba5 = st.tabs(["Dados da Ficha", "Células de Carga", "Deductions", "Additions", "Preview"])
+    aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs(["Dados da Ficha", "Células de Carga", "Deductions", "Additions", "Level Correction", "Preview"])
 
     with aba1:
         st.markdown("### Controle de Identificação")
@@ -786,8 +1104,9 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         val_pesagem = pd.to_datetime(linha_existente.get(key_data_pes)).date() if pd.notna(linha_existente.get(key_data_pes)) else datetime.date.today()
         data_pesagem = c4.date_input("Data da pesagem:", value=val_pesagem)
         
-        lopa = campo_com_preset(c5, "LOPA:", linha_existente.get(get_real_col([' LOPA', 'LOPA']), ''), PRESETS["lopa"], f"{form_key}_lopa")
-        config_lopa = campo_com_preset(c6, "Configuração LOPA:", linha_existente.get(get_real_col(['Configuração LOPA ', 'Configuração LOPA']), ''), PRESETS["config_lopa"], f"{form_key}_config_lopa")
+        lopa_inicial, config_lopa_inicial = separar_campos_lopa(linha_existente)
+        lopa = campo_com_preset(c5, "LOPA:", lopa_inicial, PRESETS["lopa"], f"{form_key}_lopa")
+        config_lopa = campo_com_preset(c6, "Configuração LOPA:", config_lopa_inicial, PRESETS["config_lopa"], f"{form_key}_config_lopa")
         
         c7, c8, c9 = st.columns(3)
         vrbl = c7.text_input("VRBL. NUMBER:", value=safe_str(linha_existente.get(get_real_col(['VRBL', 'VRBL NUMBER']), info_aero.get('vrbl', ''))))
@@ -819,11 +1138,50 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         p2_rhm2 = p2_c7.number_input("RH MLG 2 P2", value=safe_float(linha_existente.get(get_real_col(['Peso MLG RH 2 pesagem 2']), 0.0)), step=10.0)
         p2_lhm2 = p2_c8.number_input("LH MLG 2 P2", value=safe_float(linha_existente.get(get_real_col(['Peso MLG LH2 pesagem 2']), 0.0)), step=10.0)
         
-        st.markdown("**Canelas (Inches) e Tail**")
-        can_c1, can_c2, can_c3 = st.columns(3)
-        canela_lh = can_c1.number_input("Canela LH", value=safe_float(linha_existente.get(get_real_col(['Canela MLG LH']), 0.0)), step=0.1)
-        canela_rh = can_c2.number_input("Canela RH", value=safe_float(linha_existente.get(get_real_col(['Canela MLG RH']), 0.0)), step=0.1)
-        tail_val = can_c3.number_input("Tail (Kg)", value=safe_float(linha_existente.get(get_real_col(['Tail']), 0.0)), step=10.0)
+        st.markdown("**Canelas**")
+        unidade_canela_key = f"{form_key}_unidade_canela"
+        unidade_canela_anterior_key = f"{form_key}_unidade_canela_anterior"
+        chave_canela_lh = f"{form_key}_canela_lh"
+        chave_canela_rh = f"{form_key}_canela_rh"
+        st.session_state.setdefault(unidade_canela_key, "in")
+        st.session_state.setdefault(
+            unidade_canela_anterior_key, st.session_state[unidade_canela_key]
+        )
+        fator_unidade = 25.4 if st.session_state[unidade_canela_key] == "mm" else 1.0
+        st.session_state.setdefault(
+            chave_canela_lh,
+            safe_float(linha_existente.get(get_real_col(['Canela MLG LH']), 0.0)) * fator_unidade,
+        )
+        st.session_state.setdefault(
+            chave_canela_rh,
+            safe_float(linha_existente.get(get_real_col(['Canela MLG RH']), 0.0)) * fator_unidade,
+        )
+        unidade_canela = st.radio(
+            "Unidade da canela",
+            ["in", "mm"],
+            horizontal=True,
+            key=unidade_canela_key,
+            on_change=converter_unidade_canela,
+            args=(
+                unidade_canela_key,
+                unidade_canela_anterior_key,
+                (chave_canela_lh, chave_canela_rh),
+            ),
+        )
+        can_c1, can_c2 = st.columns(2)
+        canela_lh_input = can_c1.number_input(
+            f"Canela LH ({unidade_canela})",
+            step=0.1 if unidade_canela == "in" else 1.0,
+            key=chave_canela_lh,
+        )
+        canela_rh_input = can_c2.number_input(
+            f"Canela RH ({unidade_canela})",
+            step=0.1 if unidade_canela == "in" else 1.0,
+            key=chave_canela_rh,
+        )
+        canela_lh = valor_canela_em_polegadas(canela_lh_input, unidade_canela)
+        canela_rh = valor_canela_em_polegadas(canela_rh_input, unidade_canela)
+        tail_val = 0.0
 
     with aba3:
         ded_ex = []
@@ -837,26 +1195,16 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         if not ded_ex:
             ded_ex = [{"Descrição": "Fuel (Usable)", "Peso (Kg)": 0.0, "Braço (in)": 660.5, "Momento (kg.in)": 0.0}]
 
-        df_ded = preparar_tabela_preset(ded_ex, PRESETS["deductions"])
-        st.info("💡 **Dica:** O valor visual do Momento na tabela é calculado com os dados iniciais.")
-        deducoes_editadas = aplicar_descricao_preset(st.data_editor(
-            df_ded,
-            num_rows="dynamic", 
-            use_container_width=True,
-            key=f"{form_key}_deductions",
-            column_config={
-                "Preset": st.column_config.SelectboxColumn(
-                    "Descrição (preset)", options=[""] + PRESETS["deductions"] + [PRESET_OUTRO]
-                ),
-                "Descrição personalizada": st.column_config.TextColumn("Descrição personalizada"),
-                "Momento (kg.in)": st.column_config.NumberColumn(disabled=True),
-            },
-        ))
+        deducoes_editadas = renderizar_editor_itens(
+            st, ded_ex, PRESETS["deductions"], f"{form_key}_deductions"
+        )
 
     with aba4:
-        momento_extra_flaps = 0
-        if tipo_a == "B737-MAX": momento_extra_flaps = 6190
-        elif tipo_a in ["B737-800", "B737-800SFP", "737-800", "B737-700"]: momento_extra_flaps = 5930
+        momento_extra_flaps = momento_flaps_do_registro(linha_existente)
+        if momento_extra_flaps is None:
+            momento_extra_flaps = buscar_momento_flaps_banco(
+                prefixo_selecionado, tipo_a
+            )
 
         add_ex = []
         for i in range(1, 17):
@@ -865,29 +1213,35 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
                 peso = safe_float(linha_existente.get(get_real_col([f'Additions weigth {i}'])))
                 arm = safe_float(linha_existente.get(get_real_col([f'Additions arm {i}'])))
                 m_calc = peso * arm
-                if "Flaps" in str(desc): m_calc += momento_extra_flaps
+                if "flap" in str(desc).casefold(): m_calc += momento_extra_flaps
                 add_ex.append({"Descrição": desc, "Peso (Kg)": peso, "Braço (in)": arm, "Momento (kg.in)": m_calc})
                 
         if not add_ex:
             add_ex = [{"Descrição": "Flaps 0 - 40° (up when weighed)", "Peso (Kg)": 0.0, "Braço (in)": 0.0, "Momento (kg.in)": momento_extra_flaps}]
 
-        df_add = preparar_tabela_preset(add_ex, PRESETS["additions"])
-        st.info(f"💡 **Dica:** O momento do Flap será exibido automaticamente na coluna 'Momento' sempre que houver a palavra 'Flaps' na descrição.")
-        adicoes_editadas = aplicar_descricao_preset(st.data_editor(
-            df_add,
-            num_rows="dynamic", 
-            use_container_width=True,
-            key=f"{form_key}_additions",
-            column_config={
-                "Preset": st.column_config.SelectboxColumn(
-                    "Descrição (preset)", options=[""] + PRESETS["additions"] + [PRESET_OUTRO]
-                ),
-                "Descrição personalizada": st.column_config.TextColumn("Descrição personalizada"),
-                "Momento (kg.in)": st.column_config.NumberColumn(disabled=True),
-            },
-        ))
+        adicoes_editadas = renderizar_editor_itens(
+            st,
+            add_ex,
+            PRESETS["additions"],
+            f"{form_key}_additions",
+            momento_flaps=momento_extra_flaps,
+        )
 
     with aba5:
+        angulo_salvo = normalizar_angulo_level_correction(
+            linha_existente.get(get_real_col(['Graus correção do cg']), '')
+        )
+        opcoes_angulo = [""] + list(LEVEL_CORRECTION_VALUES)
+        angulo_level_correction = st.selectbox(
+            "Ângulo de inclinação",
+            opcoes_angulo,
+            index=opcoes_angulo.index(angulo_salvo),
+            key=f"{form_key}_level_correction",
+        )
+        fator_level_correction = LEVEL_CORRECTION_VALUES.get(angulo_level_correction, 0.0)
+        st.metric("Valor correspondente", f"{fator_level_correction:.1f}")
+
+    with aba6:
         lh_val = (p1_lhm + p1_lhm2 + p2_lhm + p2_lhm2) / 2
         rh_val = (p1_rhm + p1_rhm2 + p2_rhm + p2_rhm2) / 2
         nose_val = ((p1_nlh + p2_nlh) / 2) + ((p1_nrh + p2_nrh) / 2)
@@ -908,14 +1262,21 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
 
         ded_w = deducoes_editadas["Peso (Kg)"].sum() if not deducoes_editadas.empty else 0.0
         ded_m = (deducoes_editadas["Peso (Kg)"] * deducoes_editadas["Braço (in)"]).sum() if not deducoes_editadas.empty else 0.0
+        level_correction_factor, level_correction_moment, level_correction_side = (
+            calcular_level_correction(angulo_level_correction, tot_reg_w)
+        )
+        if level_correction_side == "deductions":
+            ded_m += level_correction_moment
         ded_arm = ded_m / ded_w if ded_w > 0 else 0.0
 
         add_w = adicoes_editadas["Peso (Kg)"].sum() if not adicoes_editadas.empty else 0.0
         add_m = 0.0
         for idx, row in adicoes_editadas.iterrows():
             m = row["Peso (Kg)"] * row["Braço (in)"]
-            if "Flaps" in str(row["Descrição"]): m += momento_extra_flaps
+            if "flap" in str(row["Descrição"]).casefold(): m += momento_extra_flaps
             add_m += m
+        if level_correction_side == "additions":
+            add_m += level_correction_moment
         add_arm = add_m / add_w if add_w > 0 else 0.0
 
         basic_w = tot_reg_w + add_w - ded_w
@@ -924,10 +1285,10 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         cg_mac_val = ((basic_arm - 627.1) / 1.558) if basic_arm > 0 else 0.0
 
         st.dataframe(pd.DataFrame({
-            "Reaction / Item": ["LH", "RH", "NOSE", "TAIL", "TOTAL REGISTERED", "DEDUCTIONS", "ADDITIONS", "AIRCRAFT BASIC WEIGHT"],
-            "Weight (kg)": [lh_val, rh_val, nose_val, tail_val, tot_reg_w, ded_w, add_w, basic_w],
-            "Arm (inch)": [arm_b_lh, arm_b_rh, arm_a, arm_c, tot_reg_arm, ded_arm, add_arm, basic_arm],
-            "Moment (kg x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_m, ded_m, add_m, basic_m]
+            "Reaction / Item": ["LH", "RH", "NOSE", "TAIL", "TOTAL REGISTERED", "LEVEL CORRECTION", "DEDUCTIONS", "ADDITIONS", "AIRCRAFT BASIC WEIGHT"],
+            "Weight (kg)": [lh_val, rh_val, nose_val, tail_val, tot_reg_w, 0.0, ded_w, add_w, basic_w],
+            "Arm (inch)": [arm_b_lh, arm_b_rh, arm_a, arm_c, tot_reg_arm, level_correction_factor, ded_arm, add_arm, basic_arm],
+            "Moment (kg x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_m, level_correction_moment, ded_m, add_m, basic_m]
         }), use_container_width=True, hide_index=True)
         
         c_res1, c_res2 = st.columns(2)
@@ -935,6 +1296,25 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         c_res1.metric("Aircraft Basic Arm", f"{basic_arm:,.4f} in")
         c_res2.metric("C.G. (% MAC)", f"{cg_mac_val:.2f} %")
         
+        deducoes_excel = [
+            {'desc': d["Descrição"], 'w': d["Peso (Kg)"], 'a': d["Braço (in)"], 'm': d["Peso (Kg)"] * d["Braço (in)"]}
+            for d in deducoes_editadas.to_dict('records')
+        ]
+        adicoes_excel = [
+            {'desc': a["Descrição"], 'w': a["Peso (Kg)"], 'a': a["Braço (in)"], 'm': a["Peso (Kg)"] * a["Braço (in)"] + (momento_extra_flaps if "flap" in str(a["Descrição"]).casefold() else 0)}
+            for a in adicoes_editadas.to_dict('records')
+        ]
+        if level_correction_side == "deductions":
+            deducoes_excel.append({
+                'desc': LEVEL_CORRECTION_LABEL, 'w': 0.0,
+                'a': level_correction_factor, 'm': level_correction_moment,
+            })
+        elif level_correction_side == "additions":
+            adicoes_excel.append({
+                'desc': LEVEL_CORRECTION_LABEL, 'w': 0.0,
+                'a': level_correction_factor, 'm': level_correction_moment,
+            })
+
         dados_excel = {
             "prefixo": prefixo_selecionado, "modelo": tipo_a, "pesado_por": pesado_por,
             "local": local, "data": str(data_pesagem), "config_lopa": config_lopa, "lopa": lopa,
@@ -955,8 +1335,8 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
                 'ADDITIONS': {'weight': add_w, 'arm': add_arm, 'moment': add_m},
                 'AIRCRAFT BASIC WEIGHT': {'weight': basic_w, 'arm': basic_arm, 'moment': basic_m}
             },
-            "deductions": [{'desc': d["Descrição"], 'w': d["Peso (Kg)"], 'a': d["Braço (in)"], 'm': d["Peso (Kg)"]*d["Braço (in)"]} for d in deducoes_editadas.to_dict('records')],
-            "additions": [{'desc': a["Descrição"], 'w': a["Peso (Kg)"], 'a': a["Braço (in)"], 'm': (a["Peso (Kg)"]*a["Braço (in)"]) + (momento_extra_flaps if "Flaps" in str(a["Descrição"]) else 0)} for a in adicoes_editadas.to_dict('records')]
+            "deductions": deducoes_excel,
+            "additions": adicoes_excel
         }
         
         st.session_state['excel_data_temp'] = gerar_excel_por_template(dados_excel, "exemplo_ficha.xlsx")
@@ -993,6 +1373,16 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
     novo_registro[get_real_col(['Canela MLG LH'])] = canela_lh
     novo_registro[get_real_col(['Canela MLG RH'])] = canela_rh
     novo_registro[get_real_col(['Tail'])] = tail_val
+    novo_registro[get_real_col(['Adction LAP'])] = (
+        momento_extra_flaps
+        if any("flap" in str(descricao).casefold() for descricao in adicoes_editadas["Descrição"])
+        else 0.0
+    )
+    novo_registro[get_real_col(['Graus correção do cg'])] = angulo_level_correction or None
+    novo_registro[get_real_col(['Braço correspondente '])] = (
+        LEVEL_CORRECTION_VALUES[angulo_level_correction]
+        if angulo_level_correction else None
+    )
     
     for i in range(1, 16):
         novo_registro[get_real_col([f'Deductions description {i}'])] = None
