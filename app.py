@@ -792,9 +792,9 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
 
     # ADDITIONS
     adicoes = dados.get('additions', [])
-    for idx in range(96, 127):
-        if (idx - 96) < len(adicoes):
-            a = adicoes[idx - 96]
+    for idx in range(95, 126):
+        if (idx - 95) < len(adicoes):
+            a = adicoes[idx - 95]
             desc = a.get('desc', '')
             w_val = a.get('w', 0.0)
             a_val = a.get('a', 0.0)
