@@ -808,14 +808,14 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
         set_cell_value(ws, idx, 'Z', m_val)
 
     for celula, chave in (
-        ("I51", "assinatura_emissor"),
-        ("U51", "assinatura_aprovador"),
+        ("I50", "assinatura_emissor"),
+        ("U50", "assinatura_aprovador"),
     ):
         assinatura = dados.get(chave)
         if assinatura:
             imagem = ExcelImage(io.BytesIO(assinatura))
             escala = min(180 / imagem.width, 54 / imagem.height, 1.5)
-            imagem.width = int(imagem.width * escala)
+            imagem.width = int(imagem.width * escala * 1.5)
             imagem.height = int(imagem.height * escala)
             imagem.anchor = celula
             ws.add_image(imagem)
