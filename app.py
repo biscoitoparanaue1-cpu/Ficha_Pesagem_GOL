@@ -322,10 +322,10 @@ def inicializar_controle_acesso():
         usuario_existente = conn.execute('SELECT 1 FROM usuarios LIMIT 1').fetchone()
         if not usuario_existente:
             senha_inicial = obter_senha_admin_inicial()
-            if not senha_inicial or len(senha_inicial) < 12:
+            if not senha_inicial:
                 st.error(
-                    "Configure INITIAL_ADMIN_PASSWORD com pelo menos 12 caracteres "
-                    "em Streamlit Secrets para criar o primeiro usuário de Engenharia."
+                    "Configure INITIAL_ADMIN_PASSWORD em Streamlit Secrets "
+                    "para criar o primeiro usuário de Engenharia."
                 )
             else:
                 salt = secrets.token_hex(16)
@@ -339,16 +339,6 @@ def inicializar_controle_acesso():
                     ('engenharia', 'Engenharia GOL', senha_hash, salt, 1,
                      datetime.datetime.now(datetime.timezone.utc).isoformat())
                 )
-        elif not obter_senha_admin_inicial():
-            usuario_admin = conn.execute(
-                'SELECT 1 FROM usuarios WHERE usuario = ?', ('engenharia',)
-            ).fetchone()
-            if usuario_admin:
-                st.warning(
-                    "Configure INITIAL_ADMIN_PASSWORD em Streamlit Secrets para "
-                    "ativar o acesso inicial de Engenharia."
-                )
-
 def autenticar_usuario(usuario, senha):
     with sqlite3.connect('aeronaves.db') as conn:
         conn.row_factory = sqlite3.Row
@@ -365,7 +355,6 @@ def autenticar_usuario(usuario, senha):
         if (
             registro['usuario'].casefold() != 'engenharia'
             or not senha_inicial
-            or len(senha_inicial) < 12
             or not hmac.compare_digest(senha, senha_inicial)
         ):
             return None
