@@ -46,6 +46,15 @@ def safe_identifier(val):
     return str(val).strip()
 
 
+def normalizar_chave_ficha(valor):
+    valor = safe_str(valor)
+    try:
+        numero = float(valor)
+    except (TypeError, ValueError):
+        return valor
+    return str(int(numero)) if numero.is_integer() else format(numero, "g")
+
+
 def momento_flaps_do_registro(registro):
     descricoes_flaps = [
         safe_str(registro.get(f"Additions Description {indice}", ""))
@@ -135,6 +144,83 @@ def separar_campos_lopa(registro):
         (valor for valor in valores if not valor.upper().startswith("GLP-")), ""
     )
     return codigo_lopa, configuracao
+
+
+def obter_campos_sinalizaveis_ficha(registro):
+    grupos = {
+        "Dados da ficha": [],
+        "Células de carga": [],
+        "Deductions": [],
+        "Additions": [],
+    }
+    lopa, config_lopa = separar_campos_lopa(registro)
+    campos_gerais = [
+        ("Data da ficha", "Data de emissão", registro.get("Data da ficha", "")),
+        ("Pesado Por", "Pesado por", registro.get("Pesado Por", registro.get("WEIGHED BY", ""))),
+        ("Local da pesagem", "Local da pesagem", registro.get("Local da pesagem", "")),
+        ("Data_da_Pesagem", "Data da pesagem", registro.get("Data_da_Pesagem", "")),
+        ("lopa", "LOPA", lopa),
+        ("config_lopa", "Configuração LOPA", config_lopa),
+        ("Motivo", "Razão para emissão", registro.get("Motivo", "")),
+        ("VRBL", "VRBL NUMBER", registro.get("VRBL", "")),
+        ("SERIAL", "SERIAL NUMBER", registro.get("SERIAL", "")),
+        ("LINE", "LINE NUMBER", registro.get("LINE", "")),
+    ]
+    for campo, rotulo, valor in campos_gerais:
+        valor = safe_str(valor)
+        if valor:
+            grupos["Dados da ficha"].append((campo, f"{rotulo}: {valor}"))
+
+    campos_pesagem = [
+        ("Peso nariz LH", "Nariz LH"),
+        ("Peso Nariz RH", "Nariz RH"),
+        ("Peso MLG RH 1 ", "RH MLG 1"),
+        ("Peso MLG LH 1", "LH MLG 1"),
+        ("Peso MLG RH 2", "RH MLG 2"),
+        ("Peso MLG LH2", "LH MLG 2"),
+        ("Peso nariz LH pesagem 2", "Nariz LH P2"),
+        ("Peso Nariz RH pesagem 2", "Nariz RH P2"),
+        ("Peso MLG RH 1  pesagem 2", "RH MLG 1 P2"),
+        ("Peso MLG LH 1 pesagem 2", "LH MLG 1 P2"),
+        ("Peso MLG RH 2 pesagem 2", "RH MLG 2 P2"),
+        ("Peso MLG LH2 pesagem 2", "LH MLG 2 P2"),
+        ("Canela MLG LH", "Canela LH (in)"),
+        ("Canela MLG RH", "Canela RH (in)"),
+    ]
+    for campo, rotulo in campos_pesagem:
+        valor = safe_str(registro.get(campo, ""))
+        if valor:
+            grupos["Células de carga"].append((campo, f"{rotulo}: {valor}"))
+
+    for indice in range(1, 17):
+        descricao = safe_str(registro.get(f"Additions Description {indice}", ""))
+        if descricao:
+            for sufixo, rotulo in (
+                ("Description", "descrição"),
+                ("weigth", "peso"),
+                ("arm", "braço"),
+            ):
+                campo = f"Additions {sufixo} {indice}"
+                valor = safe_str(registro.get(campo, "")) or "vazio"
+                grupos["Additions"].append(
+                    (campo, f"Item {indice}, {rotulo}: {valor}")
+                )
+
+    for indice in range(1, 16):
+        descricao = safe_str(registro.get(f"Deductions description {indice}", ""))
+        if descricao:
+            for sufixo, rotulo in (
+                ("description", "descrição"),
+                ("Weigth", "peso"),
+                ("arm", "braço"),
+            ):
+                campo = f"Deductions {sufixo} {indice}"
+                valor = safe_str(registro.get(campo, "")) or "vazio"
+                grupos["Deductions"].append(
+                    (campo, f"Item {indice}, {rotulo}: {valor}")
+                )
+
+    return grupos
 
 
 LEVEL_CORRECTION_VALUES = {
@@ -319,6 +405,18 @@ def inicializar_controle_acesso():
                 PRIMARY KEY (prefixo, pesagem, revisao)
             )
         ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS campos_com_erro (
+                prefixo TEXT NOT NULL,
+                pesagem TEXT NOT NULL,
+                revisao TEXT NOT NULL,
+                campo TEXT NOT NULL,
+                descricao TEXT NOT NULL,
+                marcado_por TEXT,
+                marcado_em TEXT NOT NULL,
+                PRIMARY KEY (prefixo, pesagem, revisao, campo)
+            )
+        ''')
         usuario_existente = conn.execute('SELECT 1 FROM usuarios LIMIT 1').fetchone()
         if not usuario_existente:
             senha_inicial = obter_senha_admin_inicial()
@@ -459,6 +557,62 @@ def carregar_fluxos_fichas():
         for registro in registros
     }
 
+
+def carregar_campos_com_erro(prefixo, pesagem, revisao):
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.row_factory = sqlite3.Row
+        registros = conn.execute(
+            '''SELECT campos_com_erro.campo, campos_com_erro.descricao,
+                      campos_com_erro.marcado_por, usuarios.nome AS marcador_nome
+               FROM campos_com_erro
+               LEFT JOIN usuarios ON usuarios.usuario = campos_com_erro.marcado_por
+               WHERE prefixo = ? AND pesagem = ? AND revisao = ?
+               ORDER BY campo''',
+            (
+                safe_str(prefixo),
+                normalizar_chave_ficha(pesagem),
+                normalizar_chave_ficha(revisao),
+            ),
+        ).fetchall()
+    return [dict(registro) for registro in registros]
+
+
+def salvar_campos_com_erro(prefixo, pesagem, revisao, campos, usuario):
+    agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    chave = (
+        safe_str(prefixo),
+        normalizar_chave_ficha(pesagem),
+        normalizar_chave_ficha(revisao),
+    )
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.execute(
+            '''DELETE FROM campos_com_erro
+               WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
+            chave,
+        )
+        conn.executemany(
+            '''INSERT INTO campos_com_erro
+               (prefixo, pesagem, revisao, campo, descricao, marcado_por, marcado_em)
+               VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            [
+                (*chave, campo, descricao, usuario, agora)
+                for campo, descricao in campos.items()
+            ],
+        )
+
+
+def limpar_campos_com_erro(prefixo, pesagem, revisao):
+    with sqlite3.connect('aeronaves.db') as conn:
+        conn.execute(
+            '''DELETE FROM campos_com_erro
+               WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
+            (
+                safe_str(prefixo),
+                normalizar_chave_ficha(pesagem),
+                normalizar_chave_ficha(revisao),
+            ),
+        )
+
 def aprovar_ficha(prefixo, pesagem, revisao, usuario):
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with sqlite3.connect('aeronaves.db') as conn:
@@ -590,10 +744,16 @@ def tela_consulta():
                 linha = df_filtrado[(df_filtrado['Pesagem'] == pesagem) & (df_filtrado['Revisao'] == revisao)].iloc[0]
                 renderizar_ficha_visualizacao(prefixo, pesagem, revisao, linha)
 
-def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
+def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row, modo_aprovacao=False):
     st.subheader(f"Ficha Técnica: {prefixo} (Pesagem: {pesagem} | Revisão: {revisao})")
     fluxo = buscar_fluxo_ficha(prefixo, pesagem, revisao)
     st.caption(f"Gerada por: {fluxo['gerador_nome']} | Aprovada por: {fluxo['aprovador_nome']}")
+    campos_pendentes = carregar_campos_com_erro(prefixo, pesagem, revisao)
+    if campos_pendentes:
+        st.warning(
+            f"Ficha devolvida ao emissor ({fluxo['gerador_nome']}) para correção: "
+            + "; ".join(campo['descricao'] for campo in campos_pendentes)
+        )
     aba1, aba2, aba3, aba4, aba5 = st.tabs(["Dados Gerais", "Células de Carga", "Deductions", "Additions", "Weighing Report"])
     info_aero = dict_tipos_aeronave.get(prefixo, {})
     lopa, config_lopa = separar_campos_lopa(row)
@@ -821,6 +981,21 @@ def renderizar_ficha_visualizacao(prefixo, pesagem, revisao, row):
             file_name=f"{prefixo}_Weighing_Report.xlsx", 
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
+        if modo_aprovacao:
+            st.divider()
+            st.subheader("Aprovação")
+            if campos_pendentes:
+                st.error("A aprovação está bloqueada até o emissor corrigir os campos sinalizados.")
+            elif fluxo['gerador_usuario'] == st.session_state['usuario_id']:
+                st.warning("Quem emitiu a ficha não pode aprová-la.")
+            elif st.button(
+                "Aprovar ficha",
+                type="primary",
+                key=f"aprovar_{prefixo}_{pesagem}_{revisao}",
+            ):
+                aprovar_ficha(prefixo, pesagem, revisao, st.session_state['usuario_id'])
+                st.rerun()
 
 # Função auxiliar para mapear as colunas corretas do Banco de Dados
 def get_real_col(possible_names):
@@ -1090,7 +1265,14 @@ def formulario_pesagem(prefixo_selecionado, p_sugerida, r_sugerida, p_anterior, 
         
         c4, c5, c6 = st.columns(3)
         key_data_pes = get_real_col(['Data_da_Pesagem', 'Data da ficha'])
-        val_pesagem = pd.to_datetime(linha_existente.get(key_data_pes)).date() if pd.notna(linha_existente.get(key_data_pes)) else datetime.date.today()
+        data_pesagem_existente = pd.to_datetime(
+            linha_existente.get(key_data_pes), errors="coerce", dayfirst=True
+        )
+        val_pesagem = (
+            data_pesagem_existente.date()
+            if pd.notna(data_pesagem_existente)
+            else datetime.date.today()
+        )
         data_pesagem = c4.date_input("Data da pesagem:", value=val_pesagem)
         
         lopa_inicial, config_lopa_inicial = separar_campos_lopa(linha_existente)
@@ -1451,6 +1633,16 @@ def tela_nova_ficha():
             p_ant = 0
             r_ant = 0
 
+        if p_ant > 0:
+            campos_pendentes = carregar_campos_com_erro(prefixo, p_ant, r_ant)
+            if campos_pendentes:
+                emissor = buscar_fluxo_ficha(prefixo, p_ant, r_ant)['gerador_nome']
+                st.warning(
+                    f"A revisão anterior foi devolvida ao emissor ({emissor}). "
+                    "Campos a corrigir: "
+                    + "; ".join(campo['descricao'] for campo in campos_pendentes)
+                )
+
         if st.checkbox(
             "Definir número da Pesagem e Revisão manualmente",
             key=f"numeracao_manual_{prefixo}",
@@ -1493,6 +1685,10 @@ def tela_nova_ficha():
                     pd.DataFrame([novo_registro]).to_sql('pesagens', conn, if_exists='append', index=False)
                     conn.close()
                     registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
+                    if int(p_final) == int(p_ant) and int(r_final) == int(r_ant) + 1:
+                        fluxo_origem = buscar_fluxo_ficha(prefixo, p_ant, r_ant)
+                        if fluxo_origem['gerador_usuario'] == st.session_state['usuario_id']:
+                            limpar_campos_com_erro(prefixo, p_ant, r_ant)
                     st.cache_data.clear()
                     st.success("Ficha cadastrada com sucesso.")
         with col_btn2:
@@ -1519,6 +1715,46 @@ def tela_edicao():
                 linha_atual = df_filtrado[(df_filtrado['Pesagem'] == pesagem) & (df_filtrado['Revisao'] == revisao)].iloc[0].to_dict()
                 linha_atual.pop('Pesagem_num', None)
                 linha_atual.pop('Revisao_num', None)
+
+                grupos_campos = obter_campos_sinalizaveis_ficha(linha_atual)
+                sinalizacoes_atuais = {
+                    campo['campo']: campo
+                    for campo in carregar_campos_com_erro(prefixo, pesagem, revisao)
+                }
+                with st.expander("Sinalizar campos com erro", expanded=bool(sinalizacoes_atuais)):
+                    with st.form(f"form_sinalizar_{prefixo}_{pesagem}_{revisao}"):
+                        campos_marcados = {}
+                        for grupo, campos in grupos_campos.items():
+                            if not campos:
+                                continue
+                            st.markdown(f"**{grupo}**")
+                            colunas_checkboxes = st.columns(2)
+                            for indice, (campo, rotulo) in enumerate(campos):
+                                campos_marcados[campo] = colunas_checkboxes[indice % 2].checkbox(
+                                    rotulo,
+                                    value=campo in sinalizacoes_atuais,
+                                    key=f"erro_{prefixo}_{pesagem}_{revisao}_{campo}",
+                                )
+                        salvar_sinalizacoes = st.form_submit_button(
+                            "Salvar campos sinalizados"
+                        )
+
+                    if salvar_sinalizacoes:
+                        campos_selecionados = {
+                            campo: rotulo
+                            for campos in grupos_campos.values()
+                            for campo, rotulo in campos
+                            if campos_marcados.get(campo, False)
+                        }
+                        salvar_campos_com_erro(
+                            prefixo,
+                            pesagem,
+                            revisao,
+                            campos_selecionados,
+                            st.session_state['usuario_id'],
+                        )
+                        st.success("Campos sinalizados; o emissor verá a solicitação nesta ficha.")
+                        st.rerun()
                 
                 u_pes = int(safe_float(linha_atual.get('Pesagem', 1)))
                 u_rev = int(safe_float(linha_atual.get('Revisao', 0)))
@@ -1534,12 +1770,15 @@ def tela_edicao():
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.button("Salvar Nova Revisão", type="primary", use_container_width=True):
+                        fluxo_origem = buscar_fluxo_ficha(prefixo, pesagem, revisao)
                         novo_registro['Pesagem'] = str(int(p_final))
                         novo_registro['Revisao'] = str(int(r_final))
                         conn = sqlite3.connect('aeronaves.db')
                         pd.DataFrame([novo_registro]).to_sql('pesagens', conn, if_exists='append', index=False)
                         conn.close()
                         registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
+                        if fluxo_origem['gerador_usuario'] == st.session_state['usuario_id']:
+                            limpar_campos_com_erro(prefixo, pesagem, revisao)
                         st.cache_data.clear()
                         st.success("Revisão salva com sucesso.")
                 with col_btn2:
@@ -1605,16 +1844,24 @@ def tela_aprovar_fichas():
         st.success("Todas as fichas desta aeronave estão aprovadas.")
         return
 
-    selecionada = st.selectbox("Ficha pendente", list(opcoes))
+    selecionada = st.selectbox(
+        "Ficha pendente",
+        list(opcoes),
+        key="ficha_pendente_aprovacao",
+    )
     prefixo, pesagem, revisao = opcoes[selecionada]
-    fluxo = buscar_fluxo_ficha(prefixo, pesagem, revisao)
-    st.write(f"Gerada por: {fluxo['gerador_nome']}")
-    if fluxo['gerador_usuario'] == st.session_state['usuario_id']:
-        st.warning("Quem gerou a ficha não pode aprová-la.")
-    elif st.button("Aprovar ficha", type="primary"):
-        aprovar_ficha(prefixo, pesagem, revisao, st.session_state['usuario_id'])
-        st.success("Ficha aprovada.")
-        st.rerun()
+    ficha_selecionada = df_historico.loc[
+        (df_historico['Prefixo'].astype(str) == prefixo)
+        & (df_historico['Pesagem'].astype(str) == pesagem)
+        & (df_historico['Revisao'].astype(str) == revisao)
+    ].iloc[0]
+    renderizar_ficha_visualizacao(
+        prefixo,
+        pesagem,
+        revisao,
+        ficha_selecionada,
+        modo_aprovacao=True,
+    )
 
 def excluir_ficha(prefixo, pesagem, revisao):
     with sqlite3.connect('aeronaves.db') as conn:
@@ -1634,6 +1881,11 @@ def excluir_ficha(prefixo, pesagem, revisao):
         if quantidade:
             conn.execute(
                 '''DELETE FROM fluxo_fichas
+                   WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
+                (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
+            )
+            conn.execute(
+                '''DELETE FROM campos_com_erro
                    WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
                 (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
             )
