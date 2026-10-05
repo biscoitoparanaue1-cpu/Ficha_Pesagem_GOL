@@ -304,27 +304,75 @@ def conectar_banco():
     return ConexaoPostgreSQL()
 
 
-def inserir_ficha(registro):
-    def normalizar_json(valor):
-        if valor is None:
-            return None
-        if isinstance(valor, dict):
-            return {str(chave): normalizar_json(item) for chave, item in valor.items()}
-        if isinstance(valor, (list, tuple)):
-            return [normalizar_json(item) for item in valor]
-        if hasattr(valor, "item"):
-            return normalizar_json(valor.item())
-        if pd.isna(valor):
-            return None
-        if isinstance(valor, (datetime.date, datetime.datetime)):
-            return valor.isoformat()
-        return valor
+def normalizar_valor_json(valor):
+    if valor is None:
+        return None
+    if isinstance(valor, dict):
+        return {
+            str(chave): normalizar_valor_json(item)
+            for chave, item in valor.items()
+        }
+    if isinstance(valor, (list, tuple)):
+        return [normalizar_valor_json(item) for item in valor]
+    if hasattr(valor, "item"):
+        return normalizar_valor_json(valor.item())
+    if pd.isna(valor):
+        return None
+    if isinstance(valor, (datetime.date, datetime.datetime)):
+        return valor.isoformat()
+    return valor
 
+
+def inserir_ficha(registro):
     with conectar_banco() as conn:
         conn.execute(
             "INSERT INTO pesagens (dados) VALUES (CAST(? AS JSONB))",
-            (json.dumps(normalizar_json(registro), ensure_ascii=False, allow_nan=False),),
+            (
+                json.dumps(
+                    normalizar_valor_json(registro),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ),
+            ),
         )
+
+
+def atualizar_ficha(prefixo, pesagem, revisao, registro):
+    with conectar_banco() as conn:
+        registros = conn.execute(
+            """SELECT id, dados FROM pesagens
+               WHERE dados->>'Prefixo' = ?
+               ORDER BY id DESC""",
+            (safe_str(prefixo),),
+        ).fetchall()
+        id_ficha = next(
+            (
+                item["id"]
+                for item in registros
+                if normalizar_chave_ficha(item["dados"].get("Pesagem", ""))
+                == normalizar_chave_ficha(pesagem)
+                and normalizar_chave_ficha(
+                    item["dados"].get("Revisao", item["dados"].get("revisao", ""))
+                )
+                == normalizar_chave_ficha(revisao)
+            ),
+            None,
+        )
+        if id_ficha is None:
+            return False
+
+        resultado = conn.execute(
+            "UPDATE pesagens SET dados = CAST(? AS JSONB) WHERE id = ?",
+            (
+                json.dumps(
+                    normalizar_valor_json(registro),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ),
+                id_ficha,
+            ),
+        )
+    return resultado.rowcount == 1
 
 
 @st.cache_data
@@ -2153,16 +2201,8 @@ def tela_nova_ficha():
             linha_base.pop('Revisao_num', None)
             p_ant = int(correcao_selecionada["pesagem_num"])
             r_ant = int(correcao_selecionada["revisao_num"])
-            revisoes_existentes = df_aero.loc[
-                df_aero['Pesagem_num'] == p_ant,
-                'Revisao_num',
-            ]
             p_nova = p_ant
-            r_nova = (
-                int(revisoes_existentes.max()) + 1
-                if not revisoes_existentes.empty
-                else r_ant + 1
-            )
+            r_nova = r_ant
             campos_correcao = {
                 campo["campo"] for campo in correcao_selecionada["erros"]
             }
@@ -2258,21 +2298,31 @@ def tela_nova_ficha():
                         & (df_aero['Revisao_num'] == int(r_final))
                     ).any()
 
-                if ficha_existente:
+                novo_registro['Pesagem'] = str(int(p_final))
+                novo_registro['Revisao'] = str(int(r_final))
+                if correcao_selecionada:
+                    if not atualizar_ficha(prefixo, p_final, r_final, novo_registro):
+                        st.error(
+                            "Não foi possível localizar a ficha original para "
+                            "salvar a correção. Atualize a página e tente novamente."
+                        )
+                    else:
+                        registrar_ficha(
+                            prefixo,
+                            p_final,
+                            r_final,
+                            st.session_state['usuario_id'],
+                        )
+                        limpar_campos_com_erro(prefixo, p_ant, r_ant)
+                        st.cache_data.clear()
+                        st.success("Ficha corrigida e enviada para aprovação.")
+                elif ficha_existente:
                     st.error(f"Já existe uma ficha para {prefixo}, Pesagem {int(p_final)}, Revisão {int(r_final)}.")
                 else:
-                    novo_registro['Pesagem'] = str(int(p_final))
-                    novo_registro['Revisao'] = str(int(r_final))
                     inserir_ficha(novo_registro)
                     registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
-                    if correcao_selecionada:
-                        limpar_campos_com_erro(prefixo, p_ant, r_ant)
                     st.cache_data.clear()
-                    st.success(
-                        "Ficha corrigida e enviada para aprovação."
-                        if correcao_selecionada
-                        else "Ficha cadastrada com sucesso."
-                    )
+                    st.success("Ficha cadastrada com sucesso.")
         with col_btn2:
             st.download_button(label="Exportar Prévia para Excel", data=st.session_state.get('excel_data_temp', b''), file_name=f"{prefixo}_Preview.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
