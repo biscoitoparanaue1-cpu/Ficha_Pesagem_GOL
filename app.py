@@ -406,6 +406,13 @@ def carregar_dados_banco():
         df['Revisao'] = df['Revisao'].astype(str)
     return df
 
+
+def invalidar_cache_fichas():
+    carregar_dados_banco.clear()
+    buscar_momento_flaps_banco.clear()
+    listar_fichas_pendentes.clear()
+
+
 @st.cache_data
 def carregar_tipos_aeronave():
     excel_path = 'Cópia de Ficha_Pesagem_v2.xlsm'
@@ -474,6 +481,7 @@ def obter_senha_admin_inicial():
         return None
 
 
+@st.cache_resource
 def inicializar_controle_acesso():
     with conectar_banco() as conn:
         conn.execute('''
@@ -610,6 +618,7 @@ def listar_usuarios_assinaturas():
     return [dict(registro) for registro in registros]
 
 
+@st.cache_data(ttl=60)
 def carregar_assinatura_usuario(usuario):
     if not usuario:
         return None
@@ -632,6 +641,7 @@ def salvar_assinatura_usuario(usuario, imagem_png):
                    atualizado_em = excluded.atualizado_em''',
             (usuario, imagem_png, agora),
         )
+    carregar_assinatura_usuario.clear()
 
 
 def remover_assinatura_usuario(usuario):
@@ -640,6 +650,7 @@ def remover_assinatura_usuario(usuario):
             'DELETE FROM assinaturas_usuarios WHERE usuario = ?',
             (usuario,),
         )
+    carregar_assinatura_usuario.clear()
 
 
 def normalizar_imagem_assinatura(imagem):
@@ -678,7 +689,10 @@ def registrar_ficha(prefixo, pesagem, revisao, usuario):
                    aprovado_em = NULL''',
             (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora)
         )
+    buscar_fluxo_ficha.clear()
+    listar_fichas_pendentes.clear()
 
+@st.cache_data(ttl=30)
 def buscar_fluxo_ficha(prefixo, pesagem, revisao):
     with conectar_banco() as conn:
         registro = conn.execute(
@@ -745,6 +759,7 @@ def carregar_fluxos_fichas():
     }
 
 
+@st.cache_data(ttl=30)
 def carregar_campos_com_erro(prefixo, pesagem, revisao):
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -763,6 +778,7 @@ def carregar_campos_com_erro(prefixo, pesagem, revisao):
     return [dict(registro) for registro in registros]
 
 
+@st.cache_data(ttl=30)
 def listar_fichas_pendentes():
     fluxos = carregar_fluxos_fichas()
     with conectar_banco() as conn:
@@ -862,6 +878,8 @@ def salvar_campos_com_erro(prefixo, pesagem, revisao, campos, usuario):
                 for campo, descricao in campos.items()
             ],
         )
+    carregar_campos_com_erro.clear()
+    listar_fichas_pendentes.clear()
 
 
 def limpar_campos_com_erro(prefixo, pesagem, revisao):
@@ -875,6 +893,8 @@ def limpar_campos_com_erro(prefixo, pesagem, revisao):
                 normalizar_chave_ficha(revisao),
             ),
         )
+    carregar_campos_com_erro.clear()
+    listar_fichas_pendentes.clear()
 
 def aprovar_ficha(prefixo, pesagem, revisao, usuario):
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -888,17 +908,24 @@ def aprovar_ficha(prefixo, pesagem, revisao, usuario):
                    aprovado_em = excluded.aprovado_em''',
             (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora, agora)
         )
+    buscar_fluxo_ficha.clear()
+    listar_fichas_pendentes.clear()
 
 inicializar_controle_acesso()
-df_historico = carregar_dados_banco()
+df_historico = (
+    carregar_dados_banco()
+    if st.session_state["usuario_logado"]
+    else pd.DataFrame(columns=["Prefixo", "Pesagem", "Revisao"])
+)
 
 # 3. FUNÇÃO DE EXPORTAÇÃO PARA EXCEL
 def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
     try:
         wb = openpyxl.load_workbook(caminho_template)
-    except FileNotFoundError:
-        st.error(f"O arquivo de template '{caminho_template}' não foi encontrado na pasta.")
-        return b""
+    except FileNotFoundError as erro:
+        raise FileNotFoundError(
+            f"O arquivo de template '{caminho_template}' não foi encontrado na pasta."
+        ) from erro
 
     ws = wb['Ficha de pesagem - Template']
     
@@ -1407,9 +1434,6 @@ def renderizar_ficha_visualizacao(
             fluxo['aprovador_usuario']
         )
         
-        excel_data = gerar_excel_por_template(dados_excel, "exemplo_ficha.xlsx")
-        st.session_state['excel_data_temp'] = excel_data
-
         if modo_aprovacao:
             st.divider()
             st.subheader("Campos marcados para correção")
@@ -1480,7 +1504,9 @@ def renderizar_ficha_visualizacao(
             coluna_excel, coluna_aprovacao = st.columns(2)
             coluna_excel.download_button(
                 label="Exportar para Excel (Padrão Oficial)",
-                data=excel_data,
+                data=lambda: gerar_excel_por_template(
+                    dados_excel, "exemplo_ficha.xlsx"
+                ),
                 file_name=f"{prefixo}_Weighing_Report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
@@ -1502,7 +1528,9 @@ def renderizar_ficha_visualizacao(
         else:
             st.download_button(
                 label="Exportar para Excel (Padrão Oficial)",
-                data=excel_data,
+                data=lambda: gerar_excel_por_template(
+                    dados_excel, "exemplo_ficha.xlsx"
+                ),
                 file_name=f"{prefixo}_Weighing_Report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
@@ -2092,7 +2120,7 @@ def formulario_pesagem(
         )
         dados_excel["assinatura_aprovador"] = None
         
-        st.session_state['excel_data_temp'] = gerar_excel_por_template(dados_excel, "exemplo_ficha.xlsx")
+        st.session_state["dados_excel_temp"] = dados_excel
 
     # Mapeamento 100% seguro para evitar o Database Error
     novo_registro = linha_existente.copy()
@@ -2343,17 +2371,26 @@ def tela_nova_ficha():
                             st.session_state['usuario_id'],
                         )
                         limpar_campos_com_erro(prefixo, p_ant, r_ant)
-                        st.cache_data.clear()
+                        invalidar_cache_fichas()
                         st.success("Ficha corrigida e enviada para aprovação.")
                 elif ficha_existente:
                     st.error(f"Já existe uma ficha para {prefixo}, Pesagem {int(p_final)}, Revisão {int(r_final)}.")
                 else:
                     inserir_ficha(novo_registro)
                     registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
-                    st.cache_data.clear()
+                    invalidar_cache_fichas()
                     st.success("Ficha cadastrada com sucesso.")
         with col_btn2:
-            st.download_button(label="Exportar Prévia para Excel", data=st.session_state.get('excel_data_temp', b''), file_name=f"{prefixo}_Preview.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            st.download_button(
+                label="Exportar Prévia para Excel",
+                data=lambda: gerar_excel_por_template(
+                    st.session_state["dados_excel_temp"],
+                    "exemplo_ficha.xlsx",
+                ),
+                file_name=f"{prefixo}_Preview.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
 def tela_edicao():
     st.title("Editar Ficha Existente")
@@ -2398,10 +2435,19 @@ def tela_edicao():
                         registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
                         if fluxo_origem['gerador_usuario'] == st.session_state['usuario_id']:
                             limpar_campos_com_erro(prefixo, pesagem, revisao)
-                        st.cache_data.clear()
+                        invalidar_cache_fichas()
                         st.success("Revisão salva com sucesso.")
                 with col_btn2:
-                    st.download_button(label="Exportar Revisão para Excel", data=st.session_state.get('excel_data_temp', b''), file_name=f"{prefixo}_Revisao_{r_final}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                    st.download_button(
+                        label="Exportar Revisão para Excel",
+                        data=lambda: gerar_excel_por_template(
+                            st.session_state["dados_excel_temp"],
+                            "exemplo_ficha.xlsx",
+                        ),
+                        file_name=f"{prefixo}_Revisao_{r_final}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
 
 def tela_criar_login():
     if st.session_state['nivel_acesso'] != 1:
@@ -2642,7 +2688,7 @@ def tela_excluir_ficha():
         else:
             removidas = excluir_ficha(prefixo, pesagem, revisao)
             if removidas:
-                st.cache_data.clear()
+                invalidar_cache_fichas()
                 st.success(f"Ficha excluída. Registros removidos: {removidas}.")
                 st.rerun()
             else:
