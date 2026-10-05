@@ -2375,7 +2375,9 @@ def tela_nova_ficha():
     if prefixo:
         st.divider()
         df_aero = carregar_fichas_prefixo(prefixo)
-        st.session_state["historico_colunas"] = tuple(df_aero.columns)
+        st.session_state["historico_colunas"] = tuple(
+            df_aero.columns if not df_aero.empty else df_historico.columns
+        )
         if not df_aero.empty:
             df_aero['Pesagem_num'] = pd.to_numeric(
                 df_aero['Pesagem'], errors='coerce'
