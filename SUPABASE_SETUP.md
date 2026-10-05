@@ -33,6 +33,11 @@ O app não importa `aeronaves.db` automaticamente. Para executar uma importaçã
    ```
 
    Sem `--apply`, o script apenas valida e não grava dados.
+   Se a validação falhar, não use `--apply`: confira o detalhe do erro. Erros
+   como `could not translate host name` indicam host incorreto; `timeout` ou
+   `connection refused` geralmente indicam rede, porta ou pooler; `password
+   authentication failed` indica credencial incorreta. Não compartilhe a URI
+   nem a senha. O detalhe impresso pelo script omite credenciais.
 3. Se a validação confirmar a origem e a conexão, execute a importação:
 
    ```bash
@@ -41,5 +46,12 @@ O app não importa `aeronaves.db` automaticamente. Para executar uma importaçã
    ```
 
    A operação é transacional, importa fichas e os dados relacionados, preserva registros conflitantes nas tabelas auxiliares e cancela se o Supabase já tiver fichas, evitando duplicar ou misturar históricos. Em caso de erro, a transação é revertida. Depois, reinicie o app para atualizar o histórico em cache.
+
+4. No Streamlit Community Cloud, confirme em **Settings → Secrets** que
+   `[connections.postgresql].url` aponta para o mesmo banco/projeto Supabase
+   usado na importação. A variável `SUPABASE_DATABASE_URL` definida no
+   terminal de migração não configura os Secrets do app publicado. Salve os
+   Secrets e reinicie o app; se a consulta continuar vazia, confira novamente
+   o host/projeto configurado sem compartilhar a URI.
 
 Se não for possível conectar, execute os comandos em uma rede que alcance o host PostgreSQL configurado. Não cole a URI nem a senha no chat.

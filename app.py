@@ -387,7 +387,7 @@ def atualizar_ficha(prefixo, pesagem, revisao, registro):
     return resultado.rowcount == 1
 
 
-@st.cache_data
+@st.cache_data(ttl=60)
 def carregar_dados_banco():
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -1004,6 +1004,19 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
 
 def tela_consulta():
     st.title("Consulta de Histórico")
+    if st.button("Atualizar lista de fichas"):
+        carregar_dados_banco.clear()
+        st.rerun()
+
+    if df_historico.empty:
+        st.warning(
+            "Nenhuma ficha foi carregada do banco conectado ao aplicativo. "
+            "No Streamlit Community Cloud, confira em Settings → Secrets se "
+            "[connections.postgresql].url aponta para o mesmo banco Supabase "
+            "usado na importação e reinicie o app."
+        )
+        return
+
     prefixos_unicos = sorted(df_historico['Prefixo'].dropna().unique().tolist()) if 'Prefixo' in df_historico.columns else []
     prefixo = st.selectbox("Aeronave", [""] + prefixos_unicos)
     

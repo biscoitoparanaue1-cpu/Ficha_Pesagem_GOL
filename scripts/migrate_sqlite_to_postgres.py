@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from contextlib import closing
@@ -169,6 +170,25 @@ def url_postgresql():
     return url
 
 
+def detalhe_erro_postgresql(exc):
+    origem = getattr(exc, "orig", None)
+    if origem is None:
+        return type(exc).__name__
+
+    detalhe = str(origem).strip()
+    detalhe = re.sub(
+        r"(?i)(://[^:/@\s]+:)[^@\s/]+@",
+        r"\1[REDACTED]@",
+        detalhe,
+    )
+    detalhe = re.sub(
+        r"""(?i)(password\s*[=:]\s*)(['"][^'"]*['"]|[^\s,;]+)""",
+        r"\1[REDACTED]",
+        detalhe,
+    )
+    return detalhe.splitlines()[0][:500] if detalhe else type(exc.orig).__name__
+
+
 def verificar_tabelas_destino(conn):
     from sqlalchemy import text
 
@@ -333,7 +353,8 @@ def main():
         except SQLAlchemyError as exc:
             raise MigrationError(
                 "Falha PostgreSQL durante conexão ou importação "
-                f"({type(exc).__name__}); nenhuma senha foi exibida."
+                f"({type(exc).__name__}). Detalhe: "
+                f"{detalhe_erro_postgresql(exc)}"
             ) from None
         finally:
             if engine is not None:
