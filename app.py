@@ -429,18 +429,21 @@ def carregar_prefixos_fichas():
 
 @st.cache_data
 def carregar_fichas_prefixo(prefixo):
+    return dataframe_fichas(consultar_registros_prefixo(prefixo))
+
+
+def consultar_registros_prefixo(prefixo):
     with conectar_banco() as conn:
-        registros = conn.execute(
+        return conn.execute(
             """SELECT dados FROM pesagens
                WHERE lower(btrim(dados->>'Prefixo')) = lower(btrim(?))
                ORDER BY id""",
             (safe_str(prefixo),),
         ).fetchall()
-    return dataframe_fichas(registros)
 
 
 def carregar_linha_ficha(prefixo, pesagem, revisao):
-    df = carregar_fichas_prefixo(prefixo)
+    df = dataframe_fichas(consultar_registros_prefixo(prefixo))
     if not {"Pesagem", "Revisao"}.issubset(df.columns):
         return None
     linhas = df.loc[
@@ -470,13 +473,11 @@ def invalidar_cache_fichas():
     carregar_prefixos_fichas.clear()
     carregar_fichas_prefixo.clear()
     carregar_fichas_para_momento_flaps.clear()
-    carregar_chaves_fichas.clear()
     buscar_momento_flaps_banco.clear()
     buscar_fluxo_ficha.clear()
     carregar_campos_com_erro.clear()
     carregar_assinatura_usuario.clear()
     listar_fichas_devolvidas_usuario.clear()
-    listar_fichas_pendentes.clear()
 
 
 @st.cache_data
@@ -853,7 +854,6 @@ def carregar_campos_com_erro(prefixo, pesagem, revisao):
     return [dict(registro) for registro in registros]
 
 
-@st.cache_data
 def carregar_chaves_fichas():
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -917,7 +917,6 @@ def listar_fichas_devolvidas_usuario(usuario):
     return list(fichas.values())
 
 
-@st.cache_data
 def listar_fichas_pendentes():
     fluxos = carregar_fluxos_fichas()
     with conectar_banco() as conn:
