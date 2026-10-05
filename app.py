@@ -1105,9 +1105,10 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
                     break
         cell.value = value
 
-    # DEDUCTIONS
     deducoes = dados.get('deductions', [])
-    for idx in range(70, 94):
+    if len(deducoes) > 22:
+        raise ValueError("O template suporta no máximo 22 itens de deduções.")
+    for idx in range(70, 92):
         if (idx - 70) < len(deducoes):
             d = deducoes[idx - 70]
             desc = d.get('desc', '')
@@ -1122,9 +1123,10 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
         set_cell_value(ws, idx, 'V', a_val)
         set_cell_value(ws, idx, 'Z', m_val)
 
-    # ADDITIONS
     adicoes = dados.get('additions', [])
-    for idx in range(95, 126):
+    if len(adicoes) > 32:
+        raise ValueError("O template suporta no máximo 32 itens de adições.")
+    for idx in range(95, 127):
         if (idx - 95) < len(adicoes):
             a = adicoes[idx - 95]
             desc = a.get('desc', '')
@@ -2562,7 +2564,7 @@ def tela_edicao():
                 u_rev = int(safe_float(linha_atual.get('Revisao', 0)))
                 
                 p_nova = u_pes
-                r_nova = u_rev + 1
+                r_nova = u_rev
                 p_ant = u_pes
                 r_ant = u_rev
                 
@@ -2571,15 +2573,24 @@ def tela_edicao():
                 st.divider()
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
-                    if st.button("Salvar Nova Revisão", type="primary", use_container_width=True):
+                    if st.button("Salvar alterações", type="primary", use_container_width=True):
                         fluxo_origem = buscar_fluxo_ficha(prefixo, pesagem, revisao)
                         novo_registro['Pesagem'] = str(int(p_final))
                         novo_registro['Revisao'] = str(int(r_final))
-                        inserir_ficha(novo_registro)
+                        if not atualizar_ficha(
+                            prefixo, pesagem, revisao, novo_registro
+                        ):
+                            st.error(
+                                "Não foi possível localizar a ficha selecionada "
+                                "para salvar as alterações. Atualize a página e tente novamente."
+                            )
+                            return
                         registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
                         if fluxo_origem['gerador_usuario'] == st.session_state['usuario_id']:
                             limpar_campos_com_erro(prefixo, pesagem, revisao)
-                        st.success("Revisão salva com sucesso.")
+                        st.success(
+                            "Alterações salvas na mesma revisão e enviadas para aprovação."
+                        )
                 with col_btn2:
                     st.download_button(
                         label="Exportar Revisão para Excel",
