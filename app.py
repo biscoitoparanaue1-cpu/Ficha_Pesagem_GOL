@@ -347,6 +347,7 @@ def inserir_ficha(registro):
                 ),
             ),
         )
+    invalidar_cache_fichas()
 
 
 def atualizar_ficha(prefixo, pesagem, revisao, registro):
@@ -384,10 +385,13 @@ def atualizar_ficha(prefixo, pesagem, revisao, registro):
                 id_ficha,
             ),
         )
-    return resultado.rowcount == 1
+    atualizada = resultado.rowcount == 1
+    if atualizada:
+        invalidar_cache_fichas()
+    return atualizada
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def carregar_dados_banco():
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -411,7 +415,7 @@ def dataframe_fichas(registros):
     return df
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def carregar_prefixos_fichas():
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -423,7 +427,7 @@ def carregar_prefixos_fichas():
     return [safe_str(registro["prefixo"]) for registro in registros]
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def carregar_fichas_prefixo(prefixo):
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -448,7 +452,7 @@ def carregar_linha_ficha(prefixo, pesagem, revisao):
     return linhas.iloc[0] if not linhas.empty else None
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def carregar_fichas_para_momento_flaps(prefixo, tipo_aeronave):
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -470,6 +474,7 @@ def invalidar_cache_fichas():
     buscar_momento_flaps_banco.clear()
     buscar_fluxo_ficha.clear()
     carregar_campos_com_erro.clear()
+    carregar_assinatura_usuario.clear()
     listar_fichas_devolvidas_usuario.clear()
     listar_fichas_pendentes.clear()
 
@@ -654,6 +659,7 @@ def autenticar_usuario(usuario, senha):
                 'UPDATE usuarios SET senha_hash = ?, salt = ? WHERE usuario = ?',
                 (senha_hash, salt, registro['usuario']),
             )
+        invalidar_cache_fichas()
         registro = dict(registro)
         registro['senha_hash'] = senha_hash
         registro['salt'] = salt
@@ -672,6 +678,7 @@ def criar_usuario(nome, usuario, senha, nivel_acesso):
             (usuario.strip(), nome.strip(), senha_hash, salt, nivel_acesso,
              datetime.datetime.now(datetime.timezone.utc).isoformat())
         )
+    invalidar_cache_fichas()
 
 
 def listar_usuarios_assinaturas():
@@ -687,7 +694,7 @@ def listar_usuarios_assinaturas():
     return [dict(registro) for registro in registros]
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def carregar_assinatura_usuario(usuario):
     if not usuario:
         return None
@@ -710,7 +717,7 @@ def salvar_assinatura_usuario(usuario, imagem_png):
                    atualizado_em = excluded.atualizado_em''',
             (usuario, imagem_png, agora),
         )
-    carregar_assinatura_usuario.clear()
+    invalidar_cache_fichas()
 
 
 def remover_assinatura_usuario(usuario):
@@ -719,7 +726,7 @@ def remover_assinatura_usuario(usuario):
             'DELETE FROM assinaturas_usuarios WHERE usuario = ?',
             (usuario,),
         )
-    carregar_assinatura_usuario.clear()
+    invalidar_cache_fichas()
 
 
 def normalizar_imagem_assinatura(imagem):
@@ -758,11 +765,9 @@ def registrar_ficha(prefixo, pesagem, revisao, usuario):
                    aprovado_em = NULL''',
             (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora)
         )
-    buscar_fluxo_ficha.clear()
-    listar_fichas_devolvidas_usuario.clear()
-    listar_fichas_pendentes.clear()
+    invalidar_cache_fichas()
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def buscar_fluxo_ficha(prefixo, pesagem, revisao):
     with conectar_banco() as conn:
         registro = conn.execute(
@@ -829,7 +834,7 @@ def carregar_fluxos_fichas():
     }
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def carregar_campos_com_erro(prefixo, pesagem, revisao):
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -848,7 +853,7 @@ def carregar_campos_com_erro(prefixo, pesagem, revisao):
     return [dict(registro) for registro in registros]
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def carregar_chaves_fichas():
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -861,7 +866,7 @@ def carregar_chaves_fichas():
     return [dict(registro) for registro in registros]
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def listar_fichas_devolvidas_usuario(usuario):
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -912,7 +917,7 @@ def listar_fichas_devolvidas_usuario(usuario):
     return list(fichas.values())
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def listar_fichas_pendentes():
     fluxos = carregar_fluxos_fichas()
     with conectar_banco() as conn:
@@ -1011,9 +1016,7 @@ def salvar_campos_com_erro(prefixo, pesagem, revisao, campos, usuario):
                 for campo, descricao in campos.items()
             ],
         )
-    carregar_campos_com_erro.clear()
-    listar_fichas_devolvidas_usuario.clear()
-    listar_fichas_pendentes.clear()
+    invalidar_cache_fichas()
 
 
 def limpar_campos_com_erro(prefixo, pesagem, revisao):
@@ -1027,9 +1030,7 @@ def limpar_campos_com_erro(prefixo, pesagem, revisao):
                 normalizar_chave_ficha(revisao),
             ),
         )
-    carregar_campos_com_erro.clear()
-    listar_fichas_devolvidas_usuario.clear()
-    listar_fichas_pendentes.clear()
+    invalidar_cache_fichas()
 
 def aprovar_ficha(prefixo, pesagem, revisao, usuario):
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -1043,12 +1044,10 @@ def aprovar_ficha(prefixo, pesagem, revisao, usuario):
                    aprovado_em = excluded.aprovado_em''',
             (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora, agora)
         )
-    buscar_fluxo_ficha.clear()
-    listar_fichas_devolvidas_usuario.clear()
-    listar_fichas_pendentes.clear()
+    invalidar_cache_fichas()
 
 inicializar_controle_acesso()
-df_historico = pd.DataFrame(columns=["Prefixo", "Pesagem", "Revisao"])
+df_historico = carregar_dados_banco()
 
 # 3. FUNÇÃO DE EXPORTAÇÃO PARA EXCEL
 def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
@@ -1162,10 +1161,9 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
 # 4. TELAS E FUNCIONALIDADES
 
 def tela_consulta():
-    df_historico = carregar_dados_banco()
     st.title("Consulta de Histórico")
     if st.button("Atualizar lista de fichas"):
-        carregar_dados_banco.clear()
+        invalidar_cache_fichas()
         st.rerun()
 
     if df_historico.empty:
@@ -2515,14 +2513,12 @@ def tela_nova_ficha():
                             st.session_state['usuario_id'],
                         )
                         limpar_campos_com_erro(prefixo, p_ant, r_ant)
-                        invalidar_cache_fichas()
                         st.success("Ficha corrigida e enviada para aprovação.")
                 elif ficha_existente:
                     st.error(f"Já existe uma ficha para {prefixo}, Pesagem {int(p_final)}, Revisão {int(r_final)}.")
                 else:
                     inserir_ficha(novo_registro)
                     registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
-                    invalidar_cache_fichas()
                     st.success("Ficha cadastrada com sucesso.")
         with col_btn2:
             st.download_button(
@@ -2582,7 +2578,6 @@ def tela_edicao():
                         registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
                         if fluxo_origem['gerador_usuario'] == st.session_state['usuario_id']:
                             limpar_campos_com_erro(prefixo, pesagem, revisao)
-                        invalidar_cache_fichas()
                         st.success("Revisão salva com sucesso.")
                 with col_btn2:
                     st.download_button(
@@ -2797,12 +2792,12 @@ def excluir_ficha(prefixo, pesagem, revisao):
                    WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
                 (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
             )
+    if quantidade:
+        invalidar_cache_fichas()
     return quantidade
 
 
 def tela_excluir_ficha():
-    df_historico = carregar_dados_banco()
-
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
         return
@@ -2846,7 +2841,6 @@ def tela_excluir_ficha():
         else:
             removidas = excluir_ficha(prefixo, pesagem, revisao)
             if removidas:
-                invalidar_cache_fichas()
                 st.success(f"Ficha excluída. Registros removidos: {removidas}.")
                 st.rerun()
             else:
@@ -2866,6 +2860,8 @@ if not st.session_state['usuario_logado']:
                 st.session_state['nivel_acesso'] = registro_usuario['nivel_acesso']
                 st.session_state['nome_usuario'] = registro_usuario['nome']
                 st.session_state['pagina_atual'] = 'consulta'
+                carregar_dados_banco()
+                carregar_tipos_aeronave()
                 st.rerun()
             else:
                 st.error("Usuário ou senha inválidos.")
