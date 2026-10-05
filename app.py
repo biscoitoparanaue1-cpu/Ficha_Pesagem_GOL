@@ -387,7 +387,7 @@ def atualizar_ficha(prefixo, pesagem, revisao, registro):
     return resultado.rowcount == 1
 
 
-@st.cache_data
+@st.cache_data(ttl=30)
 def carregar_dados_banco():
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -2201,7 +2201,11 @@ def formulario_pesagem(
 
     return novo_registro, id_pesagem_input, rev_input
 
+@st.fragment
 def tela_nova_ficha():
+    global df_historico
+    df_historico = carregar_dados_banco()
+
     st.title("Gerar Nova Ficha")
     usuario_atual = st.session_state['usuario_id']
     _, fichas_devolvidas = listar_fichas_pendentes()
@@ -2392,7 +2396,11 @@ def tela_nova_ficha():
                 use_container_width=True,
             )
 
+@st.fragment
 def tela_edicao():
+    global df_historico
+    df_historico = carregar_dados_banco()
+
     st.title("Editar Ficha Existente")
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
@@ -2549,7 +2557,11 @@ def tela_assinaturas():
         st.rerun()
 
 
+@st.fragment
 def tela_aprovar_fichas():
+    global df_historico
+    df_historico = carregar_dados_banco()
+
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
         return
