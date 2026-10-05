@@ -387,7 +387,7 @@ def atualizar_ficha(prefixo, pesagem, revisao, registro):
     return resultado.rowcount == 1
 
 
-@st.cache_data(ttl=60)
+@st.cache_data
 def carregar_dados_banco():
     with conectar_banco() as conn:
         registros = conn.execute(
