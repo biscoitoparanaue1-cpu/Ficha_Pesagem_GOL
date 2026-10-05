@@ -12,6 +12,7 @@ import streamlit as st
 from openpyxl.drawing.image import Image as ExcelImage
 from PIL import Image as PillowImage, UnidentifiedImageError
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
 # 1. CONFIGURAÇÃO INICIAL
@@ -209,6 +210,17 @@ def calcular_level_correction(angulo, peso_base):
 # 2. CONEXÃO E CARREGAMENTO DOS BANCOS DE DADOS
 @st.cache_resource
 def obter_conexao_postgresql():
+    configuracao = st.secrets.get("connections", {}).get("postgresql", {})
+    url = configuracao.get("url") if configuracao else None
+    if url:
+        try:
+            make_url(url)
+        except ValueError:
+            raise ValueError(
+                "A URL em [connections.postgresql].url é inválida. "
+                "Confira se está no formato esperado e se a porta após o host "
+                "é numérica, como 5432 ou 6543."
+            ) from None
     return st.connection("postgresql", type="sql")
 
 
@@ -381,7 +393,11 @@ def carregar_dados_banco():
         registros = conn.execute(
             "SELECT dados FROM pesagens ORDER BY id"
         ).fetchall()
-    df = pd.DataFrame([registro[0] for registro in registros])
+    df = (
+        pd.DataFrame([registro[0] for registro in registros])
+        if registros
+        else pd.DataFrame(columns=["Prefixo", "Pesagem", "Revisao"])
+    )
     if 'revisao' in df.columns and 'Revisao' not in df.columns:
         df = df.rename(columns={'revisao': 'Revisao'})
     if 'Pesagem' in df.columns:
@@ -2137,9 +2153,9 @@ def formulario_pesagem(
         novo_registro[get_real_col([f'Additions weigth {i+1}'])] = row.get('Peso (Kg)')
         novo_registro[get_real_col([f'Additions arm {i+1}'])] = row.get('Braço (in)')
 
-    # FILTRO FINAL: Apenas permite salvar chaves que REALMENTE existem no banco de dados SQLite
+    # Filtra colunas somente quando já existem fichas que definem o formato persistido.
     chaves_validas = set(df_historico.columns)
-    if chaves_validas:
+    if chaves_validas and not df_historico.empty:
         novo_registro = {k: v for k, v in novo_registro.items() if k in chaves_validas}
 
     return novo_registro, id_pesagem_input, rev_input
