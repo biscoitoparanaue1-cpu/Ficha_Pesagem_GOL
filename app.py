@@ -946,6 +946,18 @@ def criar_usuario(nome, usuario, senha, nivel_acesso):
     invalidar_cache_fichas()
 
 
+def redefinir_senha(usuario, senha):
+    salt = secrets.token_hex(16)
+    senha_hash = hashlib.pbkdf2_hmac(
+        'sha256', senha.encode('utf-8'), bytes.fromhex(salt), 600000
+    ).hex()
+    with conectar_banco() as conn:
+        conn.execute(
+            'UPDATE usuarios SET senha_hash = ?, salt = ? WHERE usuario = ?',
+            (senha_hash, salt, usuario),
+        )
+
+
 def listar_usuarios_assinaturas():
     with conectar_banco() as conn:
         registros = conn.execute(
@@ -3053,6 +3065,24 @@ def tela_criar_login():
                         (novo_nivel, escolhido),
                     )
                 st.success(f"Perfil de {opcoes[escolhido]} alterado para {PERFIS[novo_nivel]}.")
+
+        st.divider()
+        st.subheader("Redefinir senha")
+        st.caption("As senhas ficam criptografadas e não podem ser vistas; defina uma nova e informe à pessoa.")
+        with st.form("form_redefinir_senha", clear_on_submit=True):
+            alvo = st.selectbox("Usuário", list(opcoes), format_func=opcoes.get)
+            c1, c2 = st.columns(2)
+            nova = c1.text_input("Nova senha", type="password")
+            confirmar = c2.text_input("Confirmar nova senha", type="password")
+            trocar = st.form_submit_button("Redefinir senha", type="primary")
+        if trocar:
+            if not nova:
+                st.error("Informe a nova senha.")
+            elif nova != confirmar:
+                st.error("As senhas não coincidem.")
+            else:
+                redefinir_senha(alvo, nova)
+                st.success(f"Senha de {opcoes[alvo]} redefinida.")
 
 
 @protegido
