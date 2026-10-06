@@ -1,6 +1,7 @@
 import io
 import os
 import datetime
+import functools
 import hashlib
 import hmac
 import json
@@ -206,6 +207,24 @@ def calcular_level_correction(angulo, peso_base):
     if angulo.startswith("-"):
         return valor_correspondente, valor_correspondente * peso_base, "additions"
     return valor_correspondente, -valor_correspondente * peso_base, "deductions"
+
+def protegido(tela):
+    """Mostra uma mensagem clara em vez de derrubar o app se algo falhar."""
+    @functools.wraps(tela)
+    def executar(*args, **kwargs):
+        try:
+            return tela(*args, **kwargs)
+        except Exception as erro:
+            st.cache_data.clear()
+            st.error(
+                "Algo deu errado nesta tela e nada foi perdido do que já estava "
+                "salvo. Tente novamente; se o erro continuar, envie o detalhe "
+                "abaixo para a Engenharia."
+            )
+            with st.expander("Detalhe do erro"):
+                st.exception(erro)
+    return executar
+
 
 # 2. CONEXÃO E CARREGAMENTO DOS BANCOS DE DADOS
 @st.cache_resource
@@ -1336,6 +1355,7 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
 
 # 4. TELAS E FUNCIONALIDADES
 
+@protegido
 def tela_consulta():
     st.title("Consulta de Histórico")
     if st.button("Atualizar lista de fichas"):
@@ -2561,6 +2581,7 @@ def formulario_pesagem(
     return novo_registro, id_pesagem_input, rev_input
 
 @st.fragment
+@protegido
 def tela_nova_ficha():
     st.session_state["historico_colunas"] = ()
 
@@ -2780,6 +2801,7 @@ def tela_nova_ficha():
             )
 
 @st.fragment
+@protegido
 def tela_edicao():
     st.session_state["historico_colunas"] = ()
     st.title("Editar Ficha Existente")
@@ -2847,6 +2869,7 @@ def tela_edicao():
                         use_container_width=True,
                     )
 
+@protegido
 def tela_criar_login():
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
@@ -2876,6 +2899,7 @@ def tela_criar_login():
                 st.error("Esse nome de usuário já está cadastrado.")
 
 
+@protegido
 def tela_cadastrar_aeronave():
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
@@ -2980,6 +3004,7 @@ def tela_cadastrar_aeronave():
                 st.rerun()
 
 
+@protegido
 def tela_assinaturas():
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
@@ -3052,6 +3077,7 @@ def tela_assinaturas():
 
 
 @st.fragment
+@protegido
 def tela_aprovar_fichas():
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
@@ -3160,6 +3186,7 @@ def excluir_ficha(prefixo, pesagem, revisao):
     return quantidade
 
 
+@protegido
 def tela_excluir_ficha():
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
