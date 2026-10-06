@@ -3324,8 +3324,22 @@ def tela_excluir_ficha():
                 st.error("A ficha não foi encontrada no banco de dados.")
 
 # 5. ROTEAMENTO E BARRA LATERAL
+def logo_html():
+    for caminho in ("assets/logo_gol.svg", "assets/logo_gol.png"):
+        if os.path.exists(caminho):
+            import base64
+            tipo = "svg+xml" if caminho.endswith(".svg") else "png"
+            with open(caminho, "rb") as arquivo:
+                dados = base64.b64encode(arquivo.read()).decode()
+            return (
+                f'<img src="data:image/{tipo};base64,{dados}" '
+                'style="height:38px;width:auto;flex-shrink:0">'
+            )
+    return '<div class="marca-logo">W&B</div>'
+
+
 MARCA_HTML = (
-    '<div class="marca"><div class="marca-logo">W&B</div><div>'
+    f'<div class="marca">{logo_html()}<div>'
     '<div class="marca-nome">Pesagem e Balanceamento</div>'
     '<div class="marca-sub">Engenharia GOL</div></div></div>'
 )
