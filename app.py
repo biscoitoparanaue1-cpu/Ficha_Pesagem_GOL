@@ -221,7 +221,15 @@ def obter_conexao_postgresql():
                 "Confira se está no formato esperado e se a porta após o host "
                 "é numérica, como 5432 ou 6543."
             ) from None
-    return st.connection("postgresql", type="sql")
+    # pool_pre_ping descarta conexões que o Supabase encerrou por inatividade e
+    # prepare_threshold=None evita erros de prepared statement no pooler.
+    return st.connection(
+        "postgresql",
+        type="sql",
+        pool_pre_ping=True,
+        pool_recycle=300,
+        connect_args={"prepare_threshold": None},
+    )
 
 
 class LinhaBanco:
@@ -335,55 +343,77 @@ def normalizar_valor_json(valor):
     return valor
 
 
+def preparar_registro_json(registro):
+    dados = dict(registro)
+    revisao = dados.pop("revisao", None)
+    if safe_str(dados.get("Revisao", "")) == "":
+        dados["Revisao"] = revisao
+    for chave in ("Pesagem", "Revisao"):
+        dados[chave] = normalizar_chave_ficha(dados.get(chave, ""))
+    dados["Prefixo"] = safe_str(dados.get("Prefixo", ""))
+    dados.pop("Pesagem_num", None)
+    dados.pop("Revisao_num", None)
+    return json.dumps(
+        normalizar_valor_json(dados),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def buscar_id_ficha(conn, prefixo, pesagem, revisao):
+    registros = conn.execute(
+        """SELECT id, dados->>'Pesagem' AS pesagem,
+                  COALESCE(dados->>'Revisao', dados->>'revisao') AS revisao
+           FROM pesagens
+           WHERE lower(btrim(dados->>'Prefixo')) = lower(btrim(?))
+           ORDER BY id DESC""",
+        (safe_str(prefixo),),
+    ).fetchall()
+    return [
+        item["id"]
+        for item in registros
+        if normalizar_chave_ficha(item["pesagem"]) == normalizar_chave_ficha(pesagem)
+        and normalizar_chave_ficha(item["revisao"]) == normalizar_chave_ficha(revisao)
+    ]
+
+
+def bloquear_prefixo(conn, prefixo):
+    # Serializa gravações da mesma aeronave para evitar fichas duplicadas
+    # quando o botão é clicado duas vezes ou duas pessoas salvam juntas.
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext(lower(btrim(?))))",
+        (safe_str(prefixo),),
+    )
+
+
 def inserir_ficha(registro):
     with conectar_banco() as conn:
+        bloquear_prefixo(conn, registro.get("Prefixo", ""))
+        if buscar_id_ficha(
+            conn,
+            registro.get("Prefixo", ""),
+            registro.get("Pesagem", ""),
+            registro.get("Revisao", registro.get("revisao", "")),
+        ):
+            return False
         conn.execute(
             "INSERT INTO pesagens (dados) VALUES (CAST(? AS JSONB))",
-            (
-                json.dumps(
-                    normalizar_valor_json(registro),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                ),
-            ),
+            (preparar_registro_json(registro),),
         )
     invalidar_cache_fichas()
+    return True
 
 
 def atualizar_ficha(prefixo, pesagem, revisao, registro):
     with conectar_banco() as conn:
-        registros = conn.execute(
-            """SELECT id, dados FROM pesagens
-               WHERE lower(btrim(dados->>'Prefixo')) = lower(btrim(?))
-               ORDER BY id DESC""",
-            (safe_str(prefixo),),
-        ).fetchall()
-        id_ficha = next(
-            (
-                item["id"]
-                for item in registros
-                if normalizar_chave_ficha(item["dados"].get("Pesagem", ""))
-                == normalizar_chave_ficha(pesagem)
-                and normalizar_chave_ficha(
-                    item["dados"].get("Revisao", item["dados"].get("revisao", ""))
-                )
-                == normalizar_chave_ficha(revisao)
-            ),
-            None,
-        )
-        if id_ficha is None:
+        bloquear_prefixo(conn, prefixo)
+        ids = buscar_id_ficha(conn, prefixo, pesagem, revisao)
+        if not ids:
             return False
 
         resultado = conn.execute(
             "UPDATE pesagens SET dados = CAST(? AS JSONB) WHERE id = ?",
-            (
-                json.dumps(
-                    normalizar_valor_json(registro),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                ),
-                id_ficha,
-            ),
+            (preparar_registro_json(registro), ids[0]),
         )
     atualizada = resultado.rowcount == 1
     if atualizada:
@@ -406,13 +436,21 @@ def dataframe_fichas(registros):
         if registros
         else pd.DataFrame(columns=["Prefixo", "Pesagem", "Revisao"])
     )
-    if 'revisao' in df.columns and 'Revisao' not in df.columns:
-        df = df.rename(columns={'revisao': 'Revisao'})
-    if 'Pesagem' in df.columns:
-        df['Pesagem'] = df['Pesagem'].astype(str)
-    if 'Revisao' in df.columns:
-        df['Revisao'] = df['Revisao'].astype(str)
-    return df
+    if 'revisao' in df.columns:
+        if 'Revisao' in df.columns:
+            df['Revisao'] = df['Revisao'].where(
+                df['Revisao'].map(safe_str) != "", df['revisao']
+            )
+            df = df.drop(columns=['revisao'])
+        else:
+            df = df.rename(columns={'revisao': 'Revisao'})
+    for coluna in ('Pesagem', 'Revisao'):
+        if coluna in df.columns:
+            df[coluna] = df[coluna].map(normalizar_chave_ficha)
+    if 'Prefixo' in df.columns:
+        df = df.loc[df['Prefixo'].map(safe_str) != ""].copy()
+        df['Prefixo'] = df['Prefixo'].map(safe_str)
+    return df.reset_index(drop=True)
 
 
 @st.cache_data
@@ -661,6 +699,15 @@ def inicializar_controle_acesso():
             )
         ''')
         conn.execute('''
+            CREATE TABLE IF NOT EXISTS opcoes_cadastradas (
+                categoria TEXT NOT NULL,
+                valor TEXT NOT NULL,
+                cadastrado_por TEXT,
+                cadastrado_em TEXT NOT NULL,
+                PRIMARY KEY (categoria, valor)
+            )
+        ''')
+        conn.execute('''
             CREATE TABLE IF NOT EXISTS aeronaves (
                 prefixo TEXT PRIMARY KEY,
                 modelo TEXT NOT NULL,
@@ -833,7 +880,13 @@ def registrar_ficha(prefixo, pesagem, revisao, usuario):
                    aprovado_por = NULL,
                    criado_em = excluded.criado_em,
                    aprovado_em = NULL''',
-            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora)
+            (
+                safe_str(prefixo),
+                normalizar_chave_ficha(pesagem),
+                normalizar_chave_ficha(revisao),
+                usuario,
+                agora,
+            )
         )
     invalidar_cache_fichas()
 
@@ -1110,11 +1163,48 @@ def aprovar_ficha(prefixo, pesagem, revisao, usuario):
                ON CONFLICT(prefixo, pesagem, revisao) DO UPDATE SET
                    aprovado_por = excluded.aprovado_por,
                    aprovado_em = excluded.aprovado_em''',
-            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora, agora)
+            (
+                safe_str(prefixo),
+                normalizar_chave_ficha(pesagem),
+                normalizar_chave_ficha(revisao),
+                usuario,
+                agora,
+                agora,
+            )
         )
     invalidar_cache_fichas()
 
+@st.cache_resource
+def normalizar_chaves_fluxo():
+    """Converte chaves antigas como '15.0' para '15' no fluxo de aprovação.
+
+    O app procura as fichas por '15'; registros migrados com '15.0' ficavam
+    invisíveis (gerador "Não registrado", devoluções que não apareciam).
+    Linhas que colidiriam com uma já normalizada são mantidas como estão.
+    """
+    normalizar = r"regexp_replace({0}, '^(-?[0-9]+)[.]0+$', '\1')"
+    for tabela, chave_extra in (("fluxo_fichas", ""), ("campos_com_erro", " AND g.campo = f.campo")):
+        try:
+            with conectar_banco() as conn:
+                conn.execute(
+                    f"""UPDATE {tabela} AS f
+                        SET pesagem = {normalizar.format('f.pesagem')},
+                            revisao = {normalizar.format('f.revisao')}
+                        WHERE (f.pesagem ~ '[.]0+$' OR f.revisao ~ '[.]0+$')
+                          AND NOT EXISTS (
+                              SELECT 1 FROM {tabela} AS g
+                              WHERE g.prefixo = f.prefixo
+                                AND g.pesagem = {normalizar.format('f.pesagem')}
+                                AND g.revisao = {normalizar.format('f.revisao')}
+                                {chave_extra}
+                          )"""
+                )
+        except Exception:
+            pass
+
+
 inicializar_controle_acesso()
+normalizar_chaves_fluxo()
 dict_tipos_aeronave.update(carregar_aeronaves_cadastradas())
 df_historico = carregar_dados_banco()
 
@@ -1346,9 +1436,9 @@ def renderizar_ficha_visualizacao(
         mostrar_campo("config_lopa", "Configuração LOPA:", config_lopa, c6)
         
         c7, c8, c9 = st.columns(3)
-        mostrar_campo("VRBL", "VRBL. NUMBER:", row.get('VRBL', info_aero.get('vrbl', '')), c7)
-        mostrar_campo("SERIAL", "SERIAL NUMBER:", row.get('SERIAL', info_aero.get('serial', '')), c8)
-        mostrar_campo("LINE", "LINE NUMBER:", row.get('LINE', info_aero.get('line', '')), c9)
+        mostrar_campo("VRBL", "VRBL. NUMBER:", safe_str(row.get('VRBL')) or info_aero.get('vrbl', ''), c7)
+        mostrar_campo("SERIAL", "SERIAL NUMBER:", safe_str(row.get('SERIAL')) or info_aero.get('serial', ''), c8)
+        mostrar_campo("LINE", "LINE NUMBER:", safe_str(row.get('LINE')) or info_aero.get('line', ''), c9)
         mostrar_campo("Motivo", "Razão para emissão:", row.get('Motivo', ''))
 
     with aba2:
@@ -1405,14 +1495,14 @@ def renderizar_ficha_visualizacao(
 
     with aba3:
         deducoes_lista = []
-        for i in range(1, 16):
+        for i in range(1, MAX_DEDUCTIONS + 1):
             desc = row.get(f'Deductions description {i}', None)
             peso = row.get(f'Deductions Weigth {i}', None)
             arm = row.get(f'Deductions arm {i}', None)
             if pd.notna(desc) and str(desc).strip() != '':
                 deducoes_lista.append({"Descrição": desc, "Peso [Kg]": safe_float(peso), "Arm [pol]": safe_float(arm)})
         if deducoes_lista and modo_aprovacao:
-            for indice in range(1, 16):
+            for indice in range(1, MAX_DEDUCTIONS + 1):
                 descricao = row.get(f'Deductions description {indice}', None)
                 if pd.isna(descricao) or not str(descricao).strip():
                     continue
@@ -1443,14 +1533,14 @@ def renderizar_ficha_visualizacao(
 
     with aba4:
         adicoes_lista = []
-        for i in range(1, 17):
+        for i in range(1, MAX_ADDITIONS + 1):
             desc = row.get(f'Additions Description {i}', None)
             peso = row.get(f'Additions weigth {i}', None)
             arm = row.get(f'Additions arm {i}', None)
             if pd.notna(desc) and str(desc).strip() != '':
                 adicoes_lista.append({"Descrição": desc, "Peso [Kg]": safe_float(peso), "Arm [pol]": safe_float(arm)})
         if adicoes_lista and modo_aprovacao:
-            for indice in range(1, 17):
+            for indice in range(1, MAX_ADDITIONS + 1):
                 descricao = row.get(f'Additions Description {indice}', None)
                 if pd.isna(descricao) or not str(descricao).strip():
                     continue
@@ -1611,9 +1701,9 @@ def renderizar_ficha_visualizacao(
             "arm_a": arm_a, "arm_b_lh": arm_b_lh, "arm_b_rh": arm_b_rh,
             "issue_date": safe_str(row.get('Data da ficha', '')),
             "ultima_pesagem": ultima_p, "ultima_revisao": ultima_r, 
-            "vrbl_number": safe_str(row.get('VRBL', info_aero.get('vrbl', ''))),
-            "serial_number": safe_str(row.get('SERIAL', info_aero.get('serial', ''))),
-            "line_number": safe_str(row.get('LINE', info_aero.get('line', ''))),
+            "vrbl_number": safe_str(safe_str(row.get('VRBL')) or info_aero.get('vrbl', '')),
+            "serial_number": safe_str(safe_str(row.get('SERIAL')) or info_aero.get('serial', '')),
+            "line_number": safe_str(safe_str(row.get('LINE')) or info_aero.get('line', '')),
             "numero_pesagem": str(int(pesagem_atual)) if pesagem_atual else "",
             "revisao": str(int(revisao_atual)) if revisao_atual else "",
             "reactions": {
@@ -1747,6 +1837,9 @@ def get_real_col(possible_names):
             return n
     return possible_names[0]
 
+MAX_DEDUCTIONS = 15
+MAX_ADDITIONS = 16
+
 PRESETS = {
     "motivo": [
         "5 Years Check",
@@ -1869,7 +1962,60 @@ PRESETS["config_lopa"] = sorted(
 )
 
 
-def campo_com_preset(container, label, valor, opcoes, key):
+@st.cache_data
+def carregar_opcoes_cadastradas():
+    with conectar_banco() as conn:
+        registros = conn.execute(
+            'SELECT categoria, valor FROM opcoes_cadastradas ORDER BY valor'
+        ).fetchall()
+    opcoes = {}
+    for registro in registros:
+        opcoes.setdefault(registro['categoria'], []).append(registro['valor'])
+    return opcoes
+
+
+def incluir_opcoes_preset(categoria, valores):
+    existentes = {opcao.casefold() for opcao in PRESETS.setdefault(categoria, [])}
+    for valor in valores:
+        if valor.casefold() not in existentes:
+            PRESETS[categoria].append(valor)
+            existentes.add(valor.casefold())
+
+
+for _categoria, _valores in carregar_opcoes_cadastradas().items():
+    incluir_opcoes_preset(_categoria, _valores)
+
+
+def salvar_opcao_digitada(categoria, chave_widget):
+    """Grava no banco uma opção digitada que ainda não existe na lista."""
+    valor = safe_str(st.session_state.get(chave_widget))
+    if not valor or any(
+        valor.casefold() == opcao.casefold() for opcao in PRESETS.get(categoria, [])
+    ):
+        return
+    try:
+        with conectar_banco() as conn:
+            conn.execute(
+                '''INSERT INTO opcoes_cadastradas
+                   (categoria, valor, cadastrado_por, cadastrado_em)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT (categoria, valor) DO NOTHING''',
+                (
+                    categoria,
+                    valor,
+                    st.session_state.get('usuario_id'),
+                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                ),
+            )
+    except Exception:
+        st.toast(f"Não foi possível salvar “{valor}” na lista de opções.")
+        return
+    carregar_opcoes_cadastradas.clear()
+    incluir_opcoes_preset(categoria, [valor])
+    st.toast(f"“{valor}” foi adicionado à lista de opções.")
+
+
+def campo_com_preset(container, label, valor, opcoes, key, categoria=None):
     valor = safe_str(valor)
     escolhas = [""] + list(opcoes)
     if valor and valor not in escolhas:
@@ -1881,6 +2027,8 @@ def campo_com_preset(container, label, valor, opcoes, key):
         key=key,
         accept_new_options=True,
         placeholder="Digite ou selecione",
+        on_change=salvar_opcao_digitada if categoria else None,
+        args=(categoria, key) if categoria else None,
     )
 
 
@@ -1892,8 +2040,9 @@ def renderizar_editor_itens(
     momento_flaps=0,
     campos_com_erro=None,
     prefixo_campos_erro="",
+    categoria=None,
 ):
-    campos_com_erro = set(campos_com_erro or ())
+    campos_com_erro = {safe_str(campo).casefold() for campo in campos_com_erro or ()}
     colunas = ["Descrição", "Peso (Kg)", "Braço (in)", "Momento (kg.in)"]
     quantidade_inicial = max(len(itens), 1)
     chave_linhas = f"{key}_linhas"
@@ -1921,12 +2070,11 @@ def renderizar_editor_itens(
             escolhas.append(descricao_inicial)
 
         descricao_col, peso_col, braco_col, momento_col, excluir_col = container.columns([4, 1, 1, 1, 0.9])
-        if prefixo_campos_erro:
+        if prefixo_campos_erro and item:
+            slot = item.get("slot", indice_item + 1)
             campos_item = {
-                f"{prefixo_campos_erro} description {indice_item + 1}",
-                f"{prefixo_campos_erro} weigth {indice_item + 1}",
-                f"{prefixo_campos_erro} Weigth {indice_item + 1}",
-                f"{prefixo_campos_erro} arm {indice_item + 1}",
+                f"{prefixo_campos_erro} {campo} {slot}".casefold()
+                for campo in ("description", "weigth", "arm")
             }
             if campos_com_erro & campos_item:
                 descricao_col.markdown(":red[🔴 Este item foi devolvido para correção]")
@@ -1938,6 +2086,8 @@ def renderizar_editor_itens(
             accept_new_options=True,
             placeholder="Digite ou selecione",
             label_visibility="collapsed",
+            on_change=salvar_opcao_digitada if categoria else None,
+            args=(categoria, f"{key}_{id_linha}_descricao") if categoria else None,
         )
         peso = peso_col.number_input(
             f"Peso (Kg), linha {posicao + 1}",
@@ -2041,8 +2191,8 @@ def formulario_pesagem(
             rotulo_form(chave_data_emissao, "Data de emissão:", c1),
             value=datetime.date.today(),
         )
-        pesado_por = campo_com_preset(c2, rotulo_form(chave_pesado_por, "Pesado por:", c2), linha_existente.get(chave_pesado_por, ''), PRESETS["pesado_por"], f"{form_key}_pesado_por")
-        local = campo_com_preset(c3, rotulo_form(chave_local, "Local da pesagem:", c3), linha_existente.get(chave_local, ''), PRESETS["local"], f"{form_key}_local")
+        pesado_por = campo_com_preset(c2, rotulo_form(chave_pesado_por, "Pesado por:", c2), linha_existente.get(chave_pesado_por, ''), PRESETS["pesado_por"], f"{form_key}_pesado_por", categoria="pesado_por")
+        local = campo_com_preset(c3, rotulo_form(chave_local, "Local da pesagem:", c3), linha_existente.get(chave_local, ''), PRESETS["local"], f"{form_key}_local", categoria="local")
         
         c4, c5, c6 = st.columns(3)
         key_data_pes = get_real_col(['Data_da_Pesagem', 'Data da ficha'])
@@ -2067,12 +2217,12 @@ def formulario_pesagem(
         chave_vrbl = get_real_col(['VRBL', 'VRBL NUMBER'])
         chave_serial = get_real_col(['SERIAL', 'SERIAL NUMBER'])
         chave_line = get_real_col(['LINE', 'LINE NUMBER'])
-        vrbl = c7.text_input(rotulo_form(chave_vrbl, "VRBL. NUMBER:", c7), value=safe_str(linha_existente.get(chave_vrbl, info_aero.get('vrbl', ''))))
-        serial = c8.text_input(rotulo_form(chave_serial, "SERIAL NUMBER:", c8), value=safe_str(linha_existente.get(chave_serial, info_aero.get('serial', ''))))
-        line = c9.text_input(rotulo_form(chave_line, "LINE NUMBER:", c9), value=safe_str(linha_existente.get(chave_line, info_aero.get('line', ''))))
+        vrbl = c7.text_input(rotulo_form(chave_vrbl, "VRBL. NUMBER:", c7), value=safe_str(linha_existente.get(chave_vrbl)) or info_aero.get('vrbl', ''))
+        serial = c8.text_input(rotulo_form(chave_serial, "SERIAL NUMBER:", c8), value=safe_str(linha_existente.get(chave_serial)) or info_aero.get('serial', ''))
+        line = c9.text_input(rotulo_form(chave_line, "LINE NUMBER:", c9), value=safe_str(linha_existente.get(chave_line)) or info_aero.get('line', ''))
 
         chave_motivo = get_real_col(['Motivo', 'Razão'])
-        razao = campo_com_preset(st, rotulo_form(chave_motivo, "Razão para emissão:"), linha_existente.get(chave_motivo, ''), PRESETS["motivo"], f"{form_key}_motivo")
+        razao = campo_com_preset(st, rotulo_form(chave_motivo, "Razão para emissão:"), linha_existente.get(chave_motivo, ''), PRESETS["motivo"], f"{form_key}_motivo", categoria="motivo")
 
     with aba2:
         st.markdown("**Pesagem 01**")
@@ -2156,12 +2306,12 @@ def formulario_pesagem(
 
     with aba3:
         ded_ex = []
-        for i in range(1, 16):
-            desc = linha_existente.get(get_real_col([f'Deductions description {i}']))
+        for i in range(1, MAX_DEDUCTIONS + 1):
+            desc = linha_existente.get(f'Deductions description {i}')
             if pd.notna(desc) and str(desc).strip():
-                peso = safe_float(linha_existente.get(get_real_col([f'Deductions Weigth {i}'])))
-                arm = safe_float(linha_existente.get(get_real_col([f'Deductions arm {i}'])))
-                ded_ex.append({"Descrição": desc, "Peso (Kg)": peso, "Braço (in)": arm, "Momento (kg.in)": peso * arm})
+                peso = safe_float(linha_existente.get(f'Deductions Weigth {i}'))
+                arm = safe_float(linha_existente.get(f'Deductions arm {i}'))
+                ded_ex.append({"Descrição": desc, "Peso (Kg)": peso, "Braço (in)": arm, "Momento (kg.in)": peso * arm, "slot": i})
                 
         if not ded_ex:
             ded_ex = [{"Descrição": "Fuel (Usable)", "Peso (Kg)": 0.0, "Braço (in)": 660.5, "Momento (kg.in)": 0.0}]
@@ -2173,6 +2323,7 @@ def formulario_pesagem(
             f"{form_key}_deductions",
             campos_com_erro=campos_com_erro,
             prefixo_campos_erro="Deductions",
+            categoria="deductions",
         )
 
     with aba4:
@@ -2183,14 +2334,14 @@ def formulario_pesagem(
             )
 
         add_ex = []
-        for i in range(1, 17):
-            desc = linha_existente.get(get_real_col([f'Additions Description {i}']))
+        for i in range(1, MAX_ADDITIONS + 1):
+            desc = linha_existente.get(f'Additions Description {i}')
             if pd.notna(desc) and str(desc).strip():
-                peso = safe_float(linha_existente.get(get_real_col([f'Additions weigth {i}'])))
-                arm = safe_float(linha_existente.get(get_real_col([f'Additions arm {i}'])))
+                peso = safe_float(linha_existente.get(f'Additions weigth {i}'))
+                arm = safe_float(linha_existente.get(f'Additions arm {i}'))
                 m_calc = peso * arm
                 if "flap" in str(desc).casefold(): m_calc += momento_extra_flaps
-                add_ex.append({"Descrição": desc, "Peso (Kg)": peso, "Braço (in)": arm, "Momento (kg.in)": m_calc})
+                add_ex.append({"Descrição": desc, "Peso (Kg)": peso, "Braço (in)": arm, "Momento (kg.in)": m_calc, "slot": i})
                 
         if not add_ex:
             add_ex = [{"Descrição": "Flaps 0 - 40° (up when weighed)", "Peso (Kg)": 0.0, "Braço (in)": 0.0, "Momento (kg.in)": momento_extra_flaps}]
@@ -2203,6 +2354,7 @@ def formulario_pesagem(
             momento_flaps=momento_extra_flaps,
             campos_com_erro=campos_com_erro,
             prefixo_campos_erro="Additions",
+            categoria="additions",
         )
 
     with aba5:
@@ -2371,40 +2523,25 @@ def formulario_pesagem(
         if angulo_level_correction else None
     )
     
-    for i in range(1, 16):
-        novo_registro[get_real_col([f'Deductions description {i}'])] = None
-        novo_registro[get_real_col([f'Deductions Weigth {i}'])] = None
-        novo_registro[get_real_col([f'Deductions arm {i}'])] = None
-    colunas_historico = set(st.session_state.get("historico_colunas", ()))
-    slots_deducoes = [
-        i for i in range(1, 16)
-        if not colunas_historico or all(
-            coluna in colunas_historico
-            for coluna in (
-                f'Deductions description {i}',
-                f'Deductions Weigth {i}',
-                f'Deductions arm {i}',
-            )
-        )
-    ]
-    for i, row in zip(slots_deducoes, deducoes_editadas.to_dict('records')):
-        novo_registro[get_real_col([f'Deductions description {i}'])] = row.get('Descrição')
-        novo_registro[get_real_col([f'Deductions Weigth {i}'])] = row.get('Peso (Kg)')
-        novo_registro[get_real_col([f'Deductions arm {i}'])] = row.get('Braço (in)')
+    # Todos os itens digitados são gravados. O filtro antigo por colunas do
+    # histórico descartava, por exemplo, o 6º item e os campos VRBL/SERIAL/LINE.
+    for i in range(1, MAX_DEDUCTIONS + 1):
+        novo_registro[f'Deductions description {i}'] = None
+        novo_registro[f'Deductions Weigth {i}'] = None
+        novo_registro[f'Deductions arm {i}'] = None
+    for i, row in enumerate(deducoes_editadas.to_dict('records')[:MAX_DEDUCTIONS], start=1):
+        novo_registro[f'Deductions description {i}'] = row.get('Descrição')
+        novo_registro[f'Deductions Weigth {i}'] = row.get('Peso (Kg)')
+        novo_registro[f'Deductions arm {i}'] = row.get('Braço (in)')
 
-    for i in range(1, 17):
-        novo_registro[get_real_col([f'Additions Description {i}'])] = None
-        novo_registro[get_real_col([f'Additions weigth {i}'])] = None
-        novo_registro[get_real_col([f'Additions arm {i}'])] = None
-    for i, row in enumerate(adicoes_editadas.to_dict('records')):
-        novo_registro[get_real_col([f'Additions Description {i+1}'])] = row.get('Descrição')
-        novo_registro[get_real_col([f'Additions weigth {i+1}'])] = row.get('Peso (Kg)')
-        novo_registro[get_real_col([f'Additions arm {i+1}'])] = row.get('Braço (in)')
-
-    # Filtra colunas somente quando já existem fichas que definem o formato persistido.
-    chaves_validas = colunas_historico
-    if chaves_validas:
-        novo_registro = {k: v for k, v in novo_registro.items() if k in chaves_validas}
+    for i in range(1, MAX_ADDITIONS + 1):
+        novo_registro[f'Additions Description {i}'] = None
+        novo_registro[f'Additions weigth {i}'] = None
+        novo_registro[f'Additions arm {i}'] = None
+    for i, row in enumerate(adicoes_editadas.to_dict('records')[:MAX_ADDITIONS], start=1):
+        novo_registro[f'Additions Description {i}'] = row.get('Descrição')
+        novo_registro[f'Additions weigth {i}'] = row.get('Peso (Kg)')
+        novo_registro[f'Additions arm {i}'] = row.get('Braço (in)')
 
     return novo_registro, id_pesagem_input, rev_input
 
@@ -2413,6 +2550,18 @@ def tela_nova_ficha():
     st.session_state["historico_colunas"] = ()
 
     st.title("Gerar Nova Ficha")
+    ficha_salva = st.session_state.get("nova_ficha_salva")
+    if ficha_salva:
+        # Evita que um segundo clique em "Salvar" grave outra revisão igual.
+        st.success(
+            f"Ficha {ficha_salva[0]}, Pesagem {ficha_salva[1]}, "
+            f"Revisão {ficha_salva[2]} salva e enviada para aprovação."
+        )
+        if st.button("Emitir outra ficha", type="primary"):
+            st.session_state.pop("nova_ficha_salva", None)
+            st.rerun()
+        return
+
     usuario_atual = st.session_state['usuario_id']
     minhas_devolvidas = listar_fichas_devolvidas_usuario(usuario_atual)
     opcoes_correcao = {
@@ -2589,13 +2738,20 @@ def tela_nova_ficha():
                             st.session_state['usuario_id'],
                         )
                         limpar_campos_com_erro(prefixo, p_ant, r_ant)
-                        st.success("Ficha corrigida e enviada para aprovação.")
+                        st.session_state["nova_ficha_salva"] = (
+                            prefixo, int(p_final), int(r_final)
+                        )
+                        st.rerun()
                 elif ficha_existente:
                     st.error(f"Já existe uma ficha para {prefixo}, Pesagem {int(p_final)}, Revisão {int(r_final)}.")
+                elif not inserir_ficha(novo_registro):
+                    st.error(f"Já existe uma ficha para {prefixo}, Pesagem {int(p_final)}, Revisão {int(r_final)}.")
                 else:
-                    inserir_ficha(novo_registro)
                     registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
-                    st.success("Ficha cadastrada com sucesso.")
+                    st.session_state["nova_ficha_salva"] = (
+                        prefixo, int(p_final), int(r_final)
+                    )
+                    st.rerun()
         with col_btn2:
             st.download_button(
                 label="Exportar Prévia para Excel",
@@ -2961,25 +3117,28 @@ def tela_aprovar_fichas():
                 )
 
 def excluir_ficha(prefixo, pesagem, revisao):
+    chave = (
+        safe_str(prefixo),
+        normalizar_chave_ficha(pesagem),
+        normalizar_chave_ficha(revisao),
+    )
     with conectar_banco() as conn:
-        cursor = conn.execute(
-            '''DELETE FROM pesagens
-                WHERE dados ->> 'Prefixo' = ?
-                  AND dados ->> 'Pesagem' = ?
-                  AND COALESCE(dados ->> 'Revisao', dados ->> 'revisao') = ?''',
-            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
-        )
-        quantidade = cursor.rowcount
+        bloquear_prefixo(conn, prefixo)
+        quantidade = 0
+        for id_ficha in buscar_id_ficha(conn, prefixo, pesagem, revisao):
+            quantidade += conn.execute(
+                'DELETE FROM pesagens WHERE id = ?', (id_ficha,)
+            ).rowcount
         if quantidade:
             conn.execute(
                 '''DELETE FROM fluxo_fichas
                    WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
-                (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
+                chave,
             )
             conn.execute(
                 '''DELETE FROM campos_com_erro
                    WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
-                (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
+                chave,
             )
     if quantidade:
         invalidar_cache_fichas()
