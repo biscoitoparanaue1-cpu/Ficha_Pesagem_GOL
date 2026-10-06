@@ -1740,6 +1740,7 @@ PRESETS = {
         "Seats Installation (186 Pax)",
         "Seats Installation (177 Pax)",
         "Lavatory Dry Supplies",
+        "Lavatory Dry Supplies(2EA)",
         "Lavatory Pre-charge Fluid (6.0 Gal)",
         "Life Vest Installation",
         "Waste Container",
@@ -2298,40 +2299,31 @@ def formulario_pesagem(
         if angulo_level_correction else None
     )
     
+    # 1. Limpa todas as 15 deduções antigas antes de inserir as novas
     for i in range(1, 16):
         novo_registro[get_real_col([f'Deductions description {i}'])] = None
         novo_registro[get_real_col([f'Deductions Weigth {i}'])] = None
         novo_registro[get_real_col([f'Deductions arm {i}'])] = None
-    colunas_historico = set(st.session_state.get("historico_colunas", ()))
-    slots_deducoes = [
-        i for i in range(1, 16)
-        if not colunas_historico or all(
-            coluna in colunas_historico
-            for coluna in (
-                f'Deductions description {i}',
-                f'Deductions Weigth {i}',
-                f'Deductions arm {i}',
-            )
-        )
-    ]
-    for i, row in zip(slots_deducoes, deducoes_editadas.to_dict('records')):
-        novo_registro[get_real_col([f'Deductions description {i}'])] = row.get('Descrição')
-        novo_registro[get_real_col([f'Deductions Weigth {i}'])] = row.get('Peso (Kg)')
-        novo_registro[get_real_col([f'Deductions arm {i}'])] = row.get('Braço (in)')
+        
+    # 2. Salva as deduções editadas na interface dinamicamente
+    for i, row_ded in enumerate(deducoes_editadas.to_dict('records'), start=1):
+        novo_registro[get_real_col([f'Deductions description {i}'])] = row_ded.get('Descrição')
+        novo_registro[get_real_col([f'Deductions Weigth {i}'])] = row_ded.get('Peso (Kg)')
+        novo_registro[get_real_col([f'Deductions arm {i}'])] = row_ded.get('Braço (in)')
 
+    # 3. Limpa todas as 16 adições antigas antes de inserir as novas
     for i in range(1, 17):
         novo_registro[get_real_col([f'Additions Description {i}'])] = None
         novo_registro[get_real_col([f'Additions weigth {i}'])] = None
         novo_registro[get_real_col([f'Additions arm {i}'])] = None
-    for i, row in enumerate(adicoes_editadas.to_dict('records')):
-        novo_registro[get_real_col([f'Additions Description {i+1}'])] = row.get('Descrição')
-        novo_registro[get_real_col([f'Additions weigth {i+1}'])] = row.get('Peso (Kg)')
-        novo_registro[get_real_col([f'Additions arm {i+1}'])] = row.get('Braço (in)')
+        
+    # 4. Salva as adições editadas na interface dinamicamente
+    for i, row_add in enumerate(adicoes_editadas.to_dict('records'), start=1):
+        novo_registro[get_real_col([f'Additions Description {i}'])] = row_add.get('Descrição')
+        novo_registro[get_real_col([f'Additions weigth {i}'])] = row_add.get('Peso (Kg)')
+        novo_registro[get_real_col([f'Additions arm {i}'])] = row_add.get('Braço (in)')
 
-    # Filtra colunas somente quando já existem fichas que definem o formato persistido.
-    chaves_validas = colunas_historico
-    if chaves_validas:
-        novo_registro = {k: v for k, v in novo_registro.items() if k in chaves_validas}
+    # (O filtro chaves_validas foi completamente removido daqui)
 
     return novo_registro, id_pesagem_input, rev_input
 
