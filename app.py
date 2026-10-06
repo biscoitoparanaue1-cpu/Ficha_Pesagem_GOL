@@ -1971,14 +1971,9 @@ def renderizar_ficha_visualizacao(
                 )
 
             coluna_excel, coluna_aprovacao = st.columns(2)
-            coluna_excel.download_button(
-                label="Exportar para Excel (Padrão Oficial)",
-                data=lambda: gerar_excel_por_template(
-                    dados_excel, "exemplo_ficha.xlsx"
-                ),
-                file_name=f"{prefixo}_Weighing_Report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+            botoes_exportacao(
+                coluna_excel, lambda: dados_excel, prefixo, pesagem, revisao,
+                f"aprovacao_{prefixo}_{pesagem}_{revisao}",
             )
             if coluna_aprovacao.button(
                 "Aprovar ficha",
@@ -1995,14 +1990,75 @@ def renderizar_ficha_visualizacao(
                 )
                 st.rerun()
         else:
-            st.download_button(
-                label="Exportar para Excel (Padrão Oficial)",
-                data=lambda: gerar_excel_por_template(
-                    dados_excel, "exemplo_ficha.xlsx"
-                ),
-                file_name=f"{prefixo}_Weighing_Report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            botoes_exportacao(
+                st, lambda: dados_excel, prefixo, pesagem, revisao,
+                f"consulta_{prefixo}_{pesagem}_{revisao}_{destacar_erros}",
             )
+
+def gerar_pdf_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
+    """Gera o Excel oficial e o converte em PDF com o LibreOffice."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    executavel = shutil.which("soffice") or shutil.which("libreoffice")
+    if not executavel:
+        raise RuntimeError("LibreOffice não está instalado no servidor.")
+    with tempfile.TemporaryDirectory() as pasta:
+        caminho_xlsx = os.path.join(pasta, "ficha.xlsx")
+        wb = openpyxl.load_workbook(
+            io.BytesIO(gerar_excel_por_template(dados, caminho_template))
+        )
+        for planilha in wb.worksheets:
+            # Ajusta a largura da ficha a uma página, como na impressão do Excel.
+            planilha.sheet_properties.pageSetUpPr.fitToPage = True
+            planilha.page_setup.fitToWidth = 1
+            planilha.page_setup.fitToHeight = 0
+            planilha.page_setup.paperSize = planilha.PAPERSIZE_A4
+            # Só a ficha (colunas A:AD); à direita ficam tabelas auxiliares.
+            planilha.print_area = f"A1:AD{min(planilha.max_row, 130)}"
+        wb.save(caminho_xlsx)
+        subprocess.run(
+            [
+                executavel, "--headless", "--norestore",
+                f"-env:UserInstallation=file://{pasta}/perfil",
+                "--convert-to", "pdf", "--outdir", pasta, caminho_xlsx,
+            ],
+            check=True, capture_output=True, timeout=120,
+        )
+        with open(os.path.join(pasta, "ficha.pdf"), "rb") as arquivo:
+            return arquivo.read()
+
+
+def nome_arquivo_ficha(prefixo, pesagem, revisao):
+    return (
+        f"{safe_str(prefixo)}_Pesagem_{normalizar_chave_ficha(pesagem)}"
+        f"_Revisao_{normalizar_chave_ficha(revisao)}"
+    )
+
+
+def botoes_exportacao(container, obter_dados, prefixo, pesagem, revisao, chave):
+    nome = nome_arquivo_ficha(prefixo, pesagem, revisao)
+    col_excel, col_pdf = container.columns(2)
+    col_excel.download_button(
+        "Exportar Excel",
+        icon=":material/table_view:",
+        data=lambda: gerar_excel_por_template(obter_dados(), "exemplo_ficha.xlsx"),
+        file_name=f"{nome}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key=f"excel_{chave}",
+    )
+    col_pdf.download_button(
+        "Exportar PDF",
+        icon=":material/picture_as_pdf:",
+        data=lambda: gerar_pdf_por_template(obter_dados(), "exemplo_ficha.xlsx"),
+        file_name=f"{nome}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        key=f"pdf_{chave}",
+    )
+
 
 # Função auxiliar para mapear as colunas corretas do Banco de Dados
 def get_real_col(possible_names):
@@ -2928,15 +2984,9 @@ def tela_nova_ficha():
                     )
                     st.rerun()
         with col_btn2:
-            st.download_button(
-                label="Exportar Prévia para Excel",
-                data=lambda: gerar_excel_por_template(
-                    st.session_state["dados_excel_temp"],
-                    "exemplo_ficha.xlsx",
-                ),
-                file_name=f"{prefixo}_Preview.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+            botoes_exportacao(
+                st, lambda: st.session_state["dados_excel_temp"], prefixo,
+                p_final, r_final, f"nova_{prefixo}",
             )
 
 @st.fragment
@@ -2996,15 +3046,9 @@ def tela_edicao():
                             "Alterações salvas na mesma revisão e enviadas para aprovação."
                         )
                 with col_btn2:
-                    st.download_button(
-                        label="Exportar Revisão para Excel",
-                        data=lambda: gerar_excel_por_template(
-                            st.session_state["dados_excel_temp"],
-                            "exemplo_ficha.xlsx",
-                        ),
-                        file_name=f"{prefixo}_Revisao_{r_final}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
+                    botoes_exportacao(
+                        st, lambda: st.session_state["dados_excel_temp"], prefixo,
+                        p_final, r_final, f"edicao_{prefixo}",
                     )
 
 @protegido
@@ -3428,7 +3472,7 @@ def logo_html():
                 dados = base64.b64encode(arquivo.read()).decode()
             return (
                 f'<img src="data:image/{tipo};base64,{dados}" '
-                'style="height:38px;width:auto;flex-shrink:0">'
+                'style="height:34px;width:auto;flex-shrink:0">'
             )
     return '<div class="marca-logo">W&B</div>'
 
