@@ -408,10 +408,13 @@ def dataframe_fichas(registros):
     )
     if 'revisao' in df.columns and 'Revisao' not in df.columns:
         df = df.rename(columns={'revisao': 'Revisao'})
+    
+    # Aplica a normalização direto na raiz do DataFrame
     if 'Pesagem' in df.columns:
-        df['Pesagem'] = df['Pesagem'].astype(str)
+        df['Pesagem'] = df['Pesagem'].apply(normalizar_chave_ficha)
     if 'Revisao' in df.columns:
-        df['Revisao'] = df['Revisao'].astype(str)
+        df['Revisao'] = df['Revisao'].apply(normalizar_chave_ficha)
+        
     return df
 
 
@@ -787,7 +790,7 @@ def registrar_ficha(prefixo, pesagem, revisao, usuario):
                    aprovado_por = NULL,
                    criado_em = excluded.criado_em,
                    aprovado_em = NULL''',
-            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora)
+            (safe_str(prefixo), normalizar_chave_ficha(pesagem), normalizar_chave_ficha(revisao), usuario, agora)
         )
     invalidar_cache_fichas()
 
@@ -1064,7 +1067,7 @@ def aprovar_ficha(prefixo, pesagem, revisao, usuario):
                ON CONFLICT(prefixo, pesagem, revisao) DO UPDATE SET
                    aprovado_por = excluded.aprovado_por,
                    aprovado_em = excluded.aprovado_em''',
-            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora, agora)
+            (safe_str(prefixo), normalizar_chave_ficha(pesagem), normalizar_chave_ficha(revisao), usuario, agora, agora)
         )
     invalidar_cache_fichas()
 
@@ -1204,11 +1207,11 @@ def tela_consulta():
     
     if prefixo:
         df_filtrado = df_historico[df_historico['Prefixo'] == prefixo]
-        pesagens = sorted(df_filtrado['Pesagem'].dropna().unique().tolist())
+        pesagens = sorted(df_filtrado['Pesagem'].dropna().unique().tolist(), key=safe_float)
         pesagem = st.selectbox("Pesagem", [""] + pesagens)
         
         if pesagem:
-            revisoes = sorted(df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist())
+            revisoes = sorted(df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist(), key=safe_float)
             revisao = st.selectbox("Revisão", [""] + revisoes)
             
             if revisao:
@@ -2698,10 +2701,14 @@ def tela_edicao():
     if prefixo:
         df_filtrado = carregar_fichas_prefixo(prefixo)
         st.session_state["historico_colunas"] = tuple(df_filtrado.columns)
-        pesagem = st.selectbox("Pesagem a editar", [""] + sorted(df_filtrado['Pesagem'].dropna().unique().tolist()))
+        
+        # ✅ SUBSTITUA POR ESTAS LINHAS:
+        pesagens_unicas = sorted(df_filtrado['Pesagem'].dropna().unique().tolist(), key=safe_float)
+        pesagem = st.selectbox("Pesagem a editar", [""] + pesagens_unicas)
         
         if pesagem:
-            revisao = st.selectbox("Revisão a editar", [""] + sorted(df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist()))
+            revisoes_unicas = sorted(df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist(), key=safe_float)
+            revisao = st.selectbox("Revisão a editar", [""] + revisoes_unicas)
             
             if revisao:
                 st.divider()
@@ -2933,29 +2940,40 @@ def tela_aprovar_fichas():
                 )
 
 def excluir_ficha(prefixo, pesagem, revisao):
+    p_norm = normalizar_chave_ficha(pesagem)
+    r_norm = normalizar_chave_ficha(revisao)
+    removidas = 0
+    
     with conectar_banco() as conn:
-        cursor = conn.execute(
-            '''DELETE FROM pesagens
-                WHERE dados ->> 'Prefixo' = ?
-                  AND dados ->> 'Pesagem' = ?
-                  AND COALESCE(dados ->> 'Revisao', dados ->> 'revisao') = ?''',
-            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
-        )
-        quantidade = cursor.rowcount
-        if quantidade:
-            conn.execute(
-                '''DELETE FROM fluxo_fichas
-                   WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
-                (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
-            )
-            conn.execute(
-                '''DELETE FROM campos_com_erro
-                   WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
-                (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
-            )
-    if quantidade:
+        # Busca todas as fichas da aeronave para não errar a conversão do JSON
+        registros = conn.execute(
+            "SELECT id, dados FROM pesagens WHERE lower(btrim(dados->>'Prefixo')) = lower(btrim(?))",
+            (safe_str(prefixo),),
+        ).fetchall()
+        
+        # Encontra todos os IDs que, normalizados, dão match na exclusão (Ex: 2 e 2.0)
+        ids_ficha = [
+            item["id"] for item in registros
+            if normalizar_chave_ficha(item["dados"].get("Pesagem", "")) == p_norm
+            and normalizar_chave_ficha(item["dados"].get("Revisao", item["dados"].get("revisao", ""))) == r_norm
+        ]
+        
+        if not ids_ficha: 
+            return 0
+        
+        # Exclui as ocorrências encontradas no JSON e tabelas de fluxo
+        for id_f in ids_ficha:
+            res = conn.execute("DELETE FROM pesagens WHERE id = ?", (id_f,))
+            removidas += res.rowcount
+            
+        if removidas:
+            conn.execute("DELETE FROM fluxo_fichas WHERE prefixo = ? AND pesagem = ? AND revisao = ?", (safe_str(prefixo), p_norm, r_norm))
+            conn.execute("DELETE FROM campos_com_erro WHERE prefixo = ? AND pesagem = ? AND revisao = ?", (safe_str(prefixo), p_norm, r_norm))
+    
+    if removidas:
         invalidar_cache_fichas()
-    return quantidade
+    return removidas
+    
 
 
 def tela_excluir_ficha():
@@ -3044,6 +3062,7 @@ else:
             if st.button("Assinaturas", use_container_width=True): st.session_state['pagina_atual'] = 'assinaturas'
             if st.button("Excluir ficha", use_container_width=True): st.session_state['pagina_atual'] = 'excluir'
         st.divider()
+
         if st.button("Sair do Sistema", use_container_width=True):
             st.session_state['usuario_logado'] = False
             st.session_state['nivel_acesso'] = 0
