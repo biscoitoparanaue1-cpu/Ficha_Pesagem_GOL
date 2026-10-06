@@ -408,13 +408,10 @@ def dataframe_fichas(registros):
     )
     if 'revisao' in df.columns and 'Revisao' not in df.columns:
         df = df.rename(columns={'revisao': 'Revisao'})
-    
-    # Aplica a normalização direto na raiz do DataFrame
     if 'Pesagem' in df.columns:
-        df['Pesagem'] = df['Pesagem'].apply(normalizar_chave_ficha)
+        df['Pesagem'] = df['Pesagem'].astype(str)
     if 'Revisao' in df.columns:
-        df['Revisao'] = df['Revisao'].apply(normalizar_chave_ficha)
-        
+        df['Revisao'] = df['Revisao'].astype(str)
     return df
 
 
@@ -486,81 +483,58 @@ def invalidar_cache_fichas():
 @st.cache_data
 def carregar_tipos_aeronave():
     excel_path = 'Cópia de Ficha_Pesagem_v2.xlsm'
-    dict_aero = {}
-    
     if not os.path.exists(excel_path):
         st.warning(f"Planilha não encontrada: '{excel_path}'.")
-    else:
-        try:
-            df_tipos = pd.read_excel(excel_path, sheet_name='Sheet1')
-            
-            col_modelo = 'MODEL' if 'MODEL' in df_tipos.columns else df_tipos.columns[0]
-            col_prefixo = 'VRG REG.' if 'VRG REG.' in df_tipos.columns else df_tipos.columns[1]
-            col_armnose = 'ARMNOSE' if 'ARMNOSE' in df_tipos.columns else None
-            
-            col_vrbl = next((c for c in df_tipos.columns if 'VRBL' in str(c).upper() or 'VRBL NUMBER' in str(c).upper()), None)
-            nomes_colunas = {
-                coluna: " ".join(str(coluna).replace("\n", " ").split()).upper()
-                for coluna in df_tipos.columns
-            }
+        return {}
+    try:
+        df_tipos = pd.read_excel(excel_path, sheet_name='Sheet1')
+        
+        col_modelo = 'MODEL' if 'MODEL' in df_tipos.columns else df_tipos.columns[0]
+        col_prefixo = 'VRG REG.' if 'VRG REG.' in df_tipos.columns else df_tipos.columns[1]
+        col_armnose = 'ARMNOSE' if 'ARMNOSE' in df_tipos.columns else None
+        
+        col_vrbl = next((c for c in df_tipos.columns if 'VRBL' in str(c).upper() or 'VRBL NUMBER' in str(c).upper()), None)
+        nomes_colunas = {
+            coluna: " ".join(str(coluna).replace("\n", " ").split()).upper()
+            for coluna in df_tipos.columns
+        }
+        col_serial = next(
+            (
+                coluna for coluna, nome in nomes_colunas.items()
+                if nome in {"S/N", "SERIAL", "SERIAL NUMBER"}
+            ),
+            None,
+        )
+        if col_serial is None:
             col_serial = next(
-                (coluna for coluna, nome in nomes_colunas.items() if nome in {"S/N", "SERIAL", "SERIAL NUMBER"}),
+                (
+                    coluna for coluna, nome in nomes_colunas.items()
+                    if "SERIAL" in nome and "ENGINE" not in nome
+                ),
                 None,
             )
-            if col_serial is None:
-                col_serial = next(
-                    (coluna for coluna, nome in nomes_colunas.items() if "SERIAL" in nome and "ENGINE" not in nome),
-                    None,
-                )
-            col_line = next((c for c in df_tipos.columns if 'LINE' in str(c).upper()), None)
-            
-            for _, row in df_tipos.iterrows():
-                prefixo = str(row[col_prefixo]).strip()
-                if prefixo and prefixo != 'nan':
-                    modelo = str(row[col_modelo]).strip()
-                    arm_nose = 93.0000
-                    if col_armnose and pd.notna(row[col_armnose]):
-                        try: arm_nose = float(row[col_armnose])
-                        except: pass
-                    
-                    dict_aero[prefixo] = {
-                        'modelo': modelo, 
-                        'armnose': arm_nose,
-                        'vrbl': safe_identifier(row[col_vrbl]) if col_vrbl else "",
-                        'serial': safe_identifier(row[col_serial]) if col_serial else "",
-                        'line': safe_identifier(row[col_line]) if col_line else ""
-                    }
-        except Exception as e:
-            pass
-
-    # --- NOVA LÓGICA: LER DO BANCO DE DADOS E JUNTAR COM O EXCEL ---
-    try:
-        with conectar_banco() as conn:
-            # Garante que a tabela nova exista no banco
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS aeronaves (
-                    prefixo TEXT PRIMARY KEY,
-                    modelo TEXT NOT NULL,
-                    serial TEXT,
-                    vrbl TEXT,
-                    line TEXT
-                )
-            ''')
-            db_aeros = conn.execute("SELECT prefixo, modelo, serial, vrbl, line FROM aeronaves").fetchall()
-            for row in db_aeros:
-                prefixo_db = str(row['prefixo']).strip()
-                dict_aero[prefixo_db] = {
-                    'modelo': str(row['modelo']).strip(),
-                    'armnose': 93.0000,
-                    'vrbl': safe_identifier(row['vrbl']),
-                    'serial': safe_identifier(row['serial']),
-                    'line': safe_identifier(row['line'])
-                }
-    except Exception as e:
-        pass
+        col_line = next((c for c in df_tipos.columns if 'LINE' in str(c).upper()), None)
         
-    return dict_aero
-
+        dict_aero = {}
+        for _, row in df_tipos.iterrows():
+            prefixo = str(row[col_prefixo]).strip()
+            if prefixo and prefixo != 'nan':
+                modelo = str(row[col_modelo]).strip()
+                arm_nose = 93.0000
+                if col_armnose and pd.notna(row[col_armnose]):
+                    try: arm_nose = float(row[col_armnose])
+                    except: pass
+                
+                dict_aero[prefixo] = {
+                    'modelo': modelo, 
+                    'armnose': arm_nose,
+                    'vrbl': safe_identifier(row[col_vrbl]) if col_vrbl else "",
+                    'serial': safe_identifier(row[col_serial]) if col_serial else "",
+                    'line': safe_identifier(row[col_line]) if col_line else ""
+                }
+        return dict_aero
+    except Exception as e:
+        return {}
 
 dict_tipos_aeronave = carregar_tipos_aeronave()
 
@@ -790,7 +764,7 @@ def registrar_ficha(prefixo, pesagem, revisao, usuario):
                    aprovado_por = NULL,
                    criado_em = excluded.criado_em,
                    aprovado_em = NULL''',
-            (safe_str(prefixo), normalizar_chave_ficha(pesagem), normalizar_chave_ficha(revisao), usuario, agora)
+            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora)
         )
     invalidar_cache_fichas()
 
@@ -1067,7 +1041,7 @@ def aprovar_ficha(prefixo, pesagem, revisao, usuario):
                ON CONFLICT(prefixo, pesagem, revisao) DO UPDATE SET
                    aprovado_por = excluded.aprovado_por,
                    aprovado_em = excluded.aprovado_em''',
-            (safe_str(prefixo), normalizar_chave_ficha(pesagem), normalizar_chave_ficha(revisao), usuario, agora, agora)
+            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao), usuario, agora, agora)
         )
     invalidar_cache_fichas()
 
@@ -1207,83 +1181,18 @@ def tela_consulta():
     
     if prefixo:
         df_filtrado = df_historico[df_historico['Prefixo'] == prefixo]
-        pesagens = sorted(df_filtrado['Pesagem'].dropna().unique().tolist(), key=safe_float)
+        pesagens = sorted(df_filtrado['Pesagem'].dropna().unique().tolist())
         pesagem = st.selectbox("Pesagem", [""] + pesagens)
         
         if pesagem:
-            revisoes = sorted(df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist(), key=safe_float)
+            revisoes = sorted(df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist())
             revisao = st.selectbox("Revisão", [""] + revisoes)
             
             if revisao:
                 st.divider()
                 linha = df_filtrado[(df_filtrado['Pesagem'] == pesagem) & (df_filtrado['Revisao'] == revisao)].iloc[0]
                 renderizar_ficha_visualizacao(prefixo, pesagem, revisao, linha)
-def obter_modelos_unicos():
-    modelos = set()
-    # 1. Puxa modelos já conhecidos (via Excel ou Cadastros anteriores)
-    for dados in dict_tipos_aeronave.values():
-        if dados.get('modelo'):
-            modelos.add(str(dados['modelo']).strip())
-    
-    # 2. Puxa das fichas de pesagem já arquivadas (para não perder nenhum histórico)
-    for _, linha in df_historico.iterrows():
-        modelo_historico = linha.get('Tipo_aeronave', linha.get('modelo', ''))
-        if pd.notna(modelo_historico) and str(modelo_historico).strip():
-            modelos.add(str(modelo_historico).strip())
-            
-    return sorted(list(modelos))
 
-def tela_nova_aeronave():
-    if st.session_state['nivel_acesso'] != 1:
-        st.error("Acesso restrito à Engenharia.")
-        return
-
-    st.title("Cadastrar Nova Aeronave")
-    st.write("A aeronave ficará disponível imediatamente para novas pesagens após o cadastro.")
-
-    modelos_disponiveis = obter_modelos_unicos()
-
-    with st.form("form_nova_aeronave"):
-        c1, c2 = st.columns(2)
-        prefixo = c1.text_input("Prefixo (ex: PR-XMA)").strip().upper()
-        
-        # Puxa modelos dinâmicos para reaproveitar cálculo de momento do flap
-        modelo = c2.selectbox(
-            "Modelo da Aeronave", 
-            [""] + modelos_disponiveis,
-            help="Selecione um modelo já existente para usar a mesma regra de Momento dos Flaps da frota."
-        )
-        
-        c3, c4, c5 = st.columns(3)
-        serial = c3.text_input("Serial Number").strip()
-        vrbl = c4.text_input("VRBL Number").strip()
-        line = c5.text_input("Line Number").strip()
-
-        enviar = st.form_submit_button("Salvar Aeronave no Banco", type="primary")
-
-    if enviar:
-        if not prefixo or not modelo:
-            st.error("Os campos Prefixo e Modelo são obrigatórios.")
-        else:
-            try:
-                with conectar_banco() as conn:
-                    # Registra a aeronave no banco
-                    conn.execute('''
-                        INSERT INTO aeronaves (prefixo, modelo, serial, vrbl, line)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(prefixo) DO UPDATE SET
-                            modelo = excluded.modelo,
-                            serial = excluded.serial,
-                            vrbl = excluded.vrbl,
-                            line = excluded.line
-                    ''', (prefixo, modelo, serial, vrbl, line))
-                
-                # Limpa a memória pra forçar o Streamlit a carregar a nova aeronave e recarrega a página
-                carregar_tipos_aeronave.clear()
-                st.success(f"Aeronave {prefixo} salva! Ela já está disponível no sistema.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Erro ao salvar no banco de dados: {e}")
 def renderizar_ficha_visualizacao(
     prefixo,
     pesagem,
@@ -1308,75 +1217,6 @@ def renderizar_ficha_visualizacao(
     marcacoes_campos = {}
     rotulos_campos = {}
 
-
-def obter_modelos_unicos():
-    modelos = set()
-    # 1. Puxa modelos já conhecidos (via Excel ou Cadastros anteriores)
-    for dados in dict_tipos_aeronave.values():
-        if dados.get('modelo'):
-            modelos.add(str(dados['modelo']).strip())
-    
-    # 2. Puxa das fichas de pesagem já arquivadas (para não perder nenhum histórico)
-    for _, linha in df_historico.iterrows():
-        modelo_historico = linha.get('Tipo_aeronave', linha.get('modelo', ''))
-        if pd.notna(modelo_historico) and str(modelo_historico).strip():
-            modelos.add(str(modelo_historico).strip())
-            
-    return sorted(list(modelos))
-
-def tela_nova_aeronave():
-    if st.session_state['nivel_acesso'] != 1:
-        st.error("Acesso restrito à Engenharia.")
-        return
-
-    st.title("Cadastrar Nova Aeronave")
-    st.write("A aeronave ficará disponível imediatamente para novas pesagens após o cadastro.")
-
-    modelos_disponiveis = obter_modelos_unicos()
-
-    with st.form("form_nova_aeronave"):
-        c1, c2 = st.columns(2)
-        prefixo = c1.text_input("Prefixo (ex: PR-XMA)").strip().upper()
-        
-        # Puxa modelos dinâmicos para reaproveitar cálculo de momento do flap
-        modelo = c2.selectbox(
-            "Modelo da Aeronave", 
-            [""] + modelos_disponiveis,
-            help="Selecione um modelo já existente para usar a mesma regra de Momento dos Flaps da frota."
-        )
-        
-        c3, c4, c5 = st.columns(3)
-        serial = c3.text_input("Serial Number").strip()
-        vrbl = c4.text_input("VRBL Number").strip()
-        line = c5.text_input("Line Number").strip()
-
-        enviar = st.form_submit_button("Salvar Aeronave no Banco", type="primary")
-
-    if enviar:
-        if not prefixo or not modelo:
-            st.error("Os campos Prefixo e Modelo são obrigatórios.")
-        else:
-            try:
-                with conectar_banco() as conn:
-                    # Registra a aeronave no banco
-                    conn.execute('''
-                        INSERT INTO aeronaves (prefixo, modelo, serial, vrbl, line)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(prefixo) DO UPDATE SET
-                            modelo = excluded.modelo,
-                            serial = excluded.serial,
-                            vrbl = excluded.vrbl,
-                            line = excluded.line
-                    ''', (prefixo, modelo, serial, vrbl, line))
-                
-                # Limpa a memória pra forçar o Streamlit a carregar a nova aeronave e recarrega a página
-                carregar_tipos_aeronave.clear()
-                st.success(f"Aeronave {prefixo} salva! Ela já está disponível no sistema.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Erro ao salvar no banco de dados: {e}")
-
-                
     def mostrar_campo(campo, rotulo, valor, container=st, permitir_erro=True):
         if not modo_aprovacao or not permitir_erro:
             if destacar_erros and campo in sinalizacoes_atuais:
@@ -2459,31 +2299,40 @@ def formulario_pesagem(
         if angulo_level_correction else None
     )
     
-    # 1. Limpa todas as 15 deduções antigas antes de inserir as novas
     for i in range(1, 16):
         novo_registro[get_real_col([f'Deductions description {i}'])] = None
         novo_registro[get_real_col([f'Deductions Weigth {i}'])] = None
         novo_registro[get_real_col([f'Deductions arm {i}'])] = None
-        
-    # 2. Salva as deduções editadas na interface dinamicamente
-    for i, row_ded in enumerate(deducoes_editadas.to_dict('records'), start=1):
-        novo_registro[get_real_col([f'Deductions description {i}'])] = row_ded.get('Descrição')
-        novo_registro[get_real_col([f'Deductions Weigth {i}'])] = row_ded.get('Peso (Kg)')
-        novo_registro[get_real_col([f'Deductions arm {i}'])] = row_ded.get('Braço (in)')
+    colunas_historico = set(st.session_state.get("historico_colunas", ()))
+    slots_deducoes = [
+        i for i in range(1, 16)
+        if not colunas_historico or all(
+            coluna in colunas_historico
+            for coluna in (
+                f'Deductions description {i}',
+                f'Deductions Weigth {i}',
+                f'Deductions arm {i}',
+            )
+        )
+    ]
+    for i, row in zip(slots_deducoes, deducoes_editadas.to_dict('records')):
+        novo_registro[get_real_col([f'Deductions description {i}'])] = row.get('Descrição')
+        novo_registro[get_real_col([f'Deductions Weigth {i}'])] = row.get('Peso (Kg)')
+        novo_registro[get_real_col([f'Deductions arm {i}'])] = row.get('Braço (in)')
 
-    # 3. Limpa todas as 16 adições antigas antes de inserir as novas
     for i in range(1, 17):
         novo_registro[get_real_col([f'Additions Description {i}'])] = None
         novo_registro[get_real_col([f'Additions weigth {i}'])] = None
         novo_registro[get_real_col([f'Additions arm {i}'])] = None
-        
-    # 4. Salva as adições editadas na interface dinamicamente
-    for i, row_add in enumerate(adicoes_editadas.to_dict('records'), start=1):
-        novo_registro[get_real_col([f'Additions Description {i}'])] = row_add.get('Descrição')
-        novo_registro[get_real_col([f'Additions weigth {i}'])] = row_add.get('Peso (Kg)')
-        novo_registro[get_real_col([f'Additions arm {i}'])] = row_add.get('Braço (in)')
+    for i, row in enumerate(adicoes_editadas.to_dict('records')):
+        novo_registro[get_real_col([f'Additions Description {i+1}'])] = row.get('Descrição')
+        novo_registro[get_real_col([f'Additions weigth {i+1}'])] = row.get('Peso (Kg)')
+        novo_registro[get_real_col([f'Additions arm {i+1}'])] = row.get('Braço (in)')
 
-    # (O filtro chaves_validas foi completamente removido daqui)
+    # Filtra colunas somente quando já existem fichas que definem o formato persistido.
+    chaves_validas = colunas_historico
+    if chaves_validas:
+        novo_registro = {k: v for k, v in novo_registro.items() if k in chaves_validas}
 
     return novo_registro, id_pesagem_input, rev_input
 
@@ -2701,14 +2550,10 @@ def tela_edicao():
     if prefixo:
         df_filtrado = carregar_fichas_prefixo(prefixo)
         st.session_state["historico_colunas"] = tuple(df_filtrado.columns)
-        
-        # ✅ SUBSTITUA POR ESTAS LINHAS:
-        pesagens_unicas = sorted(df_filtrado['Pesagem'].dropna().unique().tolist(), key=safe_float)
-        pesagem = st.selectbox("Pesagem a editar", [""] + pesagens_unicas)
+        pesagem = st.selectbox("Pesagem a editar", [""] + sorted(df_filtrado['Pesagem'].dropna().unique().tolist()))
         
         if pesagem:
-            revisoes_unicas = sorted(df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist(), key=safe_float)
-            revisao = st.selectbox("Revisão a editar", [""] + revisoes_unicas)
+            revisao = st.selectbox("Revisão a editar", [""] + sorted(df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist()))
             
             if revisao:
                 st.divider()
@@ -2940,40 +2785,29 @@ def tela_aprovar_fichas():
                 )
 
 def excluir_ficha(prefixo, pesagem, revisao):
-    p_norm = normalizar_chave_ficha(pesagem)
-    r_norm = normalizar_chave_ficha(revisao)
-    removidas = 0
-    
     with conectar_banco() as conn:
-        # Busca todas as fichas da aeronave para não errar a conversão do JSON
-        registros = conn.execute(
-            "SELECT id, dados FROM pesagens WHERE lower(btrim(dados->>'Prefixo')) = lower(btrim(?))",
-            (safe_str(prefixo),),
-        ).fetchall()
-        
-        # Encontra todos os IDs que, normalizados, dão match na exclusão (Ex: 2 e 2.0)
-        ids_ficha = [
-            item["id"] for item in registros
-            if normalizar_chave_ficha(item["dados"].get("Pesagem", "")) == p_norm
-            and normalizar_chave_ficha(item["dados"].get("Revisao", item["dados"].get("revisao", ""))) == r_norm
-        ]
-        
-        if not ids_ficha: 
-            return 0
-        
-        # Exclui as ocorrências encontradas no JSON e tabelas de fluxo
-        for id_f in ids_ficha:
-            res = conn.execute("DELETE FROM pesagens WHERE id = ?", (id_f,))
-            removidas += res.rowcount
-            
-        if removidas:
-            conn.execute("DELETE FROM fluxo_fichas WHERE prefixo = ? AND pesagem = ? AND revisao = ?", (safe_str(prefixo), p_norm, r_norm))
-            conn.execute("DELETE FROM campos_com_erro WHERE prefixo = ? AND pesagem = ? AND revisao = ?", (safe_str(prefixo), p_norm, r_norm))
-    
-    if removidas:
+        cursor = conn.execute(
+            '''DELETE FROM pesagens
+                WHERE dados ->> 'Prefixo' = ?
+                  AND dados ->> 'Pesagem' = ?
+                  AND COALESCE(dados ->> 'Revisao', dados ->> 'revisao') = ?''',
+            (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
+        )
+        quantidade = cursor.rowcount
+        if quantidade:
+            conn.execute(
+                '''DELETE FROM fluxo_fichas
+                   WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
+                (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
+            )
+            conn.execute(
+                '''DELETE FROM campos_com_erro
+                   WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
+                (safe_str(prefixo), safe_str(pesagem), safe_str(revisao)),
+            )
+    if quantidade:
         invalidar_cache_fichas()
-    return removidas
-    
+    return quantidade
 
 
 def tela_excluir_ficha():
@@ -3049,18 +2883,14 @@ else:
         st.subheader("Menu Principal")
         st.write(f"Usuário ativo: **{st.session_state['nome_usuario']}**")
         st.divider()
-        
         if st.button("Consultar Fichas", use_container_width=True): st.session_state['pagina_atual'] = 'consulta'
         if st.button("Nova Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'nova_ficha'
-        
         if st.session_state['nivel_acesso'] == 1:
-            if st.button("Cadastrar Aeronave", use_container_width=True): st.session_state['pagina_atual'] = 'cadastrar_aeronave'
             if st.button("Editar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'edicao'
             if st.button("Aprovar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'aprovar'
             if st.button("Criar login", use_container_width=True): st.session_state['pagina_atual'] = 'criar_login'
             if st.button("Assinaturas", use_container_width=True): st.session_state['pagina_atual'] = 'assinaturas'
             if st.button("Excluir ficha", use_container_width=True): st.session_state['pagina_atual'] = 'excluir'
-            
         st.divider()
         if st.button("Sair do Sistema", use_container_width=True):
             st.session_state['usuario_logado'] = False
@@ -3070,11 +2900,8 @@ else:
             st.session_state['pagina_atual'] = 'consulta'
             st.rerun()
 
-    # ATENÇÃO: Esta é a parte que sumiu e faz as telas aparecerem!
-    # Elas ficam alinhadas FORA do "with st.sidebar:"
     if st.session_state['pagina_atual'] == 'consulta': tela_consulta()
     elif st.session_state['pagina_atual'] == 'nova_ficha': tela_nova_ficha()
-    elif st.session_state['pagina_atual'] == 'cadastrar_aeronave': tela_nova_aeronave()
     elif st.session_state['pagina_atual'] == 'edicao': tela_edicao()
     elif st.session_state['pagina_atual'] == 'aprovar': tela_aprovar_fichas()
     elif st.session_state['pagina_atual'] == 'criar_login': tela_criar_login()
