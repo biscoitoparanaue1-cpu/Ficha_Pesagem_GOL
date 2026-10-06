@@ -592,7 +592,11 @@ def carregar_aeronaves_cadastradas():
     return {
         registro['prefixo']: {
             'modelo': registro['modelo'],
-            'armnose': float(registro['armnose']),
+            'armnose': (
+                float(registro['armnose'])
+                if registro['armnose'] is not None
+                else armnose_padrao_modelo(registro['modelo'])
+            ),
             'vrbl': safe_str(registro['vrbl']),
             'serial': safe_str(registro['serial']),
             'line': safe_str(registro['line']),
@@ -718,6 +722,17 @@ def inicializar_controle_acesso():
                 cadastrado_por TEXT,
                 cadastrado_em TEXT NOT NULL
             )
+        ''')
+        # Bancos que já tinham a tabela da versão anterior (só prefixo, modelo,
+        # serial, vrbl e line) recebem as colunas novas.
+        conn.execute('''
+            ALTER TABLE aeronaves
+                ADD COLUMN IF NOT EXISTS serial TEXT,
+                ADD COLUMN IF NOT EXISTS vrbl TEXT,
+                ADD COLUMN IF NOT EXISTS line TEXT,
+                ADD COLUMN IF NOT EXISTS armnose DOUBLE PRECISION,
+                ADD COLUMN IF NOT EXISTS cadastrado_por TEXT,
+                ADD COLUMN IF NOT EXISTS cadastrado_em TEXT
         ''')
         conn.execute('''
             CREATE TABLE IF NOT EXISTS assinaturas_usuarios (
