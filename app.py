@@ -26,6 +26,69 @@ if 'usuario_logado' not in st.session_state:
 if 'pagina_atual' not in st.session_state:
     st.session_state['pagina_atual'] = 'consulta'
 
+st.markdown(
+    """
+    <style>
+    [data-testid="stToolbar"], [data-testid="stDecoration"],
+    [data-testid="stAppDeployButton"] { display: none !important; }
+    header[data-testid="stHeader"] { background: transparent; }
+    .block-container { padding-top: 2.2rem; max-width: 1280px; }
+    section[data-testid="stSidebar"] {
+        background: #FFFFFF; border-right: 1px solid #E6E8EC;
+    }
+    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .2rem; }
+    section[data-testid="stSidebar"] .stButton button {
+        justify-content: flex-start; border: none; box-shadow: none;
+        padding: 0.4rem 0.75rem; min-height: 2.3rem; font-weight: 500;
+    }
+    section[data-testid="stSidebar"] .stButton button > div {
+        justify-content: flex-start; width: 100%;
+    }
+    section[data-testid="stSidebar"] .stButton button[kind="secondary"] {
+        background: transparent; color: #3B4352;
+    }
+    section[data-testid="stSidebar"] .stButton button[kind="secondary"]:hover {
+        background: #FFF1E8; color: #FF6A13;
+    }
+    .marca { display: flex; align-items: center; gap: .6rem; margin-bottom: .2rem; }
+    .marca-logo {
+        width: 38px; height: 38px; border-radius: 10px; background: #FF6A13;
+        color: #fff; display: flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: .8rem; flex-shrink: 0;
+    }
+    .marca-nome { font-weight: 700; font-size: 1.02rem; line-height: 1.1; }
+    .marca-sub { color: #6B7280; font-size: .78rem; }
+    .usuario {
+        background: #F6F7F9; border-radius: 10px; padding: .55rem .75rem;
+        font-size: .85rem; color: #3B4352; margin: .8rem 0 .4rem;
+    }
+    .grupo-menu {
+        color: #9AA1AD; font-size: .72rem; font-weight: 600; letter-spacing: .06em;
+        text-transform: uppercase; margin: .9rem 0 .25rem .2rem;
+    }
+    .cabecalho h1 { font-size: 1.75rem; font-weight: 700; margin: 0; padding: 0; }
+    .cabecalho p { color: #6B7280; margin: .25rem 0 1.2rem; }
+    div[data-testid="stMetric"] {
+        background: #FFFFFF; border: 1px solid #E6E8EC; border-radius: 12px;
+        padding: .85rem 1rem;
+    }
+    div[data-testid="stMetricLabel"] { color: #6B7280; }
+    .stTabs [data-baseweb="tab-list"] { gap: .25rem; }
+    .stTabs [data-baseweb="tab"] { padding: .4rem .9rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def cabecalho(titulo, subtitulo=""):
+    st.markdown(
+        f'<div class="cabecalho"><h1>{titulo}</h1>'
+        + (f"<p>{subtitulo}</p>" if subtitulo else "<p></p>")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
 def safe_float(val):
     if pd.isna(val):
         return 0.0
@@ -1353,12 +1416,29 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
     return output.getvalue()
 
 
+def mostrar_relatorio_pesagem(tabela, peso, braco, cg_mac):
+    r1, r2, r3 = st.columns(3)
+    r1.metric("Aircraft Basic Weight", f"{peso:,.2f} kg")
+    r2.metric("Aircraft Basic Arm", f"{braco:,.4f} in")
+    r3.metric("C.G. (% MAC)", f"{cg_mac:.2f} %")
+    st.dataframe(
+        pd.DataFrame(tabela),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Weight (kg)": st.column_config.NumberColumn(format="%.2f"),
+            "Arm (inch)": st.column_config.NumberColumn(format="%.4f"),
+            "Moment (kg x inch)": st.column_config.NumberColumn(format="%,.2f"),
+        },
+    )
+
+
 # 4. TELAS E FUNCIONALIDADES
 
 @protegido
 def tela_consulta():
-    st.title("Consulta de Histórico")
-    if st.button("Atualizar lista de fichas"):
+    cabecalho("Fichas", "Visão geral e consulta do histórico de pesagens.")
+    if st.button("Atualizar", icon=":material/refresh:"):
         invalidar_cache_fichas()
         st.rerun()
 
@@ -1372,18 +1452,38 @@ def tela_consulta():
         return
 
     prefixos_unicos = sorted(df_historico['Prefixo'].dropna().unique().tolist()) if 'Prefixo' in df_historico.columns else []
-    prefixo = st.selectbox("Aeronave", [""] + prefixos_unicos)
-    
-    if prefixo:
-        df_filtrado = df_historico[df_historico['Prefixo'] == prefixo]
-        pesagens = sorted(df_filtrado['Pesagem'].dropna().unique().tolist())
-        pesagem = st.selectbox("Pesagem", [""] + pesagens)
-        
-        if pesagem:
-            revisoes = sorted(df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist())
-            revisao = st.selectbox("Revisão", [""] + revisoes)
-            
-            if revisao:
+    pendentes_aprovacao, pendentes_correcao = listar_fichas_pendentes()
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Aeronaves com ficha", len(prefixos_unicos))
+    k2.metric("Fichas emitidas", len(df_historico))
+    k3.metric("Aguardando aprovação", len(pendentes_aprovacao))
+    k4.metric("Devolvidas para correção", len(pendentes_correcao))
+
+    ordenar_numero = lambda valores: sorted(valores, key=lambda v: (safe_float(v), v))
+    with st.container(border=True):
+        st.markdown("**Consultar ficha**")
+        c1, c2, c3 = st.columns([2, 1, 1])
+        prefixo = c1.selectbox(
+            "Aeronave", prefixos_unicos, index=None, placeholder="Digite ou escolha o prefixo"
+        )
+        df_filtrado = (
+            df_historico[df_historico['Prefixo'] == prefixo] if prefixo else df_historico.iloc[0:0]
+        )
+        pesagens = ordenar_numero(df_filtrado['Pesagem'].dropna().unique().tolist())
+        pesagem = c2.selectbox(
+            "Pesagem", pesagens, index=len(pesagens) - 1 if pesagens else None,
+            disabled=not prefixo, placeholder="—",
+        )
+        revisoes = ordenar_numero(
+            df_filtrado[df_filtrado['Pesagem'] == pesagem]['Revisao'].dropna().unique().tolist()
+        ) if pesagem else []
+        revisao = c3.selectbox(
+            "Revisão", revisoes, index=len(revisoes) - 1 if revisoes else None,
+            disabled=not pesagem, placeholder="—",
+        )
+
+    if prefixo and pesagem:
+        if revisao:
                 st.divider()
                 linha = df_filtrado[(df_filtrado['Pesagem'] == pesagem) & (df_filtrado['Revisao'] == revisao)].iloc[0]
                 renderizar_ficha_visualizacao(prefixo, pesagem, revisao, linha)
@@ -1396,7 +1496,7 @@ def renderizar_ficha_visualizacao(
     modo_aprovacao=False,
     destacar_erros=False,
 ):
-    st.subheader(f"Ficha Técnica: {prefixo} (Pesagem: {pesagem} | Revisão: {revisao})")
+    st.subheader(f"{prefixo} · Pesagem {pesagem} · Revisão {revisao}")
     fluxo = buscar_fluxo_ficha(prefixo, pesagem, revisao)
     st.caption(f"Gerada por: {fluxo['gerador_nome']} | Aprovada por: {fluxo['aprovador_nome']}")
     campos_pendentes = carregar_campos_com_erro(prefixo, pesagem, revisao)
@@ -1686,15 +1786,7 @@ def renderizar_ficha_visualizacao(
             "Arm (inch)": [arm_b_lh, arm_b_rh, arm_a, arm_c, tot_reg_arm, level_correction_factor, ded_arm, add_arm, basic_arm],
             "Moment (kg x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_moment, level_correction_moment, ded_moment, add_moment, basic_moment]
         }
-        st.dataframe(pd.DataFrame(report_data), use_container_width=True, hide_index=True)
-
-        st.divider()
-        col_res1, col_res2 = st.columns(2)
-        with col_res1:
-            st.metric(label="Aircraft Basic Weight", value=f"{basic_weight:,.4f} kg")
-            st.metric(label="Aircraft Basic Arm", value=f"{basic_arm:,.4f} in")
-        with col_res2:
-            st.metric(label="C.G. (% MAC)", value=f"{cg_mac:.2f} %")
+        mostrar_relatorio_pesagem(report_data, basic_weight, basic_arm, cg_mac)
             
         pesagem_atual = safe_float(row.get('Pesagem', 0))
         revisao_atual = safe_float(row.get('Revisao', 0))
@@ -2452,17 +2544,12 @@ def formulario_pesagem(
         basic_arm = basic_m / basic_w if basic_w > 0 else 0.0
         cg_mac_val = ((basic_arm - 627.1) / 1.558) if basic_arm > 0 else 0.0
 
-        st.dataframe(pd.DataFrame({
+        mostrar_relatorio_pesagem({
             "Reaction / Item": ["LH", "RH", "NOSE", "TAIL", "TOTAL REGISTERED", "LEVEL CORRECTION", "DEDUCTIONS", "ADDITIONS", "AIRCRAFT BASIC WEIGHT"],
             "Weight (kg)": [lh_val, rh_val, nose_val, tail_val, tot_reg_w, 0.0, ded_w, add_w, basic_w],
             "Arm (inch)": [arm_b_lh, arm_b_rh, arm_a, arm_c, tot_reg_arm, level_correction_factor, ded_arm, add_arm, basic_arm],
             "Moment (kg x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_m, level_correction_moment, ded_m, add_m, basic_m]
-        }), use_container_width=True, hide_index=True)
-        
-        c_res1, c_res2 = st.columns(2)
-        c_res1.metric("Aircraft Basic Weight", f"{basic_w:,.4f} kg")
-        c_res1.metric("Aircraft Basic Arm", f"{basic_arm:,.4f} in")
-        c_res2.metric("C.G. (% MAC)", f"{cg_mac_val:.2f} %")
+        }, basic_w, basic_arm, cg_mac_val)
         
         deducoes_excel = [
             {'desc': d["Descrição"], 'w': d["Peso (Kg)"], 'a': d["Braço (in)"], 'm': d["Peso (Kg)"] * d["Braço (in)"]}
@@ -2585,7 +2672,7 @@ def formulario_pesagem(
 def tela_nova_ficha():
     st.session_state["historico_colunas"] = ()
 
-    st.title("Gerar Nova Ficha")
+    cabecalho("Nova ficha", "Escolha a aeronave e preencha as abas em ordem. O Preview mostra o resultado antes de salvar.")
     ficha_salva = st.session_state.get("nova_ficha_salva")
     if ficha_salva:
         # Evita que um segundo clique em "Salvar" grave outra revisão igual.
@@ -2804,7 +2891,7 @@ def tela_nova_ficha():
 @protegido
 def tela_edicao():
     st.session_state["historico_colunas"] = ()
-    st.title("Editar Ficha Existente")
+    cabecalho("Editar ficha", "Altere uma revisão já emitida. Ela volta para aprovação.")
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
         return
@@ -2875,7 +2962,7 @@ def tela_criar_login():
         st.error("Acesso restrito à Engenharia.")
         return
 
-    st.title("Criar login")
+    cabecalho("Usuários", "Crie acessos para a equipe.")
     with st.form("form_criar_login"):
         nome = st.text_input("Nome completo")
         usuario = st.text_input("Usuário")
@@ -2905,7 +2992,7 @@ def tela_cadastrar_aeronave():
         st.error("Acesso restrito à Engenharia.")
         return
 
-    st.title("Cadastrar aeronave")
+    cabecalho("Aeronaves", "Cadastre aeronaves que ainda não estão na frota do sistema.")
     st.caption(
         "A aeronave cadastrada aparece na lista de Nova Ficha. O modelo define "
         "o momento do flap sugerido na primeira ficha, a partir das fichas de "
@@ -3010,7 +3097,7 @@ def tela_assinaturas():
         st.error("Acesso restrito à Engenharia.")
         return
 
-    st.title("Assinaturas dos usuários")
+    cabecalho("Assinaturas", "Assinaturas usadas no Excel da ficha.")
     usuarios = listar_usuarios_assinaturas()
     if not usuarios:
         st.info("Não há usuários cadastrados.")
@@ -3083,7 +3170,7 @@ def tela_aprovar_fichas():
         st.error("Acesso restrito à Engenharia.")
         return
 
-    st.title("Aprovar ficha de pesagem")
+    cabecalho("Aprovação", "Revise, devolva para correção ou aprove as fichas emitidas.")
     pendentes_aprovacao, pendentes_correcao = listar_fichas_pendentes()
     aba_aprovacao, aba_correcao = st.tabs(
         ["Pendentes de aprovação", "Pendentes de correção"]
@@ -3192,7 +3279,7 @@ def tela_excluir_ficha():
         st.error("Acesso restrito à Engenharia.")
         return
 
-    st.title("Excluir ficha")
+    cabecalho("Excluir ficha", "Remoção permanente de uma revisão.")
     colunas_chave = ['Prefixo', 'Pesagem', 'Revisao']
     if df_historico.empty or not all(coluna in df_historico.columns for coluna in colunas_chave):
         st.info("Não há fichas disponíveis para exclusão.")
@@ -3237,40 +3324,85 @@ def tela_excluir_ficha():
                 st.error("A ficha não foi encontrada no banco de dados.")
 
 # 5. ROTEAMENTO E BARRA LATERAL
+MARCA_HTML = (
+    '<div class="marca"><div class="marca-logo">W&B</div><div>'
+    '<div class="marca-nome">Pesagem e Balanceamento</div>'
+    '<div class="marca-sub">Engenharia GOL</div></div></div>'
+)
+
+PAGINAS = {
+    'consulta': ("Fichas", ":material/dashboard:", tela_consulta, 2),
+    'nova_ficha': ("Nova ficha", ":material/add_circle:", tela_nova_ficha, 2),
+    'edicao': ("Editar ficha", ":material/edit_note:", tela_edicao, 1),
+    'aprovar': ("Aprovação", ":material/task_alt:", tela_aprovar_fichas, 1),
+    'cadastrar_aeronave': ("Aeronaves", ":material/flight:", tela_cadastrar_aeronave, 1),
+    'criar_login': ("Usuários", ":material/group:", tela_criar_login, 1),
+    'assinaturas': ("Assinaturas", ":material/draw:", tela_assinaturas, 1),
+    'excluir': ("Excluir ficha", ":material/delete:", tela_excluir_ficha, 1),
+}
+GRUPOS_MENU = [
+    ("Fichas", ['consulta', 'nova_ficha', 'edicao', 'aprovar']),
+    ("Administração", ['cadastrar_aeronave', 'criar_login', 'assinaturas', 'excluir']),
+]
+
+
+def ir_para(pagina):
+    st.session_state['pagina_atual'] = pagina
+
+
 if not st.session_state['usuario_logado']:
-    st.title("Sistema de Pesagem e Balanceamento")
-    with st.form("login_form"):
-        usuario = st.text_input("Usuário")
-        senha = st.text_input("Senha", type="password")
-        if st.form_submit_button("Acessar"):
-            registro_usuario = autenticar_usuario(usuario, senha)
-            if registro_usuario:
-                st.session_state['usuario_logado'] = True
-                st.session_state['usuario_id'] = registro_usuario['usuario']
-                st.session_state['nivel_acesso'] = registro_usuario['nivel_acesso']
-                st.session_state['nome_usuario'] = registro_usuario['nome']
-                st.session_state['pagina_atual'] = 'consulta'
-                carregar_dados_banco()
-                carregar_tipos_aeronave()
-                st.rerun()
-            else:
-                st.error("Usuário ou senha inválidos.")
+    _, centro, _ = st.columns([1, 1.2, 1])
+    with centro:
+        st.markdown("<div style='height:12vh'></div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(MARCA_HTML, unsafe_allow_html=True)
+            st.caption("Entre com seu usuário para acessar as fichas.")
+            with st.form("login_form", border=False):
+                usuario = st.text_input("Usuário")
+                senha = st.text_input("Senha", type="password")
+                entrar = st.form_submit_button("Acessar", type="primary", use_container_width=True)
+            if entrar:
+                registro_usuario = autenticar_usuario(usuario, senha)
+                if registro_usuario:
+                    st.session_state['usuario_logado'] = True
+                    st.session_state['usuario_id'] = registro_usuario['usuario']
+                    st.session_state['nivel_acesso'] = registro_usuario['nivel_acesso']
+                    st.session_state['nome_usuario'] = registro_usuario['nome']
+                    st.session_state['pagina_atual'] = 'consulta'
+                    st.rerun()
+                else:
+                    st.error("Usuário ou senha inválidos.")
 else:
+    nivel = st.session_state['nivel_acesso']
+    if PAGINAS.get(st.session_state['pagina_atual'], (None, None, None, 0))[3] < nivel:
+        st.session_state['pagina_atual'] = 'consulta'
+
     with st.sidebar:
-        st.subheader("Menu Principal")
-        st.write(f"Usuário ativo: **{st.session_state['nome_usuario']}**")
+        st.markdown(MARCA_HTML, unsafe_allow_html=True)
+        perfil = "Engenharia" if nivel == 1 else "Consulta"
+        st.markdown(
+            f'<div class="usuario">👤 <b>{st.session_state["nome_usuario"]}</b>'
+            f'<br><span style="color:#6B7280">{perfil}</span></div>',
+            unsafe_allow_html=True,
+        )
+        for grupo, paginas in GRUPOS_MENU:
+            visiveis = [p for p in paginas if PAGINAS[p][3] >= nivel]
+            if not visiveis:
+                continue
+            st.markdown(f'<div class="grupo-menu">{grupo}</div>', unsafe_allow_html=True)
+            for pagina in visiveis:
+                rotulo, icone, _, _ = PAGINAS[pagina]
+                st.button(
+                    rotulo,
+                    icon=icone,
+                    key=f"menu_{pagina}",
+                    use_container_width=True,
+                    type="primary" if st.session_state['pagina_atual'] == pagina else "secondary",
+                    on_click=ir_para,
+                    args=(pagina,),
+                )
         st.divider()
-        if st.button("Consultar Fichas", use_container_width=True): st.session_state['pagina_atual'] = 'consulta'
-        if st.button("Nova Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'nova_ficha'
-        if st.session_state['nivel_acesso'] == 1:
-            if st.button("Editar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'edicao'
-            if st.button("Aprovar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'aprovar'
-            if st.button("Cadastrar aeronave", use_container_width=True): st.session_state['pagina_atual'] = 'cadastrar_aeronave'
-            if st.button("Criar login", use_container_width=True): st.session_state['pagina_atual'] = 'criar_login'
-            if st.button("Assinaturas", use_container_width=True): st.session_state['pagina_atual'] = 'assinaturas'
-            if st.button("Excluir ficha", use_container_width=True): st.session_state['pagina_atual'] = 'excluir'
-        st.divider()
-        if st.button("Sair do Sistema", use_container_width=True):
+        if st.button("Sair", icon=":material/logout:", use_container_width=True):
             st.session_state['usuario_logado'] = False
             st.session_state['nivel_acesso'] = 0
             st.session_state['usuario_id'] = ""
@@ -3278,11 +3410,4 @@ else:
             st.session_state['pagina_atual'] = 'consulta'
             st.rerun()
 
-    if st.session_state['pagina_atual'] == 'consulta': tela_consulta()
-    elif st.session_state['pagina_atual'] == 'nova_ficha': tela_nova_ficha()
-    elif st.session_state['pagina_atual'] == 'edicao': tela_edicao()
-    elif st.session_state['pagina_atual'] == 'aprovar': tela_aprovar_fichas()
-    elif st.session_state['pagina_atual'] == 'criar_login': tela_criar_login()
-    elif st.session_state['pagina_atual'] == 'cadastrar_aeronave': tela_cadastrar_aeronave()
-    elif st.session_state['pagina_atual'] == 'assinaturas': tela_assinaturas()
-    elif st.session_state['pagina_atual'] == 'excluir': tela_excluir_ficha()
+    PAGINAS[st.session_state['pagina_atual']][2]()
