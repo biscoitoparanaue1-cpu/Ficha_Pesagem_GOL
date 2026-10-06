@@ -29,8 +29,11 @@ if 'pagina_atual' not in st.session_state:
 st.markdown(
     """
     <style>
-    [data-testid="stToolbar"], [data-testid="stDecoration"],
-    [data-testid="stAppDeployButton"] { display: none !important; }
+    [data-testid="stDecoration"], [data-testid="stAppDeployButton"],
+    [data-testid="stMainMenu"] { display: none !important; }
+    [data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"] {
+        display: flex !important; visibility: visible !important;
+    }
     header[data-testid="stHeader"] { background: transparent; }
     .block-container { padding-top: 2.2rem; max-width: 1280px; }
     section[data-testid="stSidebar"] {
