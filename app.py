@@ -88,6 +88,25 @@ st.markdown(
 )
 
 
+NIVEL_CONSULTA, NIVEL_OPERACAO, NIVEL_ADMIN = 2, 1, 3
+PERFIS = {
+    NIVEL_CONSULTA: "Consulta",
+    NIVEL_OPERACAO: "Gera e aprova",
+    NIVEL_ADMIN: "Administrador",
+}
+
+
+def nivel_atual():
+    return st.session_state.get('nivel_acesso', 0)
+
+
+def exigir_nivel(*niveis):
+    if nivel_atual() in niveis:
+        return True
+    st.error("Seu perfil não tem acesso a esta tela.")
+    return False
+
+
 def cabecalho(titulo, subtitulo=""):
     st.markdown(
         f'<div class="cabecalho"><h1>{titulo}</h1>'
@@ -831,6 +850,10 @@ def inicializar_controle_acesso():
                 FOREIGN KEY (usuario) REFERENCES usuarios(usuario) ON DELETE CASCADE
             )
         ''')
+        # A conta inicial da Engenharia passa a ser Administrador (nível 3).
+        conn.execute(
+            "UPDATE usuarios SET nivel_acesso = 3 WHERE usuario = 'engenharia' AND nivel_acesso = 1"
+        )
         usuario_existente = conn.execute('SELECT 1 FROM usuarios LIMIT 1').fetchone()
         if not usuario_existente:
             senha_inicial = obter_senha_admin_inicial()
@@ -848,7 +871,7 @@ def inicializar_controle_acesso():
                     '''INSERT INTO usuarios
                        (usuario, nome, senha_hash, salt, nivel_acesso, criado_em)
                        VALUES (?, ?, ?, ?, ?, ?)''',
-                    ('engenharia', 'Engenharia GOL', senha_hash, salt, 1,
+                    ('engenharia', 'Engenharia GOL', senha_hash, salt, 3,
                      datetime.datetime.now(datetime.timezone.utc).isoformat())
                 )
 def autenticar_usuario(usuario, senha):
@@ -2679,6 +2702,8 @@ def formulario_pesagem(
 def tela_nova_ficha():
     st.session_state["historico_colunas"] = ()
 
+    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN):
+        return
     cabecalho("Nova ficha", "Escolha a aeronave e preencha as abas em ordem. O Preview mostra o resultado antes de salvar.")
     ficha_salva = st.session_state.get("nova_ficha_salva")
     if ficha_salva:
@@ -2899,8 +2924,7 @@ def tela_nova_ficha():
 def tela_edicao():
     st.session_state["historico_colunas"] = ()
     cabecalho("Editar ficha", "Altere uma revisão já emitida. Ela volta para aprovação.")
-    if st.session_state['nivel_acesso'] != 1:
-        st.error("Acesso restrito à Engenharia.")
+    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN):
         return
 
     prefixos = [""] + carregar_prefixos_fichas()
@@ -2965,8 +2989,7 @@ def tela_edicao():
 
 @protegido
 def tela_criar_login():
-    if st.session_state['nivel_acesso'] != 1:
-        st.error("Acesso restrito à Engenharia.")
+    if not exigir_nivel(NIVEL_ADMIN):
         return
 
     cabecalho("Usuários", "Crie acessos para a equipe.")
@@ -2975,7 +2998,11 @@ def tela_criar_login():
         usuario = st.text_input("Usuário")
         senha = st.text_input("Senha", type="password")
         confirmar_senha = st.text_input("Confirmar senha", type="password")
-        nivel = st.selectbox("Perfil", ["Consulta", "Engenharia"])
+        nivel = st.selectbox(
+            "Perfil", list(PERFIS), format_func=PERFIS.get,
+            help="Consulta só visualiza. Gera e aprova emite, edita e aprova fichas. "
+                 "Administrador também gerencia usuários e assinaturas.",
+        )
         enviar = st.form_submit_button("Criar usuário", type="primary")
 
     if enviar:
@@ -2987,16 +3014,42 @@ def tela_criar_login():
             st.error("As senhas não coincidem.")
         else:
             try:
-                criar_usuario(nome, usuario, senha, 1 if nivel == "Engenharia" else 2)
+                criar_usuario(nome, usuario, senha, nivel)
                 st.success(f"Login criado para {nome.strip()}.")
             except IntegrityError:
                 st.error("Esse nome de usuário já está cadastrado.")
 
+    st.divider()
+    st.subheader("Alterar perfil")
+    usuarios = listar_usuarios_assinaturas()
+    if usuarios:
+        opcoes = {u['usuario']: f"{u['nome']} ({u['usuario']})" for u in usuarios}
+        perfis_atuais = {u['usuario']: u['nivel_acesso'] for u in usuarios}
+        c1, c2, c3 = st.columns([2, 1.3, 1])
+        escolhido = c1.selectbox("Usuário", list(opcoes), format_func=opcoes.get, key="perfil_usuario")
+        novo_nivel = c2.selectbox(
+            "Novo perfil", list(PERFIS), format_func=PERFIS.get,
+            index=list(PERFIS).index(perfis_atuais.get(escolhido, NIVEL_CONSULTA))
+            if perfis_atuais.get(escolhido) in PERFIS else 0,
+            key=f"perfil_novo_{escolhido}",
+        )
+        c3.write("")
+        c3.write("")
+        if c3.button("Salvar perfil", use_container_width=True):
+            if escolhido == st.session_state['usuario_id'] and novo_nivel != NIVEL_ADMIN:
+                st.error("Você não pode remover o seu próprio acesso de Administrador.")
+            else:
+                with conectar_banco() as conn:
+                    conn.execute(
+                        'UPDATE usuarios SET nivel_acesso = ? WHERE usuario = ?',
+                        (novo_nivel, escolhido),
+                    )
+                st.success(f"Perfil de {opcoes[escolhido]} alterado para {PERFIS[novo_nivel]}.")
+
 
 @protegido
 def tela_cadastrar_aeronave():
-    if st.session_state['nivel_acesso'] != 1:
-        st.error("Acesso restrito à Engenharia.")
+    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN):
         return
 
     cabecalho("Aeronaves", "Cadastre aeronaves que ainda não estão na frota do sistema.")
@@ -3100,8 +3153,7 @@ def tela_cadastrar_aeronave():
 
 @protegido
 def tela_assinaturas():
-    if st.session_state['nivel_acesso'] != 1:
-        st.error("Acesso restrito à Engenharia.")
+    if not exigir_nivel(NIVEL_ADMIN):
         return
 
     cabecalho("Assinaturas", "Assinaturas usadas no Excel da ficha.")
@@ -3115,7 +3167,7 @@ def tela_assinaturas():
             {
                 "Nome": usuario['nome'],
                 "Usuário": usuario['usuario'],
-                "Perfil": "Engenharia" if usuario['nivel_acesso'] == 1 else "Consulta",
+                "Perfil": PERFIS.get(usuario['nivel_acesso'], "—"),
                 "Assinatura": "Cadastrada" if usuario['atualizado_em'] else "Pendente",
             }
             for usuario in usuarios
@@ -3173,8 +3225,7 @@ def tela_assinaturas():
 @st.fragment
 @protegido
 def tela_aprovar_fichas():
-    if st.session_state['nivel_acesso'] != 1:
-        st.error("Acesso restrito à Engenharia.")
+    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN):
         return
 
     cabecalho("Aprovação", "Revise, devolva para correção ou aprove as fichas emitidas.")
@@ -3282,8 +3333,7 @@ def excluir_ficha(prefixo, pesagem, revisao):
 
 @protegido
 def tela_excluir_ficha():
-    if st.session_state['nivel_acesso'] != 1:
-        st.error("Acesso restrito à Engenharia.")
+    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN):
         return
 
     cabecalho("Excluir ficha", "Remoção permanente de uma revisão.")
@@ -3352,14 +3402,14 @@ MARCA_HTML = (
 )
 
 PAGINAS = {
-    'consulta': ("Fichas", ":material/dashboard:", tela_consulta, 2),
-    'nova_ficha': ("Nova ficha", ":material/add_circle:", tela_nova_ficha, 2),
-    'edicao': ("Editar ficha", ":material/edit_note:", tela_edicao, 1),
-    'aprovar': ("Aprovação", ":material/task_alt:", tela_aprovar_fichas, 1),
-    'cadastrar_aeronave': ("Aeronaves", ":material/flight:", tela_cadastrar_aeronave, 1),
-    'criar_login': ("Usuários", ":material/group:", tela_criar_login, 1),
-    'assinaturas': ("Assinaturas", ":material/draw:", tela_assinaturas, 1),
-    'excluir': ("Excluir ficha", ":material/delete:", tela_excluir_ficha, 1),
+    'consulta': ("Fichas", ":material/dashboard:", tela_consulta, {1, 2, 3}),
+    'nova_ficha': ("Nova ficha", ":material/add_circle:", tela_nova_ficha, {1, 3}),
+    'edicao': ("Editar ficha", ":material/edit_note:", tela_edicao, {1, 3}),
+    'aprovar': ("Aprovação", ":material/task_alt:", tela_aprovar_fichas, {1, 3}),
+    'cadastrar_aeronave': ("Aeronaves", ":material/flight:", tela_cadastrar_aeronave, {1, 3}),
+    'criar_login': ("Usuários", ":material/group:", tela_criar_login, {3}),
+    'assinaturas': ("Assinaturas", ":material/draw:", tela_assinaturas, {3}),
+    'excluir': ("Excluir ficha", ":material/delete:", tela_excluir_ficha, {1, 3}),
 }
 GRUPOS_MENU = [
     ("Fichas", ['consulta', 'nova_ficha', 'edicao', 'aprovar']),
@@ -3395,19 +3445,19 @@ if not st.session_state['usuario_logado']:
                     st.error("Usuário ou senha inválidos.")
 else:
     nivel = st.session_state['nivel_acesso']
-    if PAGINAS.get(st.session_state['pagina_atual'], (None, None, None, 0))[3] < nivel:
+    if nivel not in PAGINAS.get(st.session_state['pagina_atual'], (None, None, None, set()))[3]:
         st.session_state['pagina_atual'] = 'consulta'
 
     with st.sidebar:
         st.markdown(MARCA_HTML, unsafe_allow_html=True)
-        perfil = "Engenharia" if nivel == 1 else "Consulta"
+        perfil = PERFIS.get(nivel, "—")
         st.markdown(
             f'<div class="usuario">👤 <b>{st.session_state["nome_usuario"]}</b>'
             f'<br><span style="color:#6B7280">{perfil}</span></div>',
             unsafe_allow_html=True,
         )
         for grupo, paginas in GRUPOS_MENU:
-            visiveis = [p for p in paginas if PAGINAS[p][3] >= nivel]
+            visiveis = [p for p in paginas if nivel in PAGINAS[p][3]]
             if not visiveis:
                 continue
             st.markdown(f'<div class="grupo-menu">{grupo}</div>', unsafe_allow_html=True)
