@@ -538,6 +538,63 @@ def carregar_tipos_aeronave():
 
 dict_tipos_aeronave = carregar_tipos_aeronave()
 
+
+def normalizar_prefixo(prefixo):
+    return "".join(safe_str(prefixo).upper().split())
+
+
+@st.cache_data
+def carregar_aeronaves_cadastradas():
+    with conectar_banco() as conn:
+        registros = conn.execute(
+            """SELECT prefixo, modelo, serial, vrbl, line, armnose,
+                      cadastrado_por, cadastrado_em
+               FROM aeronaves ORDER BY prefixo"""
+        ).fetchall()
+    return {
+        registro['prefixo']: {
+            'modelo': registro['modelo'],
+            'armnose': float(registro['armnose']),
+            'vrbl': safe_str(registro['vrbl']),
+            'serial': safe_str(registro['serial']),
+            'line': safe_str(registro['line']),
+            'cadastrado_por': safe_str(registro['cadastrado_por']),
+            'cadastrado_em': safe_str(registro['cadastrado_em']),
+        }
+        for registro in registros
+    }
+
+
+def armnose_padrao_modelo(modelo):
+    valores = [
+        dados['armnose']
+        for dados in dict_tipos_aeronave.values()
+        if dados.get('modelo') == modelo
+    ]
+    if not valores:
+        return 93.0
+    return float(pd.Series(valores).mode().max())
+
+
+def cadastrar_aeronave(prefixo, modelo, serial, vrbl, line, armnose, usuario):
+    with conectar_banco() as conn:
+        conn.execute(
+            """INSERT INTO aeronaves
+               (prefixo, modelo, serial, vrbl, line, armnose,
+                cadastrado_por, cadastrado_em)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (prefixo, modelo, serial, vrbl, line, float(armnose), usuario,
+             datetime.datetime.now(datetime.timezone.utc).isoformat()),
+        )
+    carregar_aeronaves_cadastradas.clear()
+
+
+def remover_aeronave_cadastrada(prefixo):
+    with conectar_banco() as conn:
+        conn.execute('DELETE FROM aeronaves WHERE prefixo = ?', (prefixo,))
+    carregar_aeronaves_cadastradas.clear()
+
+
 def obter_senha_admin_inicial():
     senha = os.environ.get("INITIAL_ADMIN_PASSWORD")
     if senha:
@@ -601,6 +658,18 @@ def inicializar_controle_acesso():
                 marcado_por TEXT,
                 marcado_em TEXT NOT NULL,
                 PRIMARY KEY (prefixo, pesagem, revisao, campo)
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS aeronaves (
+                prefixo TEXT PRIMARY KEY,
+                modelo TEXT NOT NULL,
+                serial TEXT,
+                vrbl TEXT,
+                line TEXT,
+                armnose DOUBLE PRECISION NOT NULL,
+                cadastrado_por TEXT,
+                cadastrado_em TEXT NOT NULL
             )
         ''')
         conn.execute('''
@@ -1046,6 +1115,7 @@ def aprovar_ficha(prefixo, pesagem, revisao, usuario):
     invalidar_cache_fichas()
 
 inicializar_controle_acesso()
+dict_tipos_aeronave.update(carregar_aeronaves_cadastradas())
 df_historico = carregar_dados_banco()
 
 # 3. FUNÇÃO DE EXPORTAÇÃO PARA EXCEL
@@ -2260,6 +2330,8 @@ def formulario_pesagem(
     novo_registro = linha_existente.copy()
     
     novo_registro[get_real_col(['Prefixo'])] = prefixo_selecionado
+    if tipo_a:
+        novo_registro[get_real_col(['Tipo_aeronave'])] = tipo_a
     novo_registro[get_real_col(['Data da ficha', 'Data_da_Pesagem'])] = str(data_emissao)
     novo_registro[get_real_col(['Pesado Por', 'WEIGHED BY'])] = pesado_por
     novo_registro[get_real_col(['Local da pesagem'])] = local
@@ -2633,6 +2705,110 @@ def tela_criar_login():
                 st.error("Esse nome de usuário já está cadastrado.")
 
 
+def tela_cadastrar_aeronave():
+    if st.session_state['nivel_acesso'] != 1:
+        st.error("Acesso restrito à Engenharia.")
+        return
+
+    st.title("Cadastrar aeronave")
+    st.caption(
+        "A aeronave cadastrada aparece na lista de Nova Ficha. O modelo define "
+        "o momento do flap sugerido na primeira ficha, a partir das fichas de "
+        "outras aeronaves do mesmo modelo."
+    )
+
+    modelos = sorted({
+        dados['modelo'] for dados in dict_tipos_aeronave.values()
+        if dados.get('modelo')
+    })
+    modelo = st.selectbox(
+        "Modelo da aeronave",
+        [""] + modelos,
+        key="cadastro_aeronave_modelo",
+    )
+    armnose_sugerido = armnose_padrao_modelo(modelo) if modelo else 93.0
+
+    with st.form("form_cadastrar_aeronave", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        prefixo = c1.text_input("Prefixo", placeholder="PR-XXX")
+        serial = c2.text_input("Serial number (MSN)")
+        c3, c4, c5 = st.columns(3)
+        vrbl = c3.text_input("VRBL number")
+        line = c4.text_input("Line number")
+        armnose = c5.number_input(
+            "Arm nose (in)",
+            value=armnose_sugerido,
+            format="%.4f",
+            help="Sugerido a partir das outras aeronaves do mesmo modelo.",
+            key=f"cadastro_aeronave_armnose_{modelo}",
+        )
+        enviar = st.form_submit_button("Cadastrar aeronave", type="primary")
+
+    if enviar:
+        prefixo = normalizar_prefixo(prefixo)
+        if not modelo:
+            st.error("Selecione o modelo da aeronave.")
+        elif not prefixo:
+            st.error("Informe o prefixo.")
+        elif any(normalizar_prefixo(k) == prefixo for k in dict_tipos_aeronave):
+            st.error(f"A aeronave {prefixo} já está cadastrada.")
+        else:
+            try:
+                cadastrar_aeronave(
+                    prefixo,
+                    modelo,
+                    safe_identifier(serial),
+                    safe_identifier(vrbl),
+                    safe_identifier(line),
+                    armnose,
+                    st.session_state['usuario_id'],
+                )
+            except IntegrityError:
+                st.error(f"A aeronave {prefixo} já está cadastrada.")
+            else:
+                st.session_state['aeronave_cadastrada'] = prefixo
+                st.rerun()
+
+    if st.session_state.get('aeronave_cadastrada'):
+        st.success(
+            f"Aeronave {st.session_state.pop('aeronave_cadastrada')} cadastrada."
+        )
+
+    cadastradas = carregar_aeronaves_cadastradas()
+    st.divider()
+    st.subheader("Aeronaves cadastradas pelo app")
+    if not cadastradas:
+        st.info("Nenhuma aeronave cadastrada pelo app ainda.")
+        return
+
+    st.dataframe(
+        pd.DataFrame([
+            {
+                "Prefixo": prefixo,
+                "Modelo": dados['modelo'],
+                "Serial": dados['serial'],
+                "VRBL": dados['vrbl'],
+                "Line": dados['line'],
+                "Arm nose": dados['armnose'],
+                "Cadastrado por": dados['cadastrado_por'],
+            }
+            for prefixo, dados in cadastradas.items()
+        ]),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    prefixos_com_ficha = set(carregar_prefixos_fichas())
+    removiveis = [p for p in cadastradas if p not in prefixos_com_ficha]
+    if removiveis:
+        with st.expander("Remover aeronave cadastrada por engano"):
+            st.caption("Só é possível remover aeronaves que ainda não têm ficha.")
+            prefixo_remover = st.selectbox("Aeronave", removiveis)
+            if st.button("Remover aeronave"):
+                remover_aeronave_cadastrada(prefixo_remover)
+                st.rerun()
+
+
 def tela_assinaturas():
     if st.session_state['nivel_acesso'] != 1:
         st.error("Acesso restrito à Engenharia.")
@@ -2888,6 +3064,7 @@ else:
         if st.session_state['nivel_acesso'] == 1:
             if st.button("Editar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'edicao'
             if st.button("Aprovar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'aprovar'
+            if st.button("Cadastrar aeronave", use_container_width=True): st.session_state['pagina_atual'] = 'cadastrar_aeronave'
             if st.button("Criar login", use_container_width=True): st.session_state['pagina_atual'] = 'criar_login'
             if st.button("Assinaturas", use_container_width=True): st.session_state['pagina_atual'] = 'assinaturas'
             if st.button("Excluir ficha", use_container_width=True): st.session_state['pagina_atual'] = 'excluir'
@@ -2905,5 +3082,6 @@ else:
     elif st.session_state['pagina_atual'] == 'edicao': tela_edicao()
     elif st.session_state['pagina_atual'] == 'aprovar': tela_aprovar_fichas()
     elif st.session_state['pagina_atual'] == 'criar_login': tela_criar_login()
+    elif st.session_state['pagina_atual'] == 'cadastrar_aeronave': tela_cadastrar_aeronave()
     elif st.session_state['pagina_atual'] == 'assinaturas': tela_assinaturas()
     elif st.session_state['pagina_atual'] == 'excluir': tela_excluir_ficha()
