@@ -483,58 +483,81 @@ def invalidar_cache_fichas():
 @st.cache_data
 def carregar_tipos_aeronave():
     excel_path = 'Cópia de Ficha_Pesagem_v2.xlsm'
+    dict_aero = {}
+    
     if not os.path.exists(excel_path):
         st.warning(f"Planilha não encontrada: '{excel_path}'.")
-        return {}
-    try:
-        df_tipos = pd.read_excel(excel_path, sheet_name='Sheet1')
-        
-        col_modelo = 'MODEL' if 'MODEL' in df_tipos.columns else df_tipos.columns[0]
-        col_prefixo = 'VRG REG.' if 'VRG REG.' in df_tipos.columns else df_tipos.columns[1]
-        col_armnose = 'ARMNOSE' if 'ARMNOSE' in df_tipos.columns else None
-        
-        col_vrbl = next((c for c in df_tipos.columns if 'VRBL' in str(c).upper() or 'VRBL NUMBER' in str(c).upper()), None)
-        nomes_colunas = {
-            coluna: " ".join(str(coluna).replace("\n", " ").split()).upper()
-            for coluna in df_tipos.columns
-        }
-        col_serial = next(
-            (
-                coluna for coluna, nome in nomes_colunas.items()
-                if nome in {"S/N", "SERIAL", "SERIAL NUMBER"}
-            ),
-            None,
-        )
-        if col_serial is None:
+    else:
+        try:
+            df_tipos = pd.read_excel(excel_path, sheet_name='Sheet1')
+            
+            col_modelo = 'MODEL' if 'MODEL' in df_tipos.columns else df_tipos.columns[0]
+            col_prefixo = 'VRG REG.' if 'VRG REG.' in df_tipos.columns else df_tipos.columns[1]
+            col_armnose = 'ARMNOSE' if 'ARMNOSE' in df_tipos.columns else None
+            
+            col_vrbl = next((c for c in df_tipos.columns if 'VRBL' in str(c).upper() or 'VRBL NUMBER' in str(c).upper()), None)
+            nomes_colunas = {
+                coluna: " ".join(str(coluna).replace("\n", " ").split()).upper()
+                for coluna in df_tipos.columns
+            }
             col_serial = next(
-                (
-                    coluna for coluna, nome in nomes_colunas.items()
-                    if "SERIAL" in nome and "ENGINE" not in nome
-                ),
+                (coluna for coluna, nome in nomes_colunas.items() if nome in {"S/N", "SERIAL", "SERIAL NUMBER"}),
                 None,
             )
-        col_line = next((c for c in df_tipos.columns if 'LINE' in str(c).upper()), None)
-        
-        dict_aero = {}
-        for _, row in df_tipos.iterrows():
-            prefixo = str(row[col_prefixo]).strip()
-            if prefixo and prefixo != 'nan':
-                modelo = str(row[col_modelo]).strip()
-                arm_nose = 93.0000
-                if col_armnose and pd.notna(row[col_armnose]):
-                    try: arm_nose = float(row[col_armnose])
-                    except: pass
-                
-                dict_aero[prefixo] = {
-                    'modelo': modelo, 
-                    'armnose': arm_nose,
-                    'vrbl': safe_identifier(row[col_vrbl]) if col_vrbl else "",
-                    'serial': safe_identifier(row[col_serial]) if col_serial else "",
-                    'line': safe_identifier(row[col_line]) if col_line else ""
+            if col_serial is None:
+                col_serial = next(
+                    (coluna for coluna, nome in nomes_colunas.items() if "SERIAL" in nome and "ENGINE" not in nome),
+                    None,
+                )
+            col_line = next((c for c in df_tipos.columns if 'LINE' in str(c).upper()), None)
+            
+            for _, row in df_tipos.iterrows():
+                prefixo = str(row[col_prefixo]).strip()
+                if prefixo and prefixo != 'nan':
+                    modelo = str(row[col_modelo]).strip()
+                    arm_nose = 93.0000
+                    if col_armnose and pd.notna(row[col_armnose]):
+                        try: arm_nose = float(row[col_armnose])
+                        except: pass
+                    
+                    dict_aero[prefixo] = {
+                        'modelo': modelo, 
+                        'armnose': arm_nose,
+                        'vrbl': safe_identifier(row[col_vrbl]) if col_vrbl else "",
+                        'serial': safe_identifier(row[col_serial]) if col_serial else "",
+                        'line': safe_identifier(row[col_line]) if col_line else ""
+                    }
+        except Exception as e:
+            pass
+
+    # --- NOVA LÓGICA: LER DO BANCO DE DADOS E JUNTAR COM O EXCEL ---
+    try:
+        with conectar_banco() as conn:
+            # Garante que a tabela nova exista no banco
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS aeronaves (
+                    prefixo TEXT PRIMARY KEY,
+                    modelo TEXT NOT NULL,
+                    serial TEXT,
+                    vrbl TEXT,
+                    line TEXT
+                )
+            ''')
+            db_aeros = conn.execute("SELECT prefixo, modelo, serial, vrbl, line FROM aeronaves").fetchall()
+            for row in db_aeros:
+                prefixo_db = str(row['prefixo']).strip()
+                dict_aero[prefixo_db] = {
+                    'modelo': str(row['modelo']).strip(),
+                    'armnose': 93.0000,
+                    'vrbl': safe_identifier(row['vrbl']),
+                    'serial': safe_identifier(row['serial']),
+                    'line': safe_identifier(row['line'])
                 }
-        return dict_aero
     except Exception as e:
-        return {}
+        pass
+        
+    return dict_aero
+
 
 dict_tipos_aeronave = carregar_tipos_aeronave()
 
@@ -1192,7 +1215,72 @@ def tela_consulta():
                 st.divider()
                 linha = df_filtrado[(df_filtrado['Pesagem'] == pesagem) & (df_filtrado['Revisao'] == revisao)].iloc[0]
                 renderizar_ficha_visualizacao(prefixo, pesagem, revisao, linha)
+def obter_modelos_unicos():
+    modelos = set()
+    # 1. Puxa modelos já conhecidos (via Excel ou Cadastros anteriores)
+    for dados in dict_tipos_aeronave.values():
+        if dados.get('modelo'):
+            modelos.add(str(dados['modelo']).strip())
+    
+    # 2. Puxa das fichas de pesagem já arquivadas (para não perder nenhum histórico)
+    for _, linha in df_historico.iterrows():
+        modelo_historico = linha.get('Tipo_aeronave', linha.get('modelo', ''))
+        if pd.notna(modelo_historico) and str(modelo_historico).strip():
+            modelos.add(str(modelo_historico).strip())
+            
+    return sorted(list(modelos))
 
+def tela_nova_aeronave():
+    if st.session_state['nivel_acesso'] != 1:
+        st.error("Acesso restrito à Engenharia.")
+        return
+
+    st.title("Cadastrar Nova Aeronave")
+    st.write("A aeronave ficará disponível imediatamente para novas pesagens após o cadastro.")
+
+    modelos_disponiveis = obter_modelos_unicos()
+
+    with st.form("form_nova_aeronave"):
+        c1, c2 = st.columns(2)
+        prefixo = c1.text_input("Prefixo (ex: PR-XMA)").strip().upper()
+        
+        # Puxa modelos dinâmicos para reaproveitar cálculo de momento do flap
+        modelo = c2.selectbox(
+            "Modelo da Aeronave", 
+            [""] + modelos_disponiveis,
+            help="Selecione um modelo já existente para usar a mesma regra de Momento dos Flaps da frota."
+        )
+        
+        c3, c4, c5 = st.columns(3)
+        serial = c3.text_input("Serial Number").strip()
+        vrbl = c4.text_input("VRBL Number").strip()
+        line = c5.text_input("Line Number").strip()
+
+        enviar = st.form_submit_button("Salvar Aeronave no Banco", type="primary")
+
+    if enviar:
+        if not prefixo or not modelo:
+            st.error("Os campos Prefixo e Modelo são obrigatórios.")
+        else:
+            try:
+                with conectar_banco() as conn:
+                    # Registra a aeronave no banco
+                    conn.execute('''
+                        INSERT INTO aeronaves (prefixo, modelo, serial, vrbl, line)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(prefixo) DO UPDATE SET
+                            modelo = excluded.modelo,
+                            serial = excluded.serial,
+                            vrbl = excluded.vrbl,
+                            line = excluded.line
+                    ''', (prefixo, modelo, serial, vrbl, line))
+                
+                # Limpa a memória pra forçar o Streamlit a carregar a nova aeronave e recarrega a página
+                carregar_tipos_aeronave.clear()
+                st.success(f"Aeronave {prefixo} salva! Ela já está disponível no sistema.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao salvar no banco de dados: {e}")
 def renderizar_ficha_visualizacao(
     prefixo,
     pesagem,
@@ -1217,6 +1305,75 @@ def renderizar_ficha_visualizacao(
     marcacoes_campos = {}
     rotulos_campos = {}
 
+
+def obter_modelos_unicos():
+    modelos = set()
+    # 1. Puxa modelos já conhecidos (via Excel ou Cadastros anteriores)
+    for dados in dict_tipos_aeronave.values():
+        if dados.get('modelo'):
+            modelos.add(str(dados['modelo']).strip())
+    
+    # 2. Puxa das fichas de pesagem já arquivadas (para não perder nenhum histórico)
+    for _, linha in df_historico.iterrows():
+        modelo_historico = linha.get('Tipo_aeronave', linha.get('modelo', ''))
+        if pd.notna(modelo_historico) and str(modelo_historico).strip():
+            modelos.add(str(modelo_historico).strip())
+            
+    return sorted(list(modelos))
+
+def tela_nova_aeronave():
+    if st.session_state['nivel_acesso'] != 1:
+        st.error("Acesso restrito à Engenharia.")
+        return
+
+    st.title("Cadastrar Nova Aeronave")
+    st.write("A aeronave ficará disponível imediatamente para novas pesagens após o cadastro.")
+
+    modelos_disponiveis = obter_modelos_unicos()
+
+    with st.form("form_nova_aeronave"):
+        c1, c2 = st.columns(2)
+        prefixo = c1.text_input("Prefixo (ex: PR-XMA)").strip().upper()
+        
+        # Puxa modelos dinâmicos para reaproveitar cálculo de momento do flap
+        modelo = c2.selectbox(
+            "Modelo da Aeronave", 
+            [""] + modelos_disponiveis,
+            help="Selecione um modelo já existente para usar a mesma regra de Momento dos Flaps da frota."
+        )
+        
+        c3, c4, c5 = st.columns(3)
+        serial = c3.text_input("Serial Number").strip()
+        vrbl = c4.text_input("VRBL Number").strip()
+        line = c5.text_input("Line Number").strip()
+
+        enviar = st.form_submit_button("Salvar Aeronave no Banco", type="primary")
+
+    if enviar:
+        if not prefixo or not modelo:
+            st.error("Os campos Prefixo e Modelo são obrigatórios.")
+        else:
+            try:
+                with conectar_banco() as conn:
+                    # Registra a aeronave no banco
+                    conn.execute('''
+                        INSERT INTO aeronaves (prefixo, modelo, serial, vrbl, line)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(prefixo) DO UPDATE SET
+                            modelo = excluded.modelo,
+                            serial = excluded.serial,
+                            vrbl = excluded.vrbl,
+                            line = excluded.line
+                    ''', (prefixo, modelo, serial, vrbl, line))
+                
+                # Limpa a memória pra forçar o Streamlit a carregar a nova aeronave e recarrega a página
+                carregar_tipos_aeronave.clear()
+                st.success(f"Aeronave {prefixo} salva! Ela já está disponível no sistema.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao salvar no banco de dados: {e}")
+
+                
     def mostrar_campo(campo, rotulo, valor, container=st, permitir_erro=True):
         if not modo_aprovacao or not permitir_erro:
             if destacar_erros and campo in sinalizacoes_atuais:
@@ -2851,6 +3008,7 @@ def tela_excluir_ficha():
                 st.error("A ficha não foi encontrada no banco de dados.")
 
 # 5. ROTEAMENTO E BARRA LATERAL
+
 if not st.session_state['usuario_logado']:
     st.title("Sistema de Pesagem e Balanceamento")
     with st.form("login_form"):
@@ -2876,7 +3034,10 @@ else:
         st.divider()
         if st.button("Consultar Fichas", use_container_width=True): st.session_state['pagina_atual'] = 'consulta'
         if st.button("Nova Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'nova_ficha'
+        if st.button("Nova Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'nova_ficha'
+        
         if st.session_state['nivel_acesso'] == 1:
+            if st.button("Cadastrar Aeronave", use_container_width=True): st.session_state['pagina_atual'] = 'cadastrar_aeronave'
             if st.button("Editar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'edicao'
             if st.button("Aprovar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'aprovar'
             if st.button("Criar login", use_container_width=True): st.session_state['pagina_atual'] = 'criar_login'
@@ -2893,6 +3054,7 @@ else:
 
     if st.session_state['pagina_atual'] == 'consulta': tela_consulta()
     elif st.session_state['pagina_atual'] == 'nova_ficha': tela_nova_ficha()
+    elif st.session_state['pagina_atual'] == 'cadastrar_aeronave': tela_nova_aeronave()
     elif st.session_state['pagina_atual'] == 'edicao': tela_edicao()
     elif st.session_state['pagina_atual'] == 'aprovar': tela_aprovar_fichas()
     elif st.session_state['pagina_atual'] == 'criar_login': tela_criar_login()
