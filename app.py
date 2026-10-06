@@ -3026,7 +3026,6 @@ def tela_excluir_ficha():
                 st.error("A ficha não foi encontrada no banco de dados.")
 
 # 5. ROTEAMENTO E BARRA LATERAL
-
 if not st.session_state['usuario_logado']:
     st.title("Sistema de Pesagem e Balanceamento")
     with st.form("login_form"):
@@ -3051,11 +3050,9 @@ else:
         st.write(f"Usuário ativo: **{st.session_state['nome_usuario']}**")
         st.divider()
         
-        # Botões gerais
         if st.button("Consultar Fichas", use_container_width=True): st.session_state['pagina_atual'] = 'consulta'
         if st.button("Nova Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'nova_ficha'
         
-        # Botões restritos da Engenharia
         if st.session_state['nivel_acesso'] == 1:
             if st.button("Cadastrar Aeronave", use_container_width=True): st.session_state['pagina_atual'] = 'cadastrar_aeronave'
             if st.button("Editar Ficha", use_container_width=True): st.session_state['pagina_atual'] = 'edicao'
@@ -3065,8 +3062,6 @@ else:
             if st.button("Excluir ficha", use_container_width=True): st.session_state['pagina_atual'] = 'excluir'
             
         st.divider()
-        
-        # Botão de Sair
         if st.button("Sair do Sistema", use_container_width=True):
             st.session_state['usuario_logado'] = False
             st.session_state['nivel_acesso'] = 0
@@ -3074,4 +3069,14 @@ else:
             st.session_state['nome_usuario'] = ""
             st.session_state['pagina_atual'] = 'consulta'
             st.rerun()
-    
+
+    # ATENÇÃO: Esta é a parte que sumiu e faz as telas aparecerem!
+    # Elas ficam alinhadas FORA do "with st.sidebar:"
+    if st.session_state['pagina_atual'] == 'consulta': tela_consulta()
+    elif st.session_state['pagina_atual'] == 'nova_ficha': tela_nova_ficha()
+    elif st.session_state['pagina_atual'] == 'cadastrar_aeronave': tela_nova_aeronave()
+    elif st.session_state['pagina_atual'] == 'edicao': tela_edicao()
+    elif st.session_state['pagina_atual'] == 'aprovar': tela_aprovar_fichas()
+    elif st.session_state['pagina_atual'] == 'criar_login': tela_criar_login()
+    elif st.session_state['pagina_atual'] == 'assinaturas': tela_assinaturas()
+    elif st.session_state['pagina_atual'] == 'excluir': tela_excluir_ficha()
