@@ -46,7 +46,9 @@ st.markdown(
         opacity: 1 !important; cursor: default;
     }
     [data-testid="stWidgetLabel"] p { color: #1D2433 !important; opacity: 1 !important; }
-    [data-baseweb="input"]:has(input:disabled) { background: #FFFFFF !important; }
+    [data-baseweb="input"]:has(input:disabled),
+    [data-baseweb="input"]:has(input:disabled) > div,
+    input:disabled { background: #F1F3F6 !important; }
     section[data-testid="stSidebar"] .stButton button {
         justify-content: flex-start; border: none; box-shadow: none;
         padding: 0.4rem 0.75rem; min-height: 2.3rem; font-weight: 500;
