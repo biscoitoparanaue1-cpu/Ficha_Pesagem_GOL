@@ -112,6 +112,39 @@ def exigir_nivel(*niveis):
     return False
 
 
+ICONES_LUCIDE = {
+    'menu_consulta': 'layout-dashboard', 'menu_nova_ficha': 'file-plus',
+    'menu_edicao': 'file-pen-line', 'menu_aprovar': 'circle-check-big',
+    'menu_cadastrar_aeronave': 'plane', 'menu_criar_login': 'users',
+    'menu_assinaturas': 'signature', 'menu_excluir': 'trash-2',
+    'menu_sair': 'log-out', 'atualizar_fichas': 'refresh-cw',
+}
+
+
+@st.cache_resource
+def css_icones_lucide():
+    """Ícones Lucide (SVG) aplicados aos botões pela chave de cada um."""
+    import base64
+    regras = []
+    for chave, nome in ICONES_LUCIDE.items():
+        caminho = os.path.join("assets", "icons", f"{nome}.svg")
+        if not os.path.exists(caminho):
+            continue
+        with open(caminho, "rb") as arquivo:
+            dados = base64.b64encode(arquivo.read()).decode()
+        url = f"url('data:image/svg+xml;base64,{dados}')"
+        regras.append(
+            f".st-key-{chave} button p::before {{ content: ''; display: inline-block;"
+            f" width: 1.05rem; height: 1.05rem; margin-right: .6rem; vertical-align: -0.2rem;"
+            f" background-color: currentColor; -webkit-mask: {url} no-repeat center / contain;"
+            f" mask: {url} no-repeat center / contain; }}"
+        )
+    return "<style>" + "\n".join(regras) + "</style>"
+
+
+st.markdown(css_icones_lucide(), unsafe_allow_html=True)
+
+
 def cabecalho(titulo, subtitulo=""):
     st.markdown(
         f'<div class="cabecalho"><h1>{titulo}</h1>'
@@ -1507,7 +1540,7 @@ def mostrar_relatorio_pesagem(tabela, peso, braco, cg_mac):
 @protegido
 def tela_consulta():
     cabecalho("Fichas", "Visão geral e consulta do histórico de pesagens.")
-    if st.button("Atualizar", icon=":material/refresh:"):
+    if st.button("Atualizar", key="atualizar_fichas"):
         invalidar_cache_fichas()
         st.rerun()
 
@@ -3555,7 +3588,6 @@ else:
                 rotulo, icone, _, _ = PAGINAS[pagina]
                 st.button(
                     rotulo,
-                    icon=icone,
                     key=f"menu_{pagina}",
                     use_container_width=True,
                     type="primary" if st.session_state['pagina_atual'] == pagina else "secondary",
@@ -3563,7 +3595,7 @@ else:
                     args=(pagina,),
                 )
         st.divider()
-        if st.button("Sair", icon=":material/logout:", use_container_width=True):
+        if st.button("Sair", key="menu_sair", use_container_width=True):
             st.session_state['usuario_logado'] = False
             st.session_state['nivel_acesso'] = 0
             st.session_state['usuario_id'] = ""
