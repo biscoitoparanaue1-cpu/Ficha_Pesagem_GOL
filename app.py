@@ -1597,6 +1597,42 @@ def renderizar_ficha_visualizacao(
             coluna_valor.markdown(f":red[🔴 {rotulo} marcado para correção]")
         rotulos_campos[campo] = f"{rotulo}: {safe_str(valor)}"
 
+    def tabela_itens_aprovacao(tipo, campo_desc, campo_peso, campo_braco, limite):
+        itens = []
+        for indice in range(1, limite + 1):
+            descricao = row.get(f'{tipo} {campo_desc} {indice}', None)
+            if pd.isna(descricao) or not str(descricao).strip():
+                continue
+            peso = safe_float(row.get(f'{tipo} {campo_peso} {indice}', 0))
+            braco = safe_float(row.get(f'{tipo} {campo_braco} {indice}', 0))
+            itens.append((indice, safe_str(descricao), peso, braco))
+        if not itens:
+            st.caption("Nenhum item.")
+            return
+        larguras = [0.5, 4, 1.2, 1.2, 1.5, 0.8]
+        cab = st.columns(larguras, vertical_alignment="center")
+        for coluna, titulo in zip(cab, ["#", "Descrição", "Peso (kg)", "Braço (in)", "Momento", "Erro"]):
+            coluna.markdown(f"<span style='color:#6B7280;font-size:.82rem;font-weight:600'>{titulo}</span>", unsafe_allow_html=True)
+        for indice, descricao, peso, braco in itens:
+            campo = f"{tipo} {campo_desc} {indice}"
+            campos_item = {f"{tipo} {c} {indice}" for c in (campo_desc, campo_peso, campo_braco)}
+            marcado_antes = bool(campos_item & set(sinalizacoes_atuais))
+            st.markdown("<hr style='margin:.1rem 0;border:none;border-top:1px solid #EEF0F3'>", unsafe_allow_html=True)
+            c = st.columns(larguras, vertical_alignment="center")
+            c[0].write(str(indice))
+            c[1].write(descricao)
+            c[2].write(f"{peso:,.2f}")
+            c[3].write(f"{braco:,.2f}")
+            c[4].write(f"{peso * braco:,.2f}")
+            marcado = c[5].checkbox(
+                "Erro", value=marcado_antes, label_visibility="collapsed",
+                key=f"aprovacao_erro_{prefixo}_{pesagem}_{revisao}_{campo}",
+            )
+            marcacoes_campos[campo] = marcado
+            rotulos_campos[campo] = f"{tipo} item {indice}: {descricao}"
+            if marcado:
+                c[1].markdown(":red[🔴 marcado para correção]")
+
     aba1, aba2, aba3, aba4, aba5 = st.tabs(["Dados Gerais", "Células de Carga", "Deductions", "Additions", "Weighing Report"])
     info_aero = dict_tipos_aeronave.get(prefixo, {})
     lopa, config_lopa = separar_campos_lopa(row)
@@ -1688,33 +1724,8 @@ def renderizar_ficha_visualizacao(
             arm = row.get(f'Deductions arm {i}', None)
             if pd.notna(desc) and str(desc).strip() != '':
                 deducoes_lista.append({"Descrição": desc, "Peso [Kg]": safe_float(peso), "Arm [pol]": safe_float(arm)})
-        if deducoes_lista and modo_aprovacao:
-            for indice in range(1, MAX_DEDUCTIONS + 1):
-                descricao = row.get(f'Deductions description {indice}', None)
-                if pd.isna(descricao) or not str(descricao).strip():
-                    continue
-                peso = row.get(f'Deductions Weigth {indice}', '')
-                braco = row.get(f'Deductions arm {indice}', '')
-                st.markdown(f"**Item {indice}**")
-                col_desc, col_peso, col_braco = st.columns(3)
-                mostrar_campo(
-                    f"Deductions description {indice}",
-                    f"Item {indice} — Descrição",
-                    descricao,
-                    col_desc,
-                )
-                mostrar_campo(
-                    f"Deductions Weigth {indice}",
-                    f"Item {indice} — Peso [Kg]",
-                    peso,
-                    col_peso,
-                )
-                mostrar_campo(
-                    f"Deductions arm {indice}",
-                    f"Item {indice} — Arm [pol]",
-                    braco,
-                    col_braco,
-                )
+        if modo_aprovacao:
+            tabela_itens_aprovacao("Deductions", "description", "Weigth", "arm", MAX_DEDUCTIONS)
         elif deducoes_lista:
             st.dataframe(pd.DataFrame(deducoes_lista), use_container_width=True, hide_index=True)
 
@@ -1726,33 +1737,8 @@ def renderizar_ficha_visualizacao(
             arm = row.get(f'Additions arm {i}', None)
             if pd.notna(desc) and str(desc).strip() != '':
                 adicoes_lista.append({"Descrição": desc, "Peso [Kg]": safe_float(peso), "Arm [pol]": safe_float(arm)})
-        if adicoes_lista and modo_aprovacao:
-            for indice in range(1, MAX_ADDITIONS + 1):
-                descricao = row.get(f'Additions Description {indice}', None)
-                if pd.isna(descricao) or not str(descricao).strip():
-                    continue
-                peso = row.get(f'Additions weigth {indice}', '')
-                braco = row.get(f'Additions arm {indice}', '')
-                st.markdown(f"**Item {indice}**")
-                col_desc, col_peso, col_braco = st.columns(3)
-                mostrar_campo(
-                    f"Additions Description {indice}",
-                    f"Item {indice} — Descrição",
-                    descricao,
-                    col_desc,
-                )
-                mostrar_campo(
-                    f"Additions weigth {indice}",
-                    f"Item {indice} — Peso [Kg]",
-                    peso,
-                    col_peso,
-                )
-                mostrar_campo(
-                    f"Additions arm {indice}",
-                    f"Item {indice} — Arm [pol]",
-                    braco,
-                    col_braco,
-                )
+        if modo_aprovacao:
+            tabela_itens_aprovacao("Additions", "Description", "weigth", "arm", MAX_ADDITIONS)
         elif adicoes_lista:
             st.dataframe(pd.DataFrame(adicoes_lista), use_container_width=True, hide_index=True)
 
