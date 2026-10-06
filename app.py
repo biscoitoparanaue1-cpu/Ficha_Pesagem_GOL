@@ -14,7 +14,7 @@ from openpyxl.drawing.image import Image as ExcelImage
 from PIL import Image as PillowImage, UnidentifiedImageError
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 # 1. CONFIGURAÇÃO INICIAL
 st.set_page_config(page_title="Pesagem e Balanceamento", layout="wide", initial_sidebar_state="expanded")
@@ -329,13 +329,15 @@ def obter_conexao_postgresql():
                 "Confira se está no formato esperado e se a porta após o host "
                 "é numérica, como 5432 ou 6543."
             ) from None
-    # pool_pre_ping descarta conexões que o Supabase encerrou por inatividade e
     # prepare_threshold=None evita erros de prepared statement no pooler.
+    # Conexões derrubadas pelo Supabase são refeitas em ConexaoPostgreSQL.execute,
+    # sem o custo de um "ping" antes de cada consulta.
     return st.connection(
         "postgresql",
         type="sql",
-        pool_pre_ping=True,
-        pool_recycle=300,
+        pool_recycle=240,
+        pool_size=5,
+        max_overflow=5,
         connect_args={"prepare_threshold": None},
     )
 
@@ -376,6 +378,7 @@ class ResultadoBanco:
 class ConexaoPostgreSQL:
     def __init__(self):
         self._sessao = obter_conexao_postgresql().session
+        self._primeira_consulta = True
 
     @property
     def row_factory(self):
@@ -402,7 +405,19 @@ class ConexaoPostgreSQL:
 
     def execute(self, sql, parametros=None):
         consulta, valores = self._preparar(sql, parametros)
-        return ResultadoBanco(self._sessao.execute(text(consulta), valores))
+        primeira = self._primeira_consulta
+        self._primeira_consulta = False
+        try:
+            return ResultadoBanco(self._sessao.execute(text(consulta), valores))
+        except DBAPIError as erro:
+            # Conexão encerrada pelo servidor: refaz uma vez se nada foi
+            # executado ainda nesta transação.
+            if not (primeira and erro.connection_invalidated):
+                raise
+            self._sessao.rollback()
+            self._sessao.close()
+            self._sessao = obter_conexao_postgresql().session
+            return ResultadoBanco(self._sessao.execute(text(consulta), valores))
 
     def executemany(self, sql, sequencias):
         if not sequencias:
@@ -533,7 +548,9 @@ def atualizar_ficha(prefixo, pesagem, revisao, registro):
 def carregar_dados_banco():
     with conectar_banco() as conn:
         registros = conn.execute(
-            "SELECT dados FROM pesagens ORDER BY id"
+            """SELECT dados FROM pesagens
+               WHERE NULLIF(btrim(dados->>'Prefixo'), '') IS NOT NULL
+               ORDER BY id"""
         ).fetchall()
     return dataframe_fichas(registros)
 
@@ -588,8 +605,9 @@ def consultar_registros_prefixo(prefixo):
         ).fetchall()
 
 
+@st.cache_data
 def carregar_linha_ficha(prefixo, pesagem, revisao):
-    df = dataframe_fichas(consultar_registros_prefixo(prefixo))
+    df = carregar_fichas_prefixo(prefixo)
     if not {"Pesagem", "Revisao"}.issubset(df.columns):
         return None
     linhas = df.loc[
@@ -616,6 +634,9 @@ def carregar_fichas_para_momento_flaps(prefixo, tipo_aeronave):
 
 def invalidar_cache_fichas():
     carregar_dados_banco.clear()
+    carregar_linha_ficha.clear()
+    listar_fichas_pendentes.clear()
+    carregar_presets_lopa.clear()
     carregar_prefixos_fichas.clear()
     carregar_fichas_prefixo.clear()
     carregar_fichas_para_momento_flaps.clear()
@@ -1166,6 +1187,7 @@ def listar_fichas_devolvidas_usuario(usuario):
     return list(fichas.values())
 
 
+@st.cache_data
 def listar_fichas_pendentes():
     fluxos = carregar_fluxos_fichas()
     with conectar_banco() as conn:
@@ -2094,29 +2116,29 @@ PRESETS = {
     ],
 }
 
-valores_lopa_historico = set()
-for coluna in (" LOPA", "LOPA", "Configuração LOPA ", "Configuração LOPA"):
-    if coluna in df_historico.columns:
-        valores_lopa_historico.update(
-            safe_str(valor)
-            for valor in df_historico[coluna].dropna().tolist()
-            if safe_str(valor).casefold() not in {"lopa", "configuração lopa"}
-        )
+@st.cache_data
+def carregar_presets_lopa():
+    df = carregar_dados_banco()
+    valores = set()
+    for coluna in (" LOPA", "LOPA", "Configuração LOPA ", "Configuração LOPA"):
+        if coluna in df.columns:
+            valores.update(
+                safe_str(valor)
+                for valor in df[coluna].dropna().tolist()
+                if safe_str(valor).casefold() not in {"lopa", "configuração lopa"}
+            )
+    lopa = sorted(
+        {v for v in valores if v.upper().startswith("GLP-")} | {"GLP-MAX8-001-XMC"},
+        key=str.casefold,
+    )
+    config = sorted(
+        {v for v in valores if not v.upper().startswith("GLP-")} | {"186 Pax + 10 Flight Crew"},
+        key=str.casefold,
+    )
+    return lopa, config
 
-PRESETS["lopa"] = sorted(
-    {
-        valor for valor in valores_lopa_historico
-        if valor.upper().startswith("GLP-")
-    } | {"GLP-MAX8-001-XMC"},
-    key=str.casefold,
-)
-PRESETS["config_lopa"] = sorted(
-    {
-        valor for valor in valores_lopa_historico
-        if not valor.upper().startswith("GLP-")
-    } | {"186 Pax + 10 Flight Crew"},
-    key=str.casefold,
-)
+
+PRESETS["lopa"], PRESETS["config_lopa"] = carregar_presets_lopa()
 
 
 @st.cache_data
@@ -3443,6 +3465,9 @@ if not st.session_state['usuario_logado']:
                     st.rerun()
                 else:
                     st.error("Usuário ou senha inválidos.")
+    # Enquanto a pessoa digita a senha, deixa os dados das telas prontos.
+    listar_fichas_pendentes()
+    carregar_prefixos_fichas()
 else:
     nivel = st.session_state['nivel_acesso']
     if nivel not in PAGINAS.get(st.session_state['pagina_atual'], (None, None, None, set()))[3]:
