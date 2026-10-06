@@ -36,7 +36,14 @@ st.markdown(
     section[data-testid="stSidebar"] {
         background: #FFFFFF; border-right: 1px solid #E6E8EC;
     }
-    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .2rem; }
+    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .35rem; }
+    section[data-testid="stSidebar"] hr { margin: .9rem 0; }
+    input:disabled, textarea:disabled {
+        color: #1D2433 !important; -webkit-text-fill-color: #1D2433 !important;
+        opacity: 1 !important; cursor: default;
+    }
+    [data-testid="stWidgetLabel"] p { color: #1D2433 !important; opacity: 1 !important; }
+    [data-baseweb="input"]:has(input:disabled) { background: #FFFFFF !important; }
     section[data-testid="stSidebar"] .stButton button {
         justify-content: flex-start; border: none; box-shadow: none;
         padding: 0.4rem 0.75rem; min-height: 2.3rem; font-weight: 500;
@@ -50,7 +57,7 @@ st.markdown(
     section[data-testid="stSidebar"] .stButton button[kind="secondary"]:hover {
         background: #FFF1E8; color: #FF6A13;
     }
-    .marca { display: flex; align-items: center; gap: .6rem; margin-bottom: .2rem; }
+    .marca { display: flex; align-items: center; gap: .6rem; margin-bottom: .4rem; }
     .marca-logo {
         width: 38px; height: 38px; border-radius: 10px; background: #FF6A13;
         color: #fff; display: flex; align-items: center; justify-content: center;
@@ -60,11 +67,11 @@ st.markdown(
     .marca-sub { color: #6B7280; font-size: .78rem; }
     .usuario {
         background: #F6F7F9; border-radius: 10px; padding: .55rem .75rem;
-        font-size: .85rem; color: #3B4352; margin: .8rem 0 .4rem;
+        font-size: .85rem; color: #3B4352; margin: 1rem 0 .3rem;
     }
     .grupo-menu {
         color: #9AA1AD; font-size: .72rem; font-weight: 600; letter-spacing: .06em;
-        text-transform: uppercase; margin: .9rem 0 .25rem .2rem;
+        text-transform: uppercase; margin: 1.3rem 0 .45rem .2rem;
     }
     .cabecalho h1 { font-size: 1.75rem; font-weight: 700; margin: 0; padding: 0; }
     .cabecalho p { color: #6B7280; margin: .25rem 0 1.2rem; }
