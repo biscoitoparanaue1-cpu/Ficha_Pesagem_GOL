@@ -1518,6 +1518,26 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
     return output.getvalue()
 
 
+def mostrar_totais_celulas(nlg_2, nlg_1, rh_o, rh_i, lh_i, lh_o):
+    """Mostra os totais de NLG, RH MLG, LH MLG e o total geral, como na ficha manual."""
+    nlg = safe_float(nlg_2) + safe_float(nlg_1)
+    rh = safe_float(rh_o) + safe_float(rh_i)
+    lh = safe_float(lh_i) + safe_float(lh_o)
+    itens = [("Total NLG", nlg), ("Total RH MLG", rh), ("Total LH MLG", lh), ("TOTAL", nlg + rh + lh)]
+    blocos = "".join(
+        f"<div style='flex:1;min-width:120px;border:1px solid #E3E6EB;border-radius:10px;"
+        f"padding:8px 12px;background:{'#FFF4EC' if nome == 'TOTAL' else '#FFFFFF'}'>"
+        f"<div style='font-size:0.75rem;color:#5B6472'>{nome}</div>"
+        f"<div style='font-size:1.25rem;font-weight:700;color:#111'>"
+        f"{valor:,.0f}".replace(",", ".") + " kg</div></div>"
+        for nome, valor in itens
+    )
+    st.markdown(
+        f"<div style='display:flex;gap:10px;flex-wrap:wrap;margin:4px 0 14px'>{blocos}</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def mostrar_relatorio_pesagem(tabela, peso, braco, cg_mac):
     r1, r2, r3 = st.columns(3)
     r1.metric("Aircraft Basic Weight", f"{peso:,.2f} kg")
@@ -1731,6 +1751,13 @@ def renderizar_ficha_visualizacao(
             ("Peso MLG RH 2 pesagem 2", "RH MLG 2"),
             ("Peso MLG LH2 pesagem 2", "LH MLG 2"),
         ]
+        alternativas_totais = {
+            "Peso MLG RH 1 ": ["Peso MLG RH 1 ", "Peso MLG RH 1"],
+            "Peso MLG LH 1": ["Peso MLG LH 1", "Peso MLG LH 1 "],
+            "Peso MLG RH 2": ["Peso MLG RH 2", "Peso MLG RH 2 "],
+            "Peso MLG LH2": ["Peso MLG LH2", "Peso MLG LH 2"],
+            "Peso MLG RH 1  pesagem 2": ["Peso MLG RH 1  pesagem 2", "Peso MLG RH 1 pesagem 2"],
+        }
         for titulo, campos in (
             ("Pesagem 01", campos_pesagem_1),
             ("Pesagem 02", campos_pesagem_2),
@@ -1754,6 +1781,11 @@ def renderizar_ficha_visualizacao(
                     campo = get_real_col(alternativas.get(campo, [campo]))
                     valor = row.get(campo, "")
                     mostrar_campo(campo, rotulo, valor, container)
+            valores = [
+                row.get(get_real_col(alternativas_totais.get(c, [c])), 0)
+                for c, _ in campos
+            ]
+            mostrar_totais_celulas(valores[0], valores[1], valores[2], valores[4], valores[3], valores[5])
 
         st.markdown("**Medidas das canelas**")
         canela_lh, canela_rh = st.columns(2)
@@ -2026,6 +2058,7 @@ def renderizar_ficha_visualizacao(
                     revisao,
                     st.session_state['usuario_id'],
                 )
+                st.session_state["ficha_recem_aprovada"] = (prefixo, pesagem, revisao)
                 st.rerun()
         else:
             botoes_exportacao(
@@ -2512,6 +2545,7 @@ def formulario_pesagem(
         chave_p1_lhm2 = get_real_col(['Peso MLG LH2', 'Peso MLG LH 2'])
         p1_rhm2 = p1_c7.number_input(rotulo_form(chave_p1_rhm2, "RH MLG 2", p1_c7), value=safe_float(linha_existente.get(chave_p1_rhm2, 0.0)), step=10.0)
         p1_lhm2 = p1_c8.number_input(rotulo_form(chave_p1_lhm2, "LH MLG 2", p1_c8), value=safe_float(linha_existente.get(chave_p1_lhm2, 0.0)), step=10.0)
+        mostrar_totais_celulas(p1_nlh, p1_nrh, p1_rhm, p1_rhm2, p1_lhm, p1_lhm2)
 
         st.markdown("**Pesagem 02**")
         p2_c1, p2_c2, p2_c3, p2_c4 = st.columns(4)
@@ -2529,6 +2563,7 @@ def formulario_pesagem(
         chave_p2_lhm2 = get_real_col(['Peso MLG LH2 pesagem 2'])
         p2_rhm2 = p2_c7.number_input(rotulo_form(chave_p2_rhm2, "RH MLG 2 P2", p2_c7), value=safe_float(linha_existente.get(chave_p2_rhm2, 0.0)), step=10.0)
         p2_lhm2 = p2_c8.number_input(rotulo_form(chave_p2_lhm2, "LH MLG 2 P2", p2_c8), value=safe_float(linha_existente.get(chave_p2_lhm2, 0.0)), step=10.0)
+        mostrar_totais_celulas(p2_nlh, p2_nrh, p2_rhm, p2_rhm2, p2_lhm, p2_lhm2)
         
         st.markdown("**Canelas**")
         unidade_canela_key = f"{form_key}_unidade_canela"
@@ -3355,7 +3390,19 @@ def tela_aprovar_fichas():
     )
 
     with aba_aprovacao:
-        if not pendentes_aprovacao:
+        recem_aprovada = st.session_state.get("ficha_recem_aprovada")
+        linha_aprovada = carregar_linha_ficha(*recem_aprovada) if recem_aprovada else None
+        if linha_aprovada is not None:
+            prefixo, pesagem, revisao = recem_aprovada
+            st.success(
+                f"Ficha já aprovada: {prefixo} | Pesagem {pesagem} | Revisão {revisao}. "
+                "Baixe o Excel ou o PDF abaixo."
+            )
+            if st.button("Voltar às fichas pendentes", key="voltar_pendentes"):
+                st.session_state.pop("ficha_recem_aprovada", None)
+                st.rerun()
+            renderizar_ficha_visualizacao(prefixo, pesagem, revisao, linha_aprovada)
+        elif not pendentes_aprovacao:
             st.success("Não há fichas pendentes de aprovação.")
         else:
             opcoes_aprovacao = {
