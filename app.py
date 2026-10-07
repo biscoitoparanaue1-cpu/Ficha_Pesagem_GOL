@@ -1518,24 +1518,34 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
     return output.getvalue()
 
 
-def mostrar_totais_celulas(nlg_2, nlg_1, rh_o, rh_i, lh_i, lh_o):
-    """Mostra os totais de NLG, RH MLG, LH MLG e o total geral, como na ficha manual."""
-    nlg = safe_float(nlg_2) + safe_float(nlg_1)
-    rh = safe_float(rh_o) + safe_float(rh_i)
-    lh = safe_float(lh_i) + safe_float(lh_o)
-    itens = [("Total NLG", nlg), ("Total RH MLG", rh), ("Total LH MLG", lh), ("TOTAL", nlg + rh + lh)]
-    blocos = "".join(
-        f"<div style='flex:1;min-width:120px;border:1px solid #E3E6EB;border-radius:10px;"
-        f"padding:8px 12px;background:{'#FFF4EC' if nome == 'TOTAL' else '#FFFFFF'}'>"
-        f"<div style='font-size:0.75rem;color:#5B6472'>{nome}</div>"
-        f"<div style='font-size:1.25rem;font-weight:700;color:#111'>"
-        f"{valor:,.0f}".replace(",", ".") + " kg</div></div>"
-        for nome, valor in itens
-    )
-    st.markdown(
-        f"<div style='display:flex;gap:10px;flex-wrap:wrap;margin:4px 0 14px'>{blocos}</div>",
+def caixa_total(container, valor, espaco_px):
+    """Caixa de total somente leitura, alinhada ao lado dos campos somados."""
+    texto = f"{safe_float(valor):,.0f}".replace(",", ".")
+    container.markdown(
+        f"<div style='height:{espaco_px}px'></div>"
+        "<div style='font-size:0.875rem;margin-bottom:6px'>Total</div>"
+        "<div style='border:1px solid #C9CED6;border-radius:8px;padding:8px 12px;"
+        f"background:#FFF4EC;font-weight:700;min-height:40px'>{texto}</div>",
         unsafe_allow_html=True,
     )
+
+
+def grade_celulas(render):
+    """Monta as células como na ficha manual: Nariz (LH/RH) com o total NLG ao lado,
+    RH MLG 1/2 e LH MLG 1/2 empilhados, cada lado com o seu total.
+    render(container, indice) desenha o campo e devolve o valor; índices:
+    0 Nariz LH, 1 Nariz RH, 2 RH MLG 1, 3 RH MLG 2, 4 LH MLG 1, 5 LH MLG 2."""
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown("<div style='height:75px'></div>", unsafe_allow_html=True)
+    v = [None] * 6
+    v[0] = render(c1, 0)
+    v[1] = render(c1, 1)
+    for indice in (2, 3, 4, 5):
+        v[indice] = render(c3, indice)
+    caixa_total(c2, safe_float(v[0]) + safe_float(v[1]), 112)
+    caixa_total(c4, safe_float(v[2]) + safe_float(v[3]), 40)
+    caixa_total(c4, safe_float(v[4]) + safe_float(v[5]), 80)
+    return v
 
 
 def mostrar_relatorio_pesagem(tabela, peso, braco, cg_mac):
@@ -1763,29 +1773,16 @@ def renderizar_ficha_visualizacao(
             ("Pesagem 02", campos_pesagem_2),
         ):
             st.markdown(f"**{titulo}**")
-            for indice in range(0, len(campos), 3):
-                colunas = st.columns(3)
-                for container, (campo, rotulo) in zip(
-                    colunas, campos[indice:indice + 3]
-                ):
-                    alternativas = {
-                        "Peso MLG RH 1 ": ["Peso MLG RH 1 ", "Peso MLG RH 1"],
-                        "Peso MLG LH 1": ["Peso MLG LH 1", "Peso MLG LH 1 "],
-                        "Peso MLG RH 2": ["Peso MLG RH 2", "Peso MLG RH 2 "],
-                        "Peso MLG LH2": ["Peso MLG LH2", "Peso MLG LH 2"],
-                        "Peso MLG RH 1  pesagem 2": [
-                            "Peso MLG RH 1  pesagem 2",
-                            "Peso MLG RH 1 pesagem 2",
-                        ],
-                    }
-                    campo = get_real_col(alternativas.get(campo, [campo]))
-                    valor = row.get(campo, "")
-                    mostrar_campo(campo, rotulo, valor, container)
-            valores = [
-                row.get(get_real_col(alternativas_totais.get(c, [c])), 0)
-                for c, _ in campos
-            ]
-            mostrar_totais_celulas(valores[0], valores[1], valores[2], valores[4], valores[3], valores[5])
+            ordem = [campos[0], campos[1], campos[2], campos[4], campos[3], campos[5]]
+
+            def render_consulta(container, indice, ordem=ordem):
+                campo, rotulo = ordem[indice]
+                campo = get_real_col(alternativas_totais.get(campo, [campo]))
+                valor = row.get(campo, "")
+                mostrar_campo(campo, rotulo, valor, container)
+                return valor
+
+            grade_celulas(render_consulta)
 
         st.markdown("**Medidas das canelas**")
         canela_lh, canela_rh = st.columns(2)
@@ -2529,41 +2526,39 @@ def formulario_pesagem(
         razao = campo_com_preset(st, rotulo_form(chave_motivo, "Razão para emissão:"), linha_existente.get(chave_motivo, ''), PRESETS["motivo"], f"{form_key}_motivo", categoria="motivo")
 
     with aba2:
+        def campos_formulario(chaves, rotulos):
+            def render(container, indice):
+                return container.number_input(
+                    rotulo_form(chaves[indice], rotulos[indice], container),
+                    value=safe_float(linha_existente.get(chaves[indice], 0.0)),
+                    step=10.0,
+                    key=f"{form_key}_celula_{chaves[indice]}",
+                )
+            return grade_celulas(render)
+
         st.markdown("**Pesagem 01**")
-        p1_c1, p1_c2, p1_c3, p1_c4 = st.columns(4)
         chave_p1_nlh = get_real_col(['Peso nariz LH'])
         chave_p1_nrh = get_real_col(['Peso Nariz RH'])
         chave_p1_rhm = get_real_col(['Peso MLG RH 1 ', 'Peso MLG RH 1'])
         chave_p1_lhm = get_real_col(['Peso MLG LH 1', 'Peso MLG LH 1 '])
-        p1_nlh = p1_c1.number_input(rotulo_form(chave_p1_nlh, "Nariz LH", p1_c1), value=safe_float(linha_existente.get(chave_p1_nlh, 0.0)), step=10.0)
-        p1_nrh = p1_c2.number_input(rotulo_form(chave_p1_nrh, "Nariz RH", p1_c2), value=safe_float(linha_existente.get(chave_p1_nrh, 0.0)), step=10.0)
-        p1_rhm = p1_c3.number_input(rotulo_form(chave_p1_rhm, "RH MLG 1", p1_c3), value=safe_float(linha_existente.get(chave_p1_rhm, 0.0)), step=10.0)
-        p1_lhm = p1_c4.number_input(rotulo_form(chave_p1_lhm, "LH MLG 1", p1_c4), value=safe_float(linha_existente.get(chave_p1_lhm, 0.0)), step=10.0)
-        
-        p1_c5, p1_c6, p1_c7, p1_c8 = st.columns(4)
         chave_p1_rhm2 = get_real_col(['Peso MLG RH 2', 'Peso MLG RH 2 '])
         chave_p1_lhm2 = get_real_col(['Peso MLG LH2', 'Peso MLG LH 2'])
-        p1_rhm2 = p1_c7.number_input(rotulo_form(chave_p1_rhm2, "RH MLG 2", p1_c7), value=safe_float(linha_existente.get(chave_p1_rhm2, 0.0)), step=10.0)
-        p1_lhm2 = p1_c8.number_input(rotulo_form(chave_p1_lhm2, "LH MLG 2", p1_c8), value=safe_float(linha_existente.get(chave_p1_lhm2, 0.0)), step=10.0)
-        mostrar_totais_celulas(p1_nlh, p1_nrh, p1_rhm, p1_rhm2, p1_lhm, p1_lhm2)
+        p1_nlh, p1_nrh, p1_rhm, p1_rhm2, p1_lhm, p1_lhm2 = campos_formulario(
+            [chave_p1_nlh, chave_p1_nrh, chave_p1_rhm, chave_p1_rhm2, chave_p1_lhm, chave_p1_lhm2],
+            ["Nariz LH", "Nariz RH", "RH MLG 1", "RH MLG 2", "LH MLG 1", "LH MLG 2"],
+        )
 
         st.markdown("**Pesagem 02**")
-        p2_c1, p2_c2, p2_c3, p2_c4 = st.columns(4)
         chave_p2_nlh = get_real_col(['Peso nariz LH pesagem 2'])
         chave_p2_nrh = get_real_col(['Peso Nariz RH pesagem 2'])
         chave_p2_rhm = get_real_col(['Peso MLG RH 1  pesagem 2', 'Peso MLG RH 1 pesagem 2'])
         chave_p2_lhm = get_real_col(['Peso MLG LH 1 pesagem 2'])
-        p2_nlh = p2_c1.number_input(rotulo_form(chave_p2_nlh, "Nariz LH P2", p2_c1), value=safe_float(linha_existente.get(chave_p2_nlh, 0.0)), step=10.0)
-        p2_nrh = p2_c2.number_input(rotulo_form(chave_p2_nrh, "Nariz RH P2", p2_c2), value=safe_float(linha_existente.get(chave_p2_nrh, 0.0)), step=10.0)
-        p2_rhm = p2_c3.number_input(rotulo_form(chave_p2_rhm, "RH MLG 1 P2", p2_c3), value=safe_float(linha_existente.get(chave_p2_rhm, 0.0)), step=10.0)
-        p2_lhm = p2_c4.number_input(rotulo_form(chave_p2_lhm, "LH MLG 1 P2", p2_c4), value=safe_float(linha_existente.get(chave_p2_lhm, 0.0)), step=10.0)
-
-        p2_c5, p2_c6, p2_c7, p2_c8 = st.columns(4)
         chave_p2_rhm2 = get_real_col(['Peso MLG RH 2 pesagem 2'])
         chave_p2_lhm2 = get_real_col(['Peso MLG LH2 pesagem 2'])
-        p2_rhm2 = p2_c7.number_input(rotulo_form(chave_p2_rhm2, "RH MLG 2 P2", p2_c7), value=safe_float(linha_existente.get(chave_p2_rhm2, 0.0)), step=10.0)
-        p2_lhm2 = p2_c8.number_input(rotulo_form(chave_p2_lhm2, "LH MLG 2 P2", p2_c8), value=safe_float(linha_existente.get(chave_p2_lhm2, 0.0)), step=10.0)
-        mostrar_totais_celulas(p2_nlh, p2_nrh, p2_rhm, p2_rhm2, p2_lhm, p2_lhm2)
+        p2_nlh, p2_nrh, p2_rhm, p2_rhm2, p2_lhm, p2_lhm2 = campos_formulario(
+            [chave_p2_nlh, chave_p2_nrh, chave_p2_rhm, chave_p2_rhm2, chave_p2_lhm, chave_p2_lhm2],
+            ["Nariz LH P2", "Nariz RH P2", "RH MLG 1 P2", "RH MLG 2 P2", "LH MLG 1 P2", "LH MLG 2 P2"],
+        )
         
         st.markdown("**Canelas**")
         unidade_canela_key = f"{form_key}_unidade_canela"
