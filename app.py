@@ -10,6 +10,7 @@ import secrets
 import openpyxl
 import pandas as pd
 import streamlit as st
+import time
 from openpyxl.drawing.image import Image as ExcelImage
 from PIL import Image as PillowImage, UnidentifiedImageError
 from sqlalchemy import text
@@ -3583,7 +3584,40 @@ def ir_para(pagina):
     st.session_state['pagina_atual'] = pagina
 
 
-if not st.session_state['usuario_logado']:
+if st.session_state['usuario_logado'] and st.session_state.get('boas_vindas'):
+    # Tela curta de boas-vindas enquanto os dados das telas carregam.
+    primeiro_nome = safe_str(st.session_state.get('nome_usuario')).split(" ")[0]
+    st.markdown(
+        f"""
+<style>
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] {{ display: none; }}
+@keyframes gol-girar {{ to {{ transform: rotate(360deg); }} }}
+@keyframes gol-surgir {{ from {{ opacity: 0; transform: translateY(6px); }} to {{ opacity: 1; transform: none; }} }}
+.boas-vindas {{ height: 70vh; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 18px; animation: gol-surgir .5s ease-out; }}
+.boas-vindas h2 {{ margin: 0; font-weight: 600; color: #1F2430; }}
+.boas-vindas p {{ margin: 0; color: #6B7280; font-size: .95rem; }}
+.gol-loader {{ width: 28px; height: 28px; border-radius: 50%; border: 3px solid #FFE1CC;
+  border-top-color: #FF6A13; animation: gol-girar .8s linear infinite; }}
+</style>
+<div class="boas-vindas">
+  {MARCA_HTML}
+  <h2>Bem-vindo, {primeiro_nome}</h2>
+  <div class="gol-loader"></div>
+  <p>Carregando as fichas…</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    inicio = time.monotonic()
+    listar_fichas_pendentes()
+    carregar_prefixos_fichas()
+    restante = 1.2 - (time.monotonic() - inicio)
+    if restante > 0:
+        time.sleep(restante)
+    st.session_state.pop('boas_vindas', None)
+    st.rerun()
+elif not st.session_state['usuario_logado']:
     _, centro, _ = st.columns([1, 1.2, 1])
     with centro:
         st.markdown("<div style='height:12vh'></div>", unsafe_allow_html=True)
@@ -3602,6 +3636,7 @@ if not st.session_state['usuario_logado']:
                     st.session_state['nivel_acesso'] = registro_usuario['nivel_acesso']
                     st.session_state['nome_usuario'] = registro_usuario['nome']
                     st.session_state['pagina_atual'] = 'consulta'
+                    st.session_state['boas_vindas'] = True
                     st.rerun()
                 else:
                     st.error("Usuário ou senha inválidos.")
