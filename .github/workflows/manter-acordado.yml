@@ -1,7 +1,7 @@
 name: Manter o app acordado
 
-# O Space gratuito dorme depois de 48 h sem acesso. Um acesso a cada 6 h
-# mantém o app no ar mesmo em fins de semana e feriados.
+# O Space gratuito dorme depois de 48 h sem acesso e o Supabase gratuito é
+# pausado depois de 7 dias sem uso. Um acesso a cada 6 h evita os dois.
 on:
   schedule:
     - cron: "17 */6 * * *"
@@ -10,9 +10,27 @@ on:
 jobs:
   ping:
     runs-on: ubuntu-latest
-    if: ${{ vars.APP_URL != '' }}
     steps:
       - name: Acessar o app
+        if: ${{ vars.APP_URL != '' }}
         run: |
           curl -fsS -o /dev/null -w "HTTP %{http_code}\n" --retry 3 --retry-delay 20 \
             "${{ vars.APP_URL }}"
+
+      - name: Consultar o banco Supabase
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "Secret SUPABASE_DB_URL não cadastrado; pulando."
+            exit 0
+          fi
+          pip install --quiet "psycopg[binary]"
+          python - <<'PY'
+          import os
+          import psycopg
+
+          url = os.environ["SUPABASE_DB_URL"].replace("postgresql+psycopg://", "postgresql://")
+          with psycopg.connect(url, prepare_threshold=None, connect_timeout=30) as conn:
+              print("Banco respondeu:", conn.execute("SELECT count(*) FROM pesagens").fetchone()[0], "fichas")
+          PY

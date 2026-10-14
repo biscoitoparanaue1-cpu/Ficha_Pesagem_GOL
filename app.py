@@ -1403,7 +1403,32 @@ def normalizar_chaves_fluxo():
             pass
 
 
-inicializar_controle_acesso()
+def avisar_banco_indisponivel(erro):
+    st.error(
+        "Não foi possível conectar ao banco de dados. Nada do que já estava "
+        "salvo foi perdido."
+    )
+    st.markdown(
+        "- **Supabase pausado:** projetos gratuitos são pausados depois de "
+        "7 dias sem uso. Entre em supabase.com/dashboard, abra o projeto e "
+        "clique em **Restore project**; depois de alguns minutos, tente de novo.\n"
+        "- **URL do banco:** confira em Settings → Secrets se "
+        "[connections.postgresql].url ainda é a do pooler do Supabase "
+        "(Project Settings → Database → Connection string)."
+    )
+    if st.button("Tentar novamente", type="primary"):
+        obter_conexao_postgresql.clear()
+        st.rerun()
+    with st.expander("Detalhe do erro"):
+        st.code(f"{type(getattr(erro, 'orig', erro)).__name__}: "
+                f"{getattr(erro, 'orig', erro)}")
+    st.stop()
+
+
+try:
+    inicializar_controle_acesso()
+except DBAPIError as erro:
+    avisar_banco_indisponivel(erro)
 normalizar_chaves_fluxo()
 dict_tipos_aeronave.update(carregar_aeronaves_cadastradas())
 df_historico = carregar_dados_banco()

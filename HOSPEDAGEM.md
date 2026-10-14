@@ -45,6 +45,14 @@ cada 6 h, então na prática ele não dorme.
 Depois que tudo funcionar no novo endereço, o app no Streamlit Cloud pode ser
 apagado em https://share.streamlit.io.
 
+## Manter o Supabase ativo
+
+O Supabase gratuito pausa o projeto depois de 7 dias sem uso, e aí o app
+mostra "Não foi possível conectar ao banco de dados". Para evitar, cadastre no
+GitHub (**Settings → Secrets and variables → Actions → Secrets**) o secret
+`SUPABASE_DB_URL` com a mesma `url` de `[connections.postgresql]`. O workflow
+`manter-acordado.yml` faz uma consulta no banco a cada 6 h.
+
 ## Observações
 
 - O GitHub pausa workflows agendados depois de 60 dias sem nenhum commit no
