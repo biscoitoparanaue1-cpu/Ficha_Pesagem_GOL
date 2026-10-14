@@ -1,0 +1,9 @@
+.git
+.github
+.devcontainer
+.streamlit/secrets.toml
+__pycache__/
+*.py[cod]
+aeronaves.db
+*.xlsm
+deploy/

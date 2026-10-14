@@ -1,0 +1,45 @@
+name: Deploy no Hugging Face Spaces
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-huggingface
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ vars.HF_SPACE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Enviar código para o Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          pip install --quiet "huggingface_hub>=0.25"
+          mkdir -p /tmp/space
+          rsync -a ./ /tmp/space/ \
+            --exclude .git --exclude .github --exclude .devcontainer \
+            --exclude deploy --exclude aeronaves.db --exclude '*.xlsm' \
+            --exclude .streamlit/secrets.toml
+          cp deploy/huggingface/README.md /tmp/space/README.md
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          HfApi(token=os.environ["HF_TOKEN"]).upload_folder(
+              repo_id=os.environ["HF_SPACE"],
+              repo_type="space",
+              folder_path="/tmp/space",
+              commit_message=f"Deploy {os.environ.get('GITHUB_SHA', '')[:7]}",
+          )
+          PY
