@@ -766,6 +766,7 @@ def invalidar_cache_fichas():
     buscar_momento_flaps_banco.clear()
     buscar_fluxo_ficha.clear()
     montar_resumo_frota.clear()
+    montar_historico_frota.clear()
     carregar_campos_com_erro.clear()
     carregar_historico_ficha.clear()
     carregar_assinatura_usuario.clear()
@@ -1852,11 +1853,31 @@ CORES_MODELOS = {
     "737-700": "#3B6BC7",
     "737-800": "#E8590C",
     "737 MAX 8": "#2A9D8F",
+    "737-800 BCF": "#EDA100",
 }
 
 
-def nome_modelo_grafico(modelo):
+@st.cache_data
+def carregar_variantes_aeronave():
+    """Segunda coluna MODEL da planilha da frota (ex.: 8EH, MAX, BCF), por prefixo."""
+    try:
+        df_tipos = pd.read_excel('Cópia de Ficha_Pesagem_v2.xlsm', sheet_name='Sheet1')
+    except Exception:
+        return {}
+    if 'VRG REG.' not in df_tipos.columns or 'MODEL.1' not in df_tipos.columns:
+        return {}
+    return {
+        safe_str(prefixo): safe_str(variante)
+        for prefixo, variante in zip(df_tipos['VRG REG.'], df_tipos['MODEL.1'])
+        if safe_str(prefixo)
+    }
+
+
+def nome_modelo_grafico(modelo, prefixo=""):
     texto = safe_str(modelo).upper()
+    # Cargueiros convertidos (BCF) têm peso e C.G. bem diferentes dos de passageiros.
+    if "BCF" in carregar_variantes_aeronave().get(safe_str(prefixo), "").upper():
+        return "737-800 BCF"
     if "MAX" in texto:
         return "737 MAX 8"
     if "800" in texto:
@@ -1956,7 +1977,7 @@ def montar_resumo_frota():
         resumo = calcular_resumo_pesagem(prefixo, row)
         linhas.append({
             "Aeronave": prefixo,
-            "Modelo": nome_modelo_grafico(info_aero.get('modelo') or row.get('Tipo_aeronave')),
+            "Modelo": nome_modelo_grafico(info_aero.get('modelo') or row.get('Tipo_aeronave'), prefixo),
             "Pesagem": safe_str(row.get('Pesagem')),
             "Revisão": safe_str(row.get('Revisao')),
             "Data da pesagem": data_pesagem(row.get('Data_da_Pesagem')),
@@ -2000,6 +2021,331 @@ def motivos_fora_do_padrao(df):
     return motivos
 
 
+# Peso máximo de pouso de cada modelo (kg), base dos limites da FAA AC 120-27F.
+# Conferir no AFM da frota.
+PESO_MAXIMO_POUSO = {
+    "737-700": 58060,
+    "737-800": 65320,
+    "737 MAX 8": 69310,
+    "737-800 BCF": 65320,
+}
+# AC 120-27F §2.1.3.1: restabelecer o peso básico quando a soma das mudanças
+# passar de 0,5 % do peso máximo de pouso ou de 0,5 % MAC.
+LIMITE_VARIACAO_PESO = 0.005
+LIMITE_VARIACAO_CG = 0.5
+
+
+def tolerancia_peso_modelo(modelo):
+    mlw = PESO_MAXIMO_POUSO.get(modelo)
+    return mlw * LIMITE_VARIACAO_PESO if mlw else None
+
+
+@st.cache_data
+def montar_historico_frota():
+    """Peso e C.G. de todas as pesagens e revisões de cada aeronave."""
+    df = carregar_dados_banco()
+    if df.empty or not {'Prefixo', 'Pesagem', 'Revisao'}.issubset(df.columns):
+        return pd.DataFrame()
+    # Fichas repetidas no banco: vale a última gravada.
+    df = df.drop_duplicates(subset=['Prefixo', 'Pesagem', 'Revisao'], keep='last')
+    linhas = []
+    for _, row in df.iterrows():
+        prefixo = safe_str(row.get('Prefixo'))
+        info_aero = dict_tipos_aeronave.get(prefixo, {})
+        resumo = calcular_resumo_pesagem(prefixo, row)
+        if resumo["peso"] <= 0 or resumo["cg_mac"] <= 0:
+            continue
+        pesagem = safe_float(row.get('Pesagem'))
+        revisao = safe_float(row.get('Revisao'))
+        linhas.append({
+            "aeronave": prefixo,
+            "modelo": nome_modelo_grafico(info_aero.get('modelo') or row.get('Tipo_aeronave'), prefixo),
+            "pesagem_num": pesagem,
+            "revisao_num": revisao,
+            "ficha": f"P{pesagem:g} R{revisao:g}",
+            "data": data_pesagem(row.get('Data_da_Pesagem')),
+            "peso": round(resumo["peso"], 1),
+            "cg": round(resumo["cg_mac"], 2),
+        })
+    historico = pd.DataFrame(linhas)
+    if historico.empty:
+        return historico
+    return historico.sort_values(["aeronave", "pesagem_num", "revisao_num"]).reset_index(drop=True)
+
+
+def variacao_desde_pesagem_anterior(historico):
+    """Última ficha de cada aeronave contra a última revisão da pesagem anterior."""
+    linhas = []
+    for aeronave, fichas in historico.groupby("aeronave", sort=True):
+        atual = fichas.iloc[-1]
+        anteriores = fichas[fichas["pesagem_num"] < atual["pesagem_num"]]
+        if anteriores.empty:
+            continue
+        anterior = anteriores.iloc[-1]
+        tol_peso = tolerancia_peso_modelo(atual["modelo"])
+        delta_peso = atual["peso"] - anterior["peso"]
+        delta_cg = atual["cg"] - anterior["cg"]
+        fora = []
+        if tol_peso and abs(delta_peso) > tol_peso:
+            fora.append("peso")
+        if abs(delta_cg) > LIMITE_VARIACAO_CG:
+            fora.append("C.G.")
+        linhas.append({
+            "aeronave": aeronave,
+            "modelo": atual["modelo"],
+            "de": anterior["ficha"],
+            "para": atual["ficha"],
+            "delta_peso": round(delta_peso, 1),
+            "delta_cg": round(delta_cg, 2),
+            "tol_peso": tol_peso,
+            "situacao": ("Passou do limite de " + " e ".join(fora)) if fora else "Dentro do limite",
+        })
+    return pd.DataFrame(linhas)
+
+
+def aba_variacao(alt, historico, modelos, escala_cor, cor):
+    st.caption(
+        "Última ficha de cada aeronave comparada com a última revisão da pesagem "
+        "anterior. A caixa tracejada é o limite da FAA AC 120-27F (§2.1.3.1): "
+        "0,5 % do peso máximo de pouso e 0,5 % MAC. Fora dela, o peso básico "
+        "deve ser restabelecido."
+    )
+    variacao = variacao_desde_pesagem_anterior(historico)
+    if not variacao.empty:
+        variacao = variacao[variacao["modelo"].isin(modelos)]
+    if variacao.empty:
+        st.info("Nenhuma aeronave tem mais de uma pesagem para comparar.")
+        return
+    fora = variacao[variacao["situacao"] != "Dentro do limite"]
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Aeronaves comparadas", len(variacao))
+    k2.metric("Passaram do limite", len(fora))
+    k3.metric(
+        "Variação média de peso",
+        f"{variacao['delta_peso'].mean():+,.0f} kg".replace(",", "."),
+    )
+
+    tol_maior = max(
+        (t for t in variacao["tol_peso"].dropna()), default=0
+    )
+    caixas = pd.DataFrame([
+        {"modelo": m, "x": -LIMITE_VARIACAO_CG, "x2": LIMITE_VARIACAO_CG,
+         "y": -tolerancia_peso_modelo(m), "y2": tolerancia_peso_modelo(m)}
+        for m in modelos if tolerancia_peso_modelo(m)
+    ])
+    # Corta o gráfico em volta da caixa para os valores absurdos não esmagarem o resto.
+    lim_x = max(LIMITE_VARIACAO_CG * 4, float(variacao["delta_cg"].abs().quantile(0.9)) * 1.2)
+    lim_y = max(tol_maior * 4, float(variacao["delta_peso"].abs().quantile(0.9)) * 1.2)
+    dentro_do_grafico = variacao[
+        (variacao["delta_cg"].abs() <= lim_x) & (variacao["delta_peso"].abs() <= lim_y)
+    ]
+    dica = [
+        alt.Tooltip("aeronave:N", title="Aeronave"),
+        alt.Tooltip("modelo:N", title="Modelo"),
+        alt.Tooltip("de:N", title="De"),
+        alt.Tooltip("para:N", title="Para"),
+        alt.Tooltip("delta_peso:Q", title="Δ peso (kg)", format="+,.1f"),
+        alt.Tooltip("delta_cg:Q", title="Δ C.G. (% MAC)", format="+.2f"),
+        alt.Tooltip("situacao:N", title="Situação"),
+    ]
+    with st.container(border=True):
+        st.markdown("**Quanto cada aeronave mudou desde a pesagem anterior**")
+        escala_x = alt.Scale(domain=[-lim_x, lim_x])
+        escala_y = alt.Scale(domain=[-lim_y, lim_y])
+        camadas = []
+        if not caixas.empty:
+            camadas.append(
+                alt.Chart(caixas).mark_rect(fill=None, strokeDash=[5, 4], strokeWidth=1.5).encode(
+                    x=alt.X("x:Q", scale=escala_x), x2="x2:Q",
+                    y=alt.Y("y:Q", scale=escala_y), y2="y2:Q",
+                    stroke=alt.Color("modelo:N", scale=escala_cor, legend=None),
+                )
+            )
+        camadas.append(
+            alt.Chart(dentro_do_grafico).mark_circle(
+                size=90, opacity=0.85, stroke="white", strokeWidth=1.5
+            ).encode(
+                x=alt.X("delta_cg:Q", title="Δ C.G. (% MAC)", scale=escala_x),
+                y=alt.Y("delta_peso:Q", title="Δ peso básico (kg)", scale=escala_y),
+                color=cor,
+                tooltip=dica,
+            )
+        )
+        mostrar_grafico(alt.layer(*camadas).properties(height=420), use_container_width=True)
+        escondidas = len(variacao) - len(dentro_do_grafico)
+        if escondidas:
+            st.caption(f"{escondidas} aeronave(s) com variação muito grande ficaram fora da área do gráfico e aparecem na tabela.")
+
+    if not fora.empty:
+        with st.container(border=True):
+            st.markdown(f"**Aeronaves que passaram do limite ({len(fora)})**")
+            st.dataframe(
+                fora.assign(abs_peso=fora["delta_peso"].abs())
+                .sort_values("abs_peso", ascending=False)
+                .drop(columns=["abs_peso", "tol_peso"])
+                .rename(columns={
+                    "aeronave": "Aeronave", "modelo": "Modelo", "de": "De", "para": "Para",
+                    "delta_peso": "Δ peso (kg)", "delta_cg": "Δ C.G. (% MAC)",
+                    "situacao": "Situação",
+                }),
+                hide_index=True, use_container_width=True,
+                column_config={
+                    "Δ peso (kg)": st.column_config.NumberColumn(format="%+.1f"),
+                    "Δ C.G. (% MAC)": st.column_config.NumberColumn(format="%+.2f"),
+                },
+            )
+
+
+def aba_historico(alt, historico, modelos, escala_cor):
+    aeronaves = sorted(historico.loc[historico["modelo"].isin(modelos), "aeronave"].unique())
+    if not aeronaves:
+        st.info("Nenhuma aeronave com fichas para mostrar.")
+        return
+    contagem = historico[historico["aeronave"].isin(aeronaves)]["aeronave"].value_counts()
+    aeronave = st.selectbox(
+        "Aeronave", aeronaves, index=aeronaves.index(contagem.idxmax()),
+        key="graficos_historico_aeronave",
+    )
+    fichas = historico[historico["aeronave"] == aeronave].copy()
+    modelo = fichas["modelo"].iloc[-1]
+    tol_peso = tolerancia_peso_modelo(modelo)
+    # Faixa de cada pesagem: o valor da primeira revisão ± o limite da AC.
+    primeira = fichas.groupby("pesagem_num")[["peso", "cg"]].transform("first")
+    fichas["peso_min"] = primeira["peso"] - (tol_peso or 0)
+    fichas["peso_max"] = primeira["peso"] + (tol_peso or 0)
+    fichas["cg_min"] = primeira["cg"] - LIMITE_VARIACAO_CG
+    fichas["cg_max"] = primeira["cg"] + LIMITE_VARIACAO_CG
+    fichas["pesagem"] = fichas["pesagem_num"].map(lambda v: f"Pesagem {v:g}")
+    ordem = fichas["ficha"].tolist()
+    cor_modelo = CORES_MODELOS.get(modelo, "#8A8F98")
+    st.caption(
+        f"{modelo} · {len(fichas)} ficha(s). A faixa clara em cada pesagem vai do valor "
+        "da primeira revisão até o limite da FAA AC 120-27F (0,5 % do peso máximo de "
+        "pouso e 0,5 % MAC)."
+    )
+    dica = [
+        alt.Tooltip("ficha:N", title="Ficha"),
+        alt.Tooltip("data:T", title="Data da pesagem", format="%d/%m/%Y"),
+        alt.Tooltip("peso:Q", title="Peso básico (kg)", format=",.1f"),
+        alt.Tooltip("cg:Q", title="C.G. (% MAC)", format=".2f"),
+    ]
+
+    def evolucao(campo, minimo, maximo, titulo, formato, mostrar_faixa=True):
+        base = alt.Chart(fichas).encode(
+            x=alt.X("ficha:N", sort=ordem, title=None, axis=alt.Axis(labelAngle=0)),
+        )
+        camadas = []
+        if mostrar_faixa:
+            camadas.append(base.mark_area(opacity=0.15, color=cor_modelo).encode(
+                y=alt.Y(f"{minimo}:Q", title=titulo, scale=alt.Scale(zero=False)),
+                y2=f"{maximo}:Q",
+                detail="pesagem:N",
+            ))
+        camadas.append(base.mark_line(color=cor_modelo, strokeWidth=2).encode(
+            y=alt.Y(f"{campo}:Q", title=titulo, scale=alt.Scale(zero=False)),
+        ))
+        camadas.append(base.mark_circle(size=80, color=cor_modelo, opacity=1).encode(
+            y=f"{campo}:Q", tooltip=dica,
+        ))
+        camadas.append(base.mark_text(dy=-12, color="#1F2430").encode(
+            y=f"{campo}:Q", text=alt.Text(f"{campo}:Q", format=formato),
+        ))
+        return alt.layer(*camadas).properties(height=260)
+
+    with st.container(border=True):
+        st.markdown("**Peso básico em cada ficha**")
+        mostrar_grafico(
+            evolucao("peso", "peso_min", "peso_max", "Peso básico (kg)", ",.0f", bool(tol_peso)),
+            use_container_width=True,
+        )
+    with st.container(border=True):
+        st.markdown("**C.G. em cada ficha**")
+        mostrar_grafico(
+            evolucao("cg", "cg_min", "cg_max", "C.G. (% MAC)", ".2f"),
+            use_container_width=True,
+        )
+
+
+def aba_carta_controle(alt, selecionadas, modelos):
+    modelo = st.radio(
+        "Modelo", modelos, horizontal=True, key="graficos_carta_modelo",
+    )
+    dados = selecionadas[selecionadas["Modelo"] == modelo].rename(columns={
+        "Aeronave": "aeronave", "Peso básico (kg)": "peso", "C.G. (% MAC)": "cg",
+    })
+    if len(dados) < 3:
+        st.info("Esse modelo tem poucas aeronaves para montar a carta de controle.")
+        return
+    st.caption(
+        "Carta de controle de valores individuais (Shewhart), com a última ficha de "
+        "cada aeronave. A linha do meio é a mediana do modelo; as tracejadas ficam a 3 "
+        "desvios-padrão, estimados pela mediana da amplitude móvel. Ponto fora das linhas é "
+        "aeronave que foge do padrão da frota."
+    )
+    cor_modelo = CORES_MODELOS.get(modelo, "#8A8F98")
+
+    def carta(campo, titulo, formato):
+        # Mediana no centro: uma ficha com valor absurdo não puxa a linha do meio.
+        media = dados[campo].median()
+        # Desvio estimado pela mediana das amplitudes móveis (MR̃/0,954), que não
+        # se deixa inflar por uma ficha com valor absurdo como a média das amplitudes.
+        ordem = dados.sort_values("aeronave")[campo]
+        desvio = ordem.diff().abs().median() / 0.954
+        lsc, lic = media + 3 * desvio, media - 3 * desvio
+        tabela = dados.assign(
+            fora=((dados[campo] > lsc) | (dados[campo] < lic)).map(
+                {True: "Fora dos limites", False: "Dentro dos limites"}
+            )
+        ).sort_values("aeronave")
+        fora = tabela[tabela["fora"] == "Fora dos limites"]
+        linhas = pd.DataFrame({
+            "valor": [lsc, media, lic],
+            "nome": ["Limite superior", "Mediana", "Limite inferior"],
+            "traco": ["t", "m", "t"],
+        })
+        eixo_x = alt.X("aeronave:N", sort=tabela["aeronave"].tolist(), title=None,
+                       axis=alt.Axis(labelAngle=-90, labelFontSize=9))
+        regras = alt.Chart(linhas).mark_rule(color="#6B7280").encode(
+            y="valor:Q",
+            tooltip=[alt.Tooltip("nome:N", title="Linha"),
+                     alt.Tooltip("valor:Q", title=titulo, format=f",.{formato}f")],
+            strokeDash=alt.StrokeDash("traco:N", scale=alt.Scale(
+                domain=["m", "t"], range=[[1, 0], [5, 4]]), legend=None),
+        )
+        pontos = alt.Chart(tabela).mark_point(filled=True, size=70, opacity=1).encode(
+            x=eixo_x,
+            y=alt.Y(f"{campo}:Q", title=titulo, scale=alt.Scale(zero=False)),
+            color=alt.Color("fora:N", scale=alt.Scale(
+                domain=["Dentro dos limites", "Fora dos limites"],
+                range=[cor_modelo, "#1F2430"]), legend=alt.Legend(orient="top", title=None)),
+            shape=alt.Shape("fora:N", scale=alt.Scale(
+                domain=["Dentro dos limites", "Fora dos limites"],
+                range=["circle", "diamond"]), legend=None),
+            tooltip=[alt.Tooltip("aeronave:N", title="Aeronave"),
+                     alt.Tooltip(f"{campo}:Q", title=titulo, format=f",.{formato}f"),
+                     alt.Tooltip("fora:N", title="Situação")],
+        )
+        rotulo_fora = alt.Chart(fora).mark_text(dy=-12, color="#1F2430", fontWeight="bold").encode(
+            x=eixo_x, y=f"{campo}:Q", text="aeronave:N",
+        )
+        # Com muitos pontos fora, os nomes se sobrepõem; a lista vai embaixo do gráfico.
+        camadas = [regras, pontos] + ([rotulo_fora] if len(fora) <= 6 else [])
+        grafico = alt.layer(*camadas).properties(height=320)
+        return grafico, fora, (lic, media, lsc)
+
+    for campo, titulo, formato in (("peso", "Peso básico (kg)", 0), ("cg", "C.G. (% MAC)", 2)):
+        grafico, fora, (lic, media, lsc) = carta(campo, titulo, formato)
+        with st.container(border=True):
+            st.markdown(f"**Carta de controle · {titulo}**")
+            st.caption(
+                (f"Mediana {media:,.{formato}f} · limites {lic:,.{formato}f} a {lsc:,.{formato}f}")
+                .replace(",", "X").replace(".", ",").replace("X", ".")
+            )
+            mostrar_grafico(grafico, use_container_width=True)
+            if not fora.empty:
+                st.caption("Fora dos limites: " + ", ".join(fora["aeronave"]))
+
+
 @protegido
 def tela_graficos():
     import altair as alt
@@ -2040,186 +2386,197 @@ def tela_graficos():
         f"{len(dados)} aeronaves nos gráficos, cada uma com a sua ficha mais recente "
         "(aprovada ou não)."
         + (f" {sem_celulas} ficha(s) sem pesos de célula de carga ficaram de fora." if sem_celulas else "")
-        + (f" {len(para_conferir)} ficha(s) para conferir, listadas no fim da página."
+        + (f" {len(para_conferir)} ficha(s) para conferir, listadas no fim da aba Frota hoje."
            if not para_conferir.empty else "")
     )
-
-    mais_pesada = dados.loc[dados["Peso básico (kg)"].idxmax()]
-    mais_leve = dados.loc[dados["Peso básico (kg)"].idxmin()]
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Peso básico médio", formatar_kg(dados["Peso básico (kg)"].mean()))
-    k2.metric("C.G. médio", formatar_pct(dados["C.G. (% MAC)"].mean()))
-    k3.metric(
-        "Mais pesada", mais_pesada["Aeronave"],
-        formatar_kg(mais_pesada["Peso básico (kg)"]), delta_color="off", delta_arrow="off",
-    )
-    k4.metric(
-        "Mais leve", mais_leve["Aeronave"],
-        formatar_kg(mais_leve["Peso básico (kg)"]), delta_color="off", delta_arrow="off",
-    )
-
-    # O Altair lê "." no nome do campo como campo aninhado; os gráficos usam nomes simples.
-    grafico = dados.rename(columns={
-        "Aeronave": "aeronave", "Modelo": "modelo", "Pesagem": "pesagem",
-        "Revisão": "revisao", "Data da pesagem": "data",
-        "Peso básico (kg)": "peso", "C.G. (% MAC)": "cg",
-    })
 
     escala_cor = alt.Scale(
         domain=modelos_disponiveis,
         range=[CORES_MODELOS.get(m, "#8A8F98") for m in modelos_disponiveis],
     )
     cor = alt.Color("modelo:N", scale=escala_cor, legend=alt.Legend(orient="top", title=None))
-    dica = [
-        alt.Tooltip("aeronave:N", title="Aeronave"),
-        alt.Tooltip("modelo:N", title="Modelo"),
-        alt.Tooltip("peso:Q", title="Peso básico (kg)", format=",.0f"),
-        alt.Tooltip("cg:Q", title="C.G. (% MAC)", format=".2f"),
-        alt.Tooltip("pesagem:N", title="Pesagem"),
-        alt.Tooltip("revisao:N", title="Revisão"),
-        alt.Tooltip("data:T", title="Data da pesagem", format="%d/%m/%Y"),
-    ]
-
-    por_modelo = (
-        grafico.groupby("modelo", as_index=False)
-        .agg(aeronaves=("aeronave", "count"), peso=("peso", "mean"), cg=("cg", "mean"))
+    aba_hoje, aba_var, aba_hist, aba_carta = st.tabs(
+        ["Frota hoje", "Variação desde a pesagem anterior", "Histórico por aeronave", "Carta de controle"]
     )
-
-    def barras_por_modelo(campo, titulo, formato):
-        base = alt.Chart(por_modelo).encode(
-            y=alt.Y("modelo:N", sort=modelos_disponiveis, title=None),
-            x=alt.X(f"{campo}:Q", title=titulo),
-            tooltip=[
-                alt.Tooltip("modelo:N", title="Modelo"),
-                alt.Tooltip("aeronaves:Q", title="Aeronaves"),
-                alt.Tooltip(f"{campo}:Q", title=titulo, format=formato),
-            ],
+    historico = montar_historico_frota()
+    with aba_var:
+        aba_variacao(alt, historico, modelos, escala_cor, cor)
+    with aba_hist:
+        aba_historico(alt, historico, modelos, escala_cor)
+    with aba_carta:
+        aba_carta_controle(alt, selecionadas, modelos)
+    with aba_hoje:
+        mais_pesada = dados.loc[dados["Peso básico (kg)"].idxmax()]
+        mais_leve = dados.loc[dados["Peso básico (kg)"].idxmin()]
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Peso básico médio", formatar_kg(dados["Peso básico (kg)"].mean()))
+        k2.metric("C.G. médio", formatar_pct(dados["C.G. (% MAC)"].mean()))
+        k3.metric(
+            "Mais pesada", mais_pesada["Aeronave"],
+            formatar_kg(mais_pesada["Peso básico (kg)"]), delta_color="off", delta_arrow="off",
         )
-        barras = base.mark_bar(cornerRadiusEnd=4, height=22).encode(
-            color=alt.Color("modelo:N", scale=escala_cor, legend=None)
-        )
-        rotulos = base.mark_text(align="left", dx=6, color="#1F2430").encode(
-            text=alt.Text(f"{campo}:Q", format=formato)
-        )
-        return (barras + rotulos).properties(height=60 * len(por_modelo) + 30)
-
-    c1, c2 = st.columns(2)
-    with c1.container(border=True):
-        st.markdown("**Peso básico médio por modelo**")
-        mostrar_grafico(
-            barras_por_modelo("peso", "kg", ",.0f"), use_container_width=True
-        )
-    with c2.container(border=True):
-        st.markdown("**C.G. médio por modelo**")
-        mostrar_grafico(
-            barras_por_modelo("cg", "% MAC", ".2f"), use_container_width=True
+        k4.metric(
+            "Mais leve", mais_leve["Aeronave"],
+            formatar_kg(mais_leve["Peso básico (kg)"]), delta_color="off", delta_arrow="off",
         )
 
-    with st.container(border=True):
-        st.markdown("**Peso × C.G. de cada aeronave**")
-        st.caption("As linhas tracejadas marcam a média da seleção. Passe o mouse para ver a aeronave.")
-        pontos = alt.Chart(grafico).mark_circle(size=90, opacity=0.85, stroke="white", strokeWidth=1.5).encode(
-            x=alt.X("cg:Q", title="C.G. (% MAC)", scale=alt.Scale(zero=False)),
-            y=alt.Y("peso:Q", title="Peso básico (kg)", scale=alt.Scale(zero=False)),
-            color=cor,
-            tooltip=dica,
-        )
-        media_x = alt.Chart(pd.DataFrame({"v": [dados["C.G. (% MAC)"].mean()]})).mark_rule(
-            strokeDash=[4, 4], color="#6B7280"
-        ).encode(x="v:Q")
-        media_y = alt.Chart(pd.DataFrame({"v": [dados["Peso básico (kg)"].mean()]})).mark_rule(
-            strokeDash=[4, 4], color="#6B7280"
-        ).encode(y="v:Q")
-        mostrar_grafico((media_x + media_y + pontos).properties(height=380), use_container_width=True)
+        # O Altair lê "." no nome do campo como campo aninhado; os gráficos usam nomes simples.
+        grafico = dados.rename(columns={
+            "Aeronave": "aeronave", "Modelo": "modelo", "Pesagem": "pesagem",
+            "Revisão": "revisao", "Data da pesagem": "data",
+            "Peso básico (kg)": "peso", "C.G. (% MAC)": "cg",
+        })
 
-    c3, c4 = st.columns(2)
-    with c3.container(border=True):
-        st.markdown("**10 aeronaves mais pesadas**")
-        top = grafico.nlargest(10, "peso")
-        # Pontos em vez de barras: as dez ficam perto umas das outras e a barra
-        # partindo do zero esconderia a diferença.
-        base = alt.Chart(top).encode(
-            y=alt.Y("aeronave:N", title=None,
-                    sort=alt.EncodingSortField("peso", order="descending")),
-            x=alt.X("peso:Q", title="Peso básico (kg)",
-                    scale=alt.Scale(zero=False, nice=True, padding=30)),
-            tooltip=dica,
-        )
-        mostrar_grafico(
-            (
-                base.mark_circle(size=120, opacity=1).encode(color=cor)
-                + base.mark_text(align="left", dx=10, color="#1F2430").encode(
-                    text=alt.Text("peso:Q", format=",.0f")
-                )
-            ).properties(height=330),
-            use_container_width=True,
-        )
-    with c4.container(border=True):
-        st.markdown("**Distribuição do C.G.**")
-        mostrar_grafico(
-            alt.Chart(grafico).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-                x=alt.X("cg:Q", bin=alt.Bin(step=1), title="C.G. (% MAC), faixas de 1 %"),
-                y=alt.Y("count():Q", title="Aeronaves", stack=True),
-                color=cor,
-                tooltip=[alt.Tooltip("modelo:N", title="Modelo"), alt.Tooltip("count():Q", title="Aeronaves")],
-            ).properties(height=330),
-            use_container_width=True,
+        dica = [
+            alt.Tooltip("aeronave:N", title="Aeronave"),
+            alt.Tooltip("modelo:N", title="Modelo"),
+            alt.Tooltip("peso:Q", title="Peso básico (kg)", format=",.0f"),
+            alt.Tooltip("cg:Q", title="C.G. (% MAC)", format=".2f"),
+            alt.Tooltip("pesagem:N", title="Pesagem"),
+            alt.Tooltip("revisao:N", title="Revisão"),
+            alt.Tooltip("data:T", title="Data da pesagem", format="%d/%m/%Y"),
+        ]
+
+        por_modelo = (
+            grafico.groupby("modelo", as_index=False)
+            .agg(aeronaves=("aeronave", "count"), peso=("peso", "mean"), cg=("cg", "mean"))
         )
 
-    com_data = grafico.dropna(subset=["data"]).copy()
-    if not com_data.empty:
-        with st.container(border=True):
-            st.markdown("**Ano da última pesagem**")
-            sem_data = len(dados) - len(com_data)
-            st.caption(
-                "Quantas aeronaves tiveram a última pesagem em cada ano."
-                + (f" {sem_data} sem data válida na ficha." if sem_data else "")
+        def barras_por_modelo(campo, titulo, formato):
+            base = alt.Chart(por_modelo).encode(
+                y=alt.Y("modelo:N", sort=modelos_disponiveis, title=None),
+                x=alt.X(f"{campo}:Q", title=titulo),
+                tooltip=[
+                    alt.Tooltip("modelo:N", title="Modelo"),
+                    alt.Tooltip("aeronaves:Q", title="Aeronaves"),
+                    alt.Tooltip(f"{campo}:Q", title=titulo, format=formato),
+                ],
             )
-            com_data["ano"] = com_data["data"].dt.year.astype(str)
+            barras = base.mark_bar(cornerRadiusEnd=4, height=22).encode(
+                color=alt.Color("modelo:N", scale=escala_cor, legend=None)
+            )
+            rotulos = base.mark_text(align="left", dx=6, color="#1F2430").encode(
+                text=alt.Text(f"{campo}:Q", format=formato)
+            )
+            return (barras + rotulos).properties(height=60 * len(por_modelo) + 30)
+
+        c1, c2 = st.columns(2)
+        with c1.container(border=True):
+            st.markdown("**Peso básico médio por modelo**")
             mostrar_grafico(
-                alt.Chart(com_data).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-                    x=alt.X("ano:O", title=None, axis=alt.Axis(labelAngle=0)),
-                    y=alt.Y("count():Q", title="Aeronaves"),
+                barras_por_modelo("peso", "kg", ",.0f"), use_container_width=True
+            )
+        with c2.container(border=True):
+            st.markdown("**C.G. médio por modelo**")
+            mostrar_grafico(
+                barras_por_modelo("cg", "% MAC", ".2f"), use_container_width=True
+            )
+
+        with st.container(border=True):
+            st.markdown("**Peso × C.G. de cada aeronave**")
+            st.caption("As linhas tracejadas marcam a média da seleção. Passe o mouse para ver a aeronave.")
+            pontos = alt.Chart(grafico).mark_circle(size=90, opacity=0.85, stroke="white", strokeWidth=1.5).encode(
+                x=alt.X("cg:Q", title="C.G. (% MAC)", scale=alt.Scale(zero=False)),
+                y=alt.Y("peso:Q", title="Peso básico (kg)", scale=alt.Scale(zero=False)),
+                color=cor,
+                tooltip=dica,
+            )
+            media_x = alt.Chart(pd.DataFrame({"v": [dados["C.G. (% MAC)"].mean()]})).mark_rule(
+                strokeDash=[4, 4], color="#6B7280"
+            ).encode(x="v:Q")
+            media_y = alt.Chart(pd.DataFrame({"v": [dados["Peso básico (kg)"].mean()]})).mark_rule(
+                strokeDash=[4, 4], color="#6B7280"
+            ).encode(y="v:Q")
+            mostrar_grafico((media_x + media_y + pontos).properties(height=380), use_container_width=True)
+
+        c3, c4 = st.columns(2)
+        with c3.container(border=True):
+            st.markdown("**10 aeronaves mais pesadas**")
+            top = grafico.nlargest(10, "peso")
+            # Pontos em vez de barras: as dez ficam perto umas das outras e a barra
+            # partindo do zero esconderia a diferença.
+            base = alt.Chart(top).encode(
+                y=alt.Y("aeronave:N", title=None,
+                        sort=alt.EncodingSortField("peso", order="descending")),
+                x=alt.X("peso:Q", title="Peso básico (kg)",
+                        scale=alt.Scale(zero=False, nice=True, padding=30)),
+                tooltip=dica,
+            )
+            mostrar_grafico(
+                (
+                    base.mark_circle(size=120, opacity=1).encode(color=cor)
+                    + base.mark_text(align="left", dx=10, color="#1F2430").encode(
+                        text=alt.Text("peso:Q", format=",.0f")
+                    )
+                ).properties(height=330),
+                use_container_width=True,
+            )
+        with c4.container(border=True):
+            st.markdown("**Distribuição do C.G.**")
+            mostrar_grafico(
+                alt.Chart(grafico).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+                    x=alt.X("cg:Q", bin=alt.Bin(step=1), title="C.G. (% MAC), faixas de 1 %"),
+                    y=alt.Y("count():Q", title="Aeronaves", stack=True),
                     color=cor,
-                    tooltip=[alt.Tooltip("ano:O", title="Ano"), alt.Tooltip("modelo:N", title="Modelo"),
-                             alt.Tooltip("count():Q", title="Aeronaves")],
-                ).properties(height=260),
+                    tooltip=[alt.Tooltip("modelo:N", title="Modelo"), alt.Tooltip("count():Q", title="Aeronaves")],
+                ).properties(height=330),
                 use_container_width=True,
             )
 
-    if not para_conferir.empty:
-        with st.expander(f"Fichas para conferir ({len(para_conferir)})"):
-            st.caption(
-                "Peso mais de 4 % longe da mediana do modelo ou C.G. mais de 4 % MAC "
-                "longe da mediana do modelo. Costuma ser célula de carga, canela ou "
-                "item digitado errado na ficha."
-            )
+        com_data = grafico.dropna(subset=["data"]).copy()
+        if not com_data.empty:
+            with st.container(border=True):
+                st.markdown("**Ano da última pesagem**")
+                sem_data = len(dados) - len(com_data)
+                st.caption(
+                    "Quantas aeronaves tiveram a última pesagem em cada ano."
+                    + (f" {sem_data} sem data válida na ficha." if sem_data else "")
+                )
+                com_data["ano"] = com_data["data"].dt.year.astype(str)
+                mostrar_grafico(
+                    alt.Chart(com_data).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+                        x=alt.X("ano:O", title=None, axis=alt.Axis(labelAngle=0)),
+                        y=alt.Y("count():Q", title="Aeronaves"),
+                        color=cor,
+                        tooltip=[alt.Tooltip("ano:O", title="Ano"), alt.Tooltip("modelo:N", title="Modelo"),
+                                 alt.Tooltip("count():Q", title="Aeronaves")],
+                    ).properties(height=260),
+                    use_container_width=True,
+                )
+
+        if not para_conferir.empty:
+            with st.expander(f"Fichas para conferir ({len(para_conferir)})"):
+                st.caption(
+                    "Peso mais de 4 % longe da mediana do modelo ou C.G. mais de 4 % MAC "
+                    "longe da mediana do modelo. Costuma ser célula de carga, canela ou "
+                    "item digitado errado na ficha."
+                )
+                st.dataframe(
+                    para_conferir.sort_values(["Modelo", "Aeronave"]),
+                    hide_index=True, use_container_width=True,
+                    column_config={
+                        "Data da pesagem": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                        "Peso básico (kg)": st.column_config.NumberColumn(format="%.1f"),
+                        "C.G. (% MAC)": st.column_config.NumberColumn(format="%.2f"),
+                    },
+                )
+
+        with st.expander("Ver tabela das aeronaves"):
+            tabela = dados.sort_values("Peso básico (kg)", ascending=False)
             st.dataframe(
-                para_conferir.sort_values(["Modelo", "Aeronave"]),
-                hide_index=True, use_container_width=True,
+                tabela, hide_index=True, use_container_width=True,
                 column_config={
                     "Data da pesagem": st.column_config.DateColumn(format="DD/MM/YYYY"),
                     "Peso básico (kg)": st.column_config.NumberColumn(format="%.1f"),
                     "C.G. (% MAC)": st.column_config.NumberColumn(format="%.2f"),
                 },
             )
-
-    with st.expander("Ver tabela das aeronaves"):
-        tabela = dados.sort_values("Peso básico (kg)", ascending=False)
-        st.dataframe(
-            tabela, hide_index=True, use_container_width=True,
-            column_config={
-                "Data da pesagem": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                "Peso básico (kg)": st.column_config.NumberColumn(format="%.1f"),
-                "C.G. (% MAC)": st.column_config.NumberColumn(format="%.2f"),
-            },
-        )
-        st.download_button(
-            "Baixar CSV",
-            tabela.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
-            file_name="frota_peso_cg.csv",
-            mime="text/csv",
-        )
+            st.download_button(
+                "Baixar CSV",
+                tabela.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                file_name="frota_peso_cg.csv",
+                mime="text/csv",
+            )
 
 
 def renderizar_ficha_visualizacao(
