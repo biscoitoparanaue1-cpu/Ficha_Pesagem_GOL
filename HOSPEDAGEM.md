@@ -45,6 +45,13 @@ cada 6 h, então na prática ele não dorme.
 Depois que tudo funcionar no novo endereço, o app no Streamlit Cloud pode ser
 apagado em https://share.streamlit.io.
 
+## Enquanto o app estiver no Streamlit Cloud
+
+O workflow `manter-acordado.yml` abre o app do Streamlit Cloud num navegador
+a cada 4 h e clica em "Yes, get this app back up!" se ele estiver dormindo
+(`scripts/acordar_streamlit.py`). Se o endereço do app mudar, cadastre a
+variável `STREAMLIT_URL` no GitHub; para desligar, use o valor `desligado`.
+
 ## Manter o Supabase ativo
 
 O Supabase gratuito pausa o projeto depois de 7 dias sem uso, e aí o app

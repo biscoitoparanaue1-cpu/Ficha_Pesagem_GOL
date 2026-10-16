@@ -1,16 +1,38 @@
 name: Manter o app acordado
 
-# O Space gratuito dorme depois de 48 h sem acesso e o Supabase gratuito é
-# pausado depois de 7 dias sem uso. Um acesso a cada 6 h evita os dois.
+# O Streamlit Cloud dorme depois de 12 h sem visitas, o Space gratuito depois
+# de 48 h e o Supabase gratuito é pausado depois de 7 dias sem uso. Um acesso
+# a cada 4 h evita os três.
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 */4 * * *"
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/manter-acordado.yml
+      - scripts/acordar_streamlit.py
+
+env:
+  STREAMLIT_URL: ${{ vars.STREAMLIT_URL || 'https://fichapesagemgol-hzappr8mhhpubvwfu9hudqj.streamlit.app' }}
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Acordar o app no Streamlit Cloud
+        if: ${{ vars.STREAMLIT_URL != 'desligado' }}
+        run: |
+          pip install --quiet playwright
+          python -m playwright install --with-deps chromium > /dev/null
+          python scripts/acordar_streamlit.py "$STREAMLIT_URL"
+
       - name: Acessar o app
         if: ${{ vars.APP_URL != '' }}
         run: |
