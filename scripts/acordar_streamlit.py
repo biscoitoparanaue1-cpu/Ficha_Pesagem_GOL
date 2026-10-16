@@ -24,7 +24,8 @@ def main(url):
         pagina.wait_for_timeout(15_000)
         botao = procurar_botao(pagina)
         if botao is None:
-            print("App já estava acordado.")
+            texto = " ".join(pagina.inner_text("body").split())[:200]
+            print(f"App já estava acordado. Página: {pagina.title()!r} {texto!r}")
         else:
             print("App dormindo; clicando para acordar.")
             botao.click()
