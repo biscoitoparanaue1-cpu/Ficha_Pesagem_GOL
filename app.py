@@ -143,6 +143,7 @@ ICONES_LUCIDE = {
     'menu_cadastrar_aeronave': 'plane', 'menu_criar_login': 'users',
     'menu_assinaturas': 'signature', 'menu_excluir': 'trash-2',
     'menu_sair': 'log-out', 'atualizar_fichas': 'refresh-cw',
+    'atualizar_graficos': 'refresh-cw',
 }
 
 
