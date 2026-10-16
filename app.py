@@ -72,12 +72,18 @@ st.markdown(
     .marca-nome { font-weight: 700; font-size: 1.02rem; line-height: 1.1; }
     .marca-sub { color: #6B7280; font-size: .78rem; }
     .usuario {
-        background: #F6F7F9; border-radius: 10px; padding: .55rem .75rem;
-        font-size: .85rem; color: #3B4352; margin: 1rem 0 .3rem;
+        display: flex; align-items: center; gap: .65rem; padding: .2rem .4rem;
+        font-size: .85rem; color: #1F2430; line-height: 1.25; margin-bottom: .4rem;
+    }
+    .usuario span { color: #6B7280; font-size: .78rem; }
+    .usuario-avatar {
+        width: 34px; height: 34px; border-radius: 50%; background: #FFF1E8;
+        color: #FF6A13; font-weight: 700; font-size: .8rem; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
     }
     .grupo-menu {
-        color: #9AA1AD; font-size: .72rem; font-weight: 600; letter-spacing: .06em;
-        text-transform: uppercase; margin: 1.3rem 0 .45rem .2rem;
+        color: #9AA1AD; font-size: .7rem; font-weight: 600; letter-spacing: .06em;
+        text-transform: uppercase; margin: 1.2rem 0 .3rem .75rem;
     }
     .cabecalho h1 { font-size: 1.75rem; font-weight: 700; margin: 0; padding: 0; }
     .cabecalho p { color: #6B7280; margin: .25rem 0 1.2rem; }
@@ -131,7 +137,8 @@ def exigir_nivel(*niveis):
 
 
 ICONES_LUCIDE = {
-    'menu_consulta': 'layout-dashboard', 'menu_nova_ficha': 'file-plus',
+    'menu_consulta': 'layout-dashboard', 'menu_graficos': 'chart-column',
+    'menu_nova_ficha': 'file-plus',
     'menu_edicao': 'file-pen-line', 'menu_aprovar': 'circle-check-big',
     'menu_cadastrar_aeronave': 'plane', 'menu_criar_login': 'users',
     'menu_assinaturas': 'signature', 'menu_excluir': 'trash-2',
@@ -1769,7 +1776,7 @@ def mostrar_relatorio_pesagem(tabela, peso, braco, cg_mac):
 
 @protegido
 def tela_consulta():
-    cabecalho("Fichas", "Visão geral e consulta do histórico de pesagens.")
+    cabecalho("Consultar fichas", "Visão geral e consulta do histórico de pesagens.")
     if st.button("Atualizar", key="atualizar_fichas"):
         invalidar_cache_fichas()
         st.rerun()
@@ -4187,8 +4194,8 @@ MARCA_HTML = (
 )
 
 PAGINAS = {
-    'consulta': ("Fichas", ":material/dashboard:", tela_consulta, {1, 2, 3, 4}),
-    'graficos': ("Gráficos da frota", ":material/bar_chart:", tela_graficos, {1, 2, 3, 4}),
+    'consulta': ("Consultar fichas", ":material/dashboard:", tela_consulta, {1, 2, 3, 4}),
+    'graficos': ("Gráficos da frota", ":material/bar_chart:", tela_graficos, {1, 2, 3}),
     'nova_ficha': ("Nova ficha", ":material/add_circle:", tela_nova_ficha, {1, 3}),
     'edicao': ("Editar ficha", ":material/edit_note:", tela_edicao, {1, 3}),
     'aprovar': ("Aprovação", ":material/task_alt:", tela_aprovar_fichas, {1, 3}),
@@ -4198,8 +4205,9 @@ PAGINAS = {
     'excluir': ("Excluir ficha", ":material/delete:", tela_excluir_ficha, {1, 3}),
 }
 GRUPOS_MENU = [
-    ("Fichas", ['consulta', 'graficos', 'nova_ficha', 'edicao', 'aprovar']),
-    ("Administração", ['cadastrar_aeronave', 'criar_login', 'assinaturas', 'excluir']),
+    ("Consulta", ['consulta', 'graficos']),
+    ("Emissão", ['nova_ficha', 'edicao', 'aprovar', 'excluir']),
+    ("Administração", ['cadastrar_aeronave', 'criar_login', 'assinaturas']),
 ]
 
 
@@ -4273,12 +4281,6 @@ else:
 
     with st.sidebar:
         st.markdown(MARCA_HTML, unsafe_allow_html=True)
-        perfil = PERFIS.get(nivel, "—")
-        st.markdown(
-            f'<div class="usuario">👤 <b>{st.session_state["nome_usuario"]}</b>'
-            f'<br><span style="color:#6B7280">{perfil}</span></div>',
-            unsafe_allow_html=True,
-        )
         for grupo, paginas in GRUPOS_MENU:
             visiveis = [p for p in paginas if nivel in PAGINAS[p][3]]
             if not visiveis:
@@ -4295,6 +4297,13 @@ else:
                     args=(pagina,),
                 )
         st.divider()
+        nome = safe_str(st.session_state["nome_usuario"])
+        iniciais = "".join(parte[0] for parte in nome.split()[:2]).upper() or "?"
+        st.markdown(
+            f'<div class="usuario"><div class="usuario-avatar">{iniciais}</div>'
+            f'<div><b>{nome}</b><br><span>{PERFIS.get(nivel, "—")}</span></div></div>',
+            unsafe_allow_html=True,
+        )
         if st.button("Sair", key="menu_sair", use_container_width=True):
             st.session_state['usuario_logado'] = False
             st.session_state['nivel_acesso'] = 0
