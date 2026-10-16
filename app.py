@@ -148,11 +148,12 @@ ICONES_LUCIDE = {
 
 
 @st.cache_resource
-def css_icones_lucide():
+def css_icones_lucide(icones):
     """Ícones Lucide (SVG) aplicados aos botões pela chave de cada um."""
+    # O dicionário entra como argumento para o cache mudar quando um ícone é incluído.
     import base64
     regras = []
-    for chave, nome in ICONES_LUCIDE.items():
+    for chave, nome in dict(icones).items():
         caminho = os.path.join("assets", "icons", f"{nome}.svg")
         if not os.path.exists(caminho):
             continue
@@ -168,7 +169,7 @@ def css_icones_lucide():
     return "<style>" + "\n".join(regras) + "</style>"
 
 
-st.markdown(css_icones_lucide(), unsafe_allow_html=True)
+st.markdown(css_icones_lucide(tuple(ICONES_LUCIDE.items())), unsafe_allow_html=True)
 
 
 def cabecalho(titulo, subtitulo=""):
@@ -1877,7 +1878,9 @@ def carregar_variantes_aeronave():
 def nome_modelo_grafico(modelo, prefixo=""):
     texto = safe_str(modelo).upper()
     # Cargueiros convertidos (BCF) têm peso e C.G. bem diferentes dos de passageiros.
-    if "BCF" in carregar_variantes_aeronave().get(safe_str(prefixo), "").upper():
+    # Todos os PS-GF* da frota são 737-800 BCF.
+    if (normalizar_prefixo(prefixo).startswith("PS-GF")
+            or "BCF" in carregar_variantes_aeronave().get(safe_str(prefixo), "").upper()):
         return "737-800 BCF"
     if "MAX" in texto:
         return "737 MAX 8"
