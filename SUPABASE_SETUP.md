@@ -55,3 +55,26 @@ O app não importa `aeronaves.db` automaticamente. Para executar uma importaçã
    o host/projeto configurado sem compartilhar a URI.
 
 Se não for possível conectar, execute os comandos em uma rede que alcance o host PostgreSQL configurado. Não cole a URI nem a senha no chat.
+
+## Backup semanal
+
+O workflow **Backup do banco** (`.github/workflows/backup-banco.yml`) roda toda
+segunda-feira e exporta todas as tabelas em JSON, um arquivo por tabela. Como o
+repositório é público, o arquivo sai criptografado.
+
+1. Em **Settings → Secrets and variables → Actions**, cadastre o secret
+   `BACKUP_PASSWORD` com uma senha forte e guarde-a fora do GitHub. Sem ela não
+   é possível abrir o backup. O secret `SUPABASE_DB_URL` já é usado pelo
+   workflow que mantém o app acordado.
+2. Para baixar, abra **Actions → Backup do banco**, escolha uma execução e
+   baixe o artifact (fica 90 dias). Também dá para rodar na hora em
+   **Run workflow**.
+3. Para abrir o arquivo:
+
+   ```bash
+   openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+     -in backup_AAAA-MM-DD.tar.gz.enc | tar -xzf -
+   ```
+
+   O `openssl` pede a senha. Colunas binárias (imagens de assinatura) aparecem
+   como `{"base64": "..."}`.

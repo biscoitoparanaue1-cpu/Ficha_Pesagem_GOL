@@ -1,0 +1,44 @@
+name: Backup do banco
+
+# Toda segunda-feira exporta as tabelas do Supabase (o plano gratuito não guarda
+# backup). O repositório é público, então o arquivo sai criptografado com o
+# secret BACKUP_PASSWORD e fica 90 dias em Actions → Backup do banco → Artifacts.
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Exportar e criptografar
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ] || [ -z "$BACKUP_PASSWORD" ]; then
+            echo "::error::Cadastre os secrets SUPABASE_DB_URL e BACKUP_PASSWORD."
+            exit 1
+          fi
+          pip install --quiet "psycopg[binary]"
+          DATA=$(date -u +%Y-%m-%d)
+          python scripts/backup_banco.py "backup_$DATA"
+          tar -czf - "backup_$DATA" \
+            | openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -pass env:BACKUP_PASSWORD \
+                -out "backup_$DATA.tar.gz.enc"
+          rm -rf "backup_$DATA"
+          echo "DATA=$DATA" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backup_${{ env.DATA }}
+          path: backup_${{ env.DATA }}.tar.gz.enc
+          retention-days: 90
+          if-no-files-found: error
