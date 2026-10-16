@@ -369,7 +369,7 @@ def protegido(tela):
         try:
             return tela(*args, **kwargs)
         except Exception as erro:
-            st.cache_data.clear()
+            invalidar_cache_fichas()
             st.error(
                 "Algo deu errado nesta tela e nada foi perdido do que já estava "
                 "salvo. Tente novamente; se o erro continuar, envie o detalhe "
@@ -757,22 +757,26 @@ def carregar_fichas_para_momento_flaps(prefixo, tipo_aeronave):
     return dataframe_fichas(registros)
 
 
+def invalidar_cache_fluxo():
+    """Aprovar, devolver ou registrar no histórico não muda os dados das fichas."""
+    listar_fichas_pendentes.clear()
+    buscar_fluxo_ficha.clear()
+    carregar_campos_com_erro.clear()
+    carregar_historico_ficha.clear()
+    listar_fichas_devolvidas_usuario.clear()
+
+
 def invalidar_cache_fichas():
+    invalidar_cache_fluxo()
     carregar_dados_banco.clear()
     carregar_linha_ficha.clear()
-    listar_fichas_pendentes.clear()
     carregar_presets_lopa.clear()
     carregar_prefixos_fichas.clear()
     carregar_fichas_prefixo.clear()
     carregar_fichas_para_momento_flaps.clear()
     buscar_momento_flaps_banco.clear()
-    buscar_fluxo_ficha.clear()
     montar_resumo_frota.clear()
     montar_historico_frota.clear()
-    carregar_campos_com_erro.clear()
-    carregar_historico_ficha.clear()
-    carregar_assinatura_usuario.clear()
-    listar_fichas_devolvidas_usuario.clear()
 
 
 @st.cache_data
@@ -1071,7 +1075,6 @@ def autenticar_usuario(usuario, senha):
                 'UPDATE usuarios SET senha_hash = ?, salt = ? WHERE usuario = ?',
                 (senha_hash, salt, registro['usuario']),
             )
-        invalidar_cache_fichas()
         registro = dict(registro)
         registro['senha_hash'] = senha_hash
         registro['salt'] = salt
@@ -1090,7 +1093,6 @@ def criar_usuario(nome, usuario, senha, nivel_acesso):
             (usuario.strip(), nome.strip(), senha_hash, salt, nivel_acesso,
              datetime.datetime.now(datetime.timezone.utc).isoformat())
         )
-    invalidar_cache_fichas()
 
 
 def redefinir_senha(usuario, senha):
@@ -1141,7 +1143,7 @@ def salvar_assinatura_usuario(usuario, imagem_png):
                    atualizado_em = excluded.atualizado_em''',
             (usuario, imagem_png, agora),
         )
-    invalidar_cache_fichas()
+    carregar_assinatura_usuario.clear()
 
 
 def remover_assinatura_usuario(usuario):
@@ -1150,7 +1152,7 @@ def remover_assinatura_usuario(usuario):
             'DELETE FROM assinaturas_usuarios WHERE usuario = ?',
             (usuario,),
         )
-    invalidar_cache_fichas()
+    carregar_assinatura_usuario.clear()
 
 
 def normalizar_imagem_assinatura(imagem):
@@ -1265,7 +1267,7 @@ def registrar_ficha(prefixo, pesagem, revisao, usuario, acao="Gerada", alteracoe
                 agora,
             )
         )
-    invalidar_cache_fichas()
+    invalidar_cache_fluxo()
 
 @st.cache_data
 def buscar_fluxo_ficha(prefixo, pesagem, revisao):
@@ -1520,7 +1522,7 @@ def salvar_campos_com_erro(prefixo, pesagem, revisao, campos, usuario):
             "Devolvida para correção" if campos else "Sinalizações removidas",
             usuario, agora,
         )
-    invalidar_cache_fichas()
+    invalidar_cache_fluxo()
 
 
 def limpar_campos_com_erro(prefixo, pesagem, revisao):
@@ -1534,7 +1536,7 @@ def limpar_campos_com_erro(prefixo, pesagem, revisao):
                 normalizar_chave_ficha(revisao),
             ),
         )
-    invalidar_cache_fichas()
+    invalidar_cache_fluxo()
 
 def aprovar_ficha(prefixo, pesagem, revisao, usuario):
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -1556,7 +1558,7 @@ def aprovar_ficha(prefixo, pesagem, revisao, usuario):
                 agora,
             )
         )
-    invalidar_cache_fichas()
+    invalidar_cache_fluxo()
 
 @st.cache_resource
 def normalizar_chaves_fluxo():
@@ -1999,6 +2001,12 @@ def formatar_kg(valor):
     return f"{valor:,.0f} kg".replace(",", ".")
 
 
+def formatar_sinal(valor, casas):
+    """Número com sinal no padrão brasileiro: +1.234 ou -0,52."""
+    texto = f"{valor:+,.{casas}f}"
+    return texto.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
 def formatar_pct(valor):
     return f"{valor:.2f} %".replace(".", ",")
 
@@ -2012,12 +2020,17 @@ def mostrar_grafico(grafico, **kwargs):
     st.altair_chart(grafico.configure(locale=LOCALE_GRAFICOS), **kwargs)
 
 
+# Quanto uma ficha pode fugir da mediana do modelo antes de ser apontada.
+LIMITE_PADRAO_PESO = 0.04
+LIMITE_PADRAO_CG = 4
+
+
 def motivos_fora_do_padrao(df):
     """Aponta fichas cujo peso ou C.G. foge muito do que é normal para o modelo."""
     mediana_peso = df.groupby("Modelo")["Peso básico (kg)"].transform("median")
     mediana_cg = df.groupby("Modelo")["C.G. (% MAC)"].transform("median")
-    peso_fora = (df["Peso básico (kg)"] - mediana_peso).abs() > 0.04 * mediana_peso
-    cg_fora = (df["C.G. (% MAC)"] - mediana_cg).abs() > 4
+    peso_fora = (df["Peso básico (kg)"] - mediana_peso).abs() > LIMITE_PADRAO_PESO * mediana_peso
+    cg_fora = (df["C.G. (% MAC)"] - mediana_cg).abs() > LIMITE_PADRAO_CG
     motivos = pd.Series("", index=df.index)
     motivos[peso_fora] = "Peso fora do padrão"
     motivos[cg_fora] = "C.G. fora do padrão"
@@ -2105,6 +2118,104 @@ def variacao_desde_pesagem_anterior(historico):
             "situacao": ("Passou do limite de " + " e ".join(fora)) if fora else "Dentro do limite",
         })
     return pd.DataFrame(linhas)
+
+
+def conferir_ficha(prefixo, pesagem, revisao, linha):
+    """Compara a ficha com a pesagem anterior da aeronave e com a mediana do modelo."""
+    resumo = calcular_resumo_pesagem(prefixo, linha)
+    info_aero = dict_tipos_aeronave.get(prefixo, {})
+    modelo = nome_modelo_grafico(info_aero.get('modelo') or linha.get('Tipo_aeronave'), prefixo)
+    pesagem_num = safe_float(pesagem)
+    revisao_num = safe_float(revisao)
+    alertas = []
+    comparacoes = []
+
+    if resumo["peso"] <= 0 or resumo["cg_mac"] <= 0:
+        alertas.append("Peso básico ou C.G. não puderam ser calculados. Confira as leituras das células de carga.")
+        return resumo, modelo, comparacoes, alertas
+
+    historico = montar_historico_frota()
+    if not historico.empty:
+        fichas = historico[historico["aeronave"] == prefixo]
+        anteriores = fichas[fichas["pesagem_num"] < pesagem_num]
+        if not anteriores.empty:
+            anterior = anteriores.iloc[-1]
+            delta_peso = resumo["peso"] - anterior["peso"]
+            delta_cg = resumo["cg_mac"] - anterior["cg"]
+            tol_peso = tolerancia_peso_modelo(modelo)
+            comparacoes.append((f"Pesagem anterior ({anterior['ficha']})", delta_peso, delta_cg))
+            if tol_peso and abs(delta_peso) > tol_peso:
+                alertas.append(
+                    f"O peso mudou {formatar_sinal(delta_peso, 0)} kg desde a "
+                    f"pesagem anterior ({anterior['ficha']}), acima do limite de "
+                    f"{formatar_kg(tol_peso)} da FAA AC 120-27F."
+                )
+            if abs(delta_cg) > LIMITE_VARIACAO_CG:
+                alertas.append(
+                    f"O C.G. mudou {formatar_sinal(delta_cg, 2)} % MAC desde a pesagem anterior "
+                    f"({anterior['ficha']}), acima do limite de "
+                    f"{formatar_pct(LIMITE_VARIACAO_CG)} MAC da FAA AC 120-27F."
+                )
+        revisoes = fichas[
+            (fichas["pesagem_num"] == pesagem_num) & (fichas["revisao_num"] < revisao_num)
+        ]
+        if not revisoes.empty:
+            anterior = revisoes.iloc[-1]
+            comparacoes.append((
+                f"Revisão anterior ({anterior['ficha']})",
+                resumo["peso"] - anterior["peso"],
+                resumo["cg_mac"] - anterior["cg"],
+            ))
+
+    frota = montar_resumo_frota()
+    mesmo_modelo = frota[
+        (frota["Modelo"] == modelo) & (frota["Aeronave"] != prefixo)
+        & (frota["Peso básico (kg)"] > 0) & (frota["C.G. (% MAC)"] > 0)
+    ]
+    if len(mesmo_modelo) >= 3:
+        mediana_peso = mesmo_modelo["Peso básico (kg)"].median()
+        mediana_cg = mesmo_modelo["C.G. (% MAC)"].median()
+        delta_peso = resumo["peso"] - mediana_peso
+        delta_cg = resumo["cg_mac"] - mediana_cg
+        comparacoes.append((f"Mediana dos {modelo}", delta_peso, delta_cg))
+        if abs(delta_peso) > LIMITE_PADRAO_PESO * mediana_peso:
+            alertas.append(
+                f"O peso está {formatar_pct(abs(delta_peso) / mediana_peso * 100)} "
+                f"{'acima' if delta_peso > 0 else 'abaixo'} da mediana dos {modelo} "
+                f"({formatar_kg(mediana_peso)}). Pode ser erro de digitação."
+            )
+        if abs(delta_cg) > LIMITE_PADRAO_CG:
+            alertas.append(
+                f"O C.G. está {formatar_pct(abs(delta_cg))} MAC "
+                f"{'acima' if delta_cg > 0 else 'abaixo'} da mediana dos {modelo} "
+                f"({formatar_pct(mediana_cg)} MAC). Pode ser erro de digitação."
+            )
+    return resumo, modelo, comparacoes, alertas
+
+
+def mostrar_conferencia_aprovacao(prefixo, pesagem, revisao, linha):
+    resumo, _, comparacoes, alertas = conferir_ficha(prefixo, pesagem, revisao, linha)
+    with st.container(border=True):
+        st.markdown("**Conferência automática**")
+        if resumo["peso"] > 0:
+            colunas = st.columns(2 + len(comparacoes))
+            colunas[0].metric("Peso básico", formatar_kg(resumo["peso"]))
+            colunas[1].metric("C.G.", formatar_pct(resumo["cg_mac"]) + " MAC")
+            for coluna, (rotulo, delta_peso, delta_cg) in zip(colunas[2:], comparacoes):
+                coluna.metric(
+                    f"Diferença p/ {rotulo}",
+                    f"{formatar_sinal(delta_peso, 0)} kg",
+                    f"{formatar_sinal(delta_cg, 2)} % MAC",
+                    delta_color="off",
+                )
+        if alertas:
+            st.warning(
+                "Confira antes de aprovar:\n\n" + "\n".join(f"- {a}" for a in alertas)
+            )
+        elif comparacoes:
+            st.success("Peso e C.G. dentro do esperado para esta aeronave e modelo.")
+        else:
+            st.info("Não há pesagem anterior nem fichas suficientes do modelo para comparar.")
 
 
 def aba_variacao(alt, historico, modelos, escala_cor, cor):
@@ -4404,6 +4515,7 @@ def tela_aprovar_fichas():
             if linha is None:
                 st.error("A ficha selecionada não foi encontrada no banco de dados.")
             else:
+                mostrar_conferencia_aprovacao(prefixo, pesagem, revisao, linha)
                 renderizar_ficha_visualizacao(
                     prefixo,
                     pesagem,
