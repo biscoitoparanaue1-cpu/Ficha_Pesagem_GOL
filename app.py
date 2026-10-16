@@ -583,21 +583,81 @@ def inserir_ficha(registro):
     return True
 
 
+CAMPOS_FORA_DO_HISTORICO = {
+    "Prefixo", "Pesagem", "Revisao", "Pesagem_num", "Revisao_num", "revisao",
+}
+
+
+def valor_para_comparar(valor):
+    # Campo vazio e zero contam como iguais: o formulário grava 0 nos campos
+    # numéricos que estavam em branco, e isso não é uma alteração de dado.
+    if isinstance(valor, (list, dict)):
+        return json.dumps(valor, ensure_ascii=False, sort_keys=True)
+    texto = safe_str(valor)
+    if texto == "":
+        return "0"
+    # A mesma data pode estar gravada como 29/07/2025 ou 2025-07-29.
+    for formato in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(texto, formato).date().isoformat()
+        except ValueError:
+            pass
+    try:
+        numero = float(texto.replace(",", "."))
+    except ValueError:
+        return texto
+    return format(numero, "g") if numero == numero else texto
+
+
+def valor_para_exibir(valor):
+    if isinstance(valor, (list, dict)):
+        return json.dumps(valor, ensure_ascii=False)
+    texto = safe_str(valor)
+    if texto == "":
+        return "—"
+    try:
+        return format(float(texto.replace(",", ".")), "g")
+    except ValueError:
+        return texto
+
+
+def comparar_registros(anterior, novo):
+    alteracoes = []
+    for campo in list(anterior) + [c for c in novo if c not in anterior]:
+        if campo in CAMPOS_FORA_DO_HISTORICO:
+            continue
+        antes, depois = anterior.get(campo), novo.get(campo)
+        if valor_para_comparar(antes) != valor_para_comparar(depois):
+            alteracoes.append({
+                "campo": campo,
+                "antes": valor_para_exibir(antes),
+                "depois": valor_para_exibir(depois),
+            })
+    return alteracoes
+
+
 def atualizar_ficha(prefixo, pesagem, revisao, registro):
+    """Grava a ficha e devolve a lista de campos alterados (None se não achou)."""
+    dados_novos = preparar_registro_json(registro)
     with conectar_banco() as conn:
         bloquear_prefixo(conn, prefixo)
         ids = buscar_id_ficha(conn, prefixo, pesagem, revisao)
         if not ids:
-            return False
+            return None
 
+        anterior = conn.execute(
+            "SELECT dados FROM pesagens WHERE id = ?", (ids[0],)
+        ).fetchone()
         resultado = conn.execute(
             "UPDATE pesagens SET dados = CAST(? AS JSONB) WHERE id = ?",
-            (preparar_registro_json(registro), ids[0]),
+            (dados_novos, ids[0]),
         )
-    atualizada = resultado.rowcount == 1
-    if atualizada:
-        invalidar_cache_fichas()
-    return atualizada
+    if resultado.rowcount != 1:
+        return None
+    invalidar_cache_fichas()
+    return comparar_registros(
+        anterior["dados"] if anterior else {}, json.loads(dados_novos)
+    )
 
 
 @st.cache_data
@@ -900,6 +960,9 @@ def inicializar_controle_acesso():
                 registrado_em TEXT NOT NULL
             )
         ''')
+        conn.execute(
+            "ALTER TABLE historico_fichas ADD COLUMN IF NOT EXISTS alteracoes JSONB"
+        )
         conn.execute('''
             CREATE INDEX IF NOT EXISTS historico_fichas_chave_idx
             ON historico_fichas (prefixo, pesagem, revisao)
@@ -1101,14 +1164,18 @@ def normalizar_imagem_assinatura(imagem):
     return saida.getvalue()
 
 
-def inserir_historico(conn, prefixo, pesagem, revisao, acao, usuario, agora):
+def inserir_historico(
+    conn, prefixo, pesagem, revisao, acao, usuario, agora, alteracoes=None
+):
     # Guarda também o nome, para o histórico continuar legível se o usuário
     # for renomeado ou removido depois.
     conn.execute(
         '''INSERT INTO historico_fichas
-           (prefixo, pesagem, revisao, acao, usuario, nome, registrado_em)
+           (prefixo, pesagem, revisao, acao, usuario, nome, registrado_em,
+            alteracoes)
            VALUES (?, ?, ?, ?, ?,
-                   (SELECT nome FROM usuarios WHERE usuario = ?), ?)''',
+                   (SELECT nome FROM usuarios WHERE usuario = ?), ?,
+                   CAST(? AS JSONB))''',
         (
             safe_str(prefixo),
             normalizar_chave_ficha(pesagem),
@@ -1117,6 +1184,7 @@ def inserir_historico(conn, prefixo, pesagem, revisao, acao, usuario, agora):
             usuario,
             usuario,
             agora,
+            json.dumps(alteracoes, ensure_ascii=False) if alteracoes else None,
         ),
     )
 
@@ -1127,7 +1195,8 @@ def carregar_historico_ficha(prefixo, pesagem, revisao):
         registros = conn.execute(
             '''SELECT historico_fichas.acao, historico_fichas.usuario,
                       COALESCE(historico_fichas.nome, usuarios.nome) AS nome,
-                      historico_fichas.registrado_em
+                      historico_fichas.registrado_em,
+                      historico_fichas.alteracoes
                FROM historico_fichas
                LEFT JOIN usuarios ON usuarios.usuario = historico_fichas.usuario
                WHERE prefixo = ? AND pesagem = ? AND revisao = ?
@@ -1138,20 +1207,36 @@ def carregar_historico_ficha(prefixo, pesagem, revisao):
                 normalizar_chave_ficha(revisao),
             ),
         ).fetchall()
-    return [
-        {
+    # Uma linha por campo alterado; ações sem campos (gerar, aprovar) ficam
+    # em uma linha só.
+    linhas = []
+    for registro in registros:
+        base = {
             "Data e hora (Brasília)": formatar_data_hora_brasilia(registro["registrado_em"]),
             "Ação": registro["acao"],
             "Por": registro["nome"] or registro["usuario"] or "—",
         }
-        for registro in registros
-    ]
+        alteracoes = registro["alteracoes"] or []
+        if registro["acao"] in ("Alterada", "Corrigida") and not alteracoes:
+            alteracoes = [{"campo": "Nenhum dado alterado", "antes": "", "depois": ""}]
+        for alteracao in alteracoes or [{"campo": "", "antes": "", "depois": ""}]:
+            linhas.append({
+                **base,
+                "Campo": alteracao["campo"],
+                "Antes": alteracao["antes"],
+                "Depois": alteracao["depois"],
+            })
+    return linhas
 
 
-def registrar_ficha(prefixo, pesagem, revisao, usuario, acao="Gerada"):
+def registrar_ficha(prefixo, pesagem, revisao, usuario, acao="Gerada", alteracoes=None):
+    # Quem gera ou edita a ficha passa a ser o emissor (e a assinatura dele vai
+    # na ficha); a aprovação anterior é desfeita.
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with conectar_banco() as conn:
-        inserir_historico(conn, prefixo, pesagem, revisao, acao, usuario, agora)
+        inserir_historico(
+            conn, prefixo, pesagem, revisao, acao, usuario, agora, alteracoes
+        )
         conn.execute(
             '''INSERT INTO fluxo_fichas
                (prefixo, pesagem, revisao, gerado_por, criado_em)
@@ -1765,10 +1850,13 @@ def renderizar_ficha_visualizacao(
 ):
     st.subheader(f"{prefixo} · Pesagem {pesagem} · Revisão {revisao}")
     fluxo = buscar_fluxo_ficha(prefixo, pesagem, revisao)
-    st.caption(f"Gerada por: {fluxo['gerador_nome']} | Aprovada por: {fluxo['aprovador_nome']}")
+    st.caption(
+        f"Emissor (responsável, último a gerar ou editar): {fluxo['gerador_nome']}"
+        f" | Aprovada por: {fluxo['aprovador_nome']}"
+    )
     if nivel_atual() != NIVEL_ENG_OPERACOES:
         historico = carregar_historico_ficha(prefixo, pesagem, revisao)
-        with st.expander(f"Histórico de alterações ({len(historico)})"):
+        with st.expander("Histórico de alterações"):
             if historico:
                 st.dataframe(
                     pd.DataFrame(historico), hide_index=True, use_container_width=True
@@ -3171,7 +3259,8 @@ def tela_nova_ficha():
                 novo_registro['Pesagem'] = str(int(p_final))
                 novo_registro['Revisao'] = str(int(r_final))
                 if correcao_selecionada:
-                    if not atualizar_ficha(prefixo, p_final, r_final, novo_registro):
+                    alteracoes = atualizar_ficha(prefixo, p_final, r_final, novo_registro)
+                    if alteracoes is None:
                         st.error(
                             "Não foi possível localizar a ficha original para "
                             "salvar a correção. Atualize a página e tente novamente."
@@ -3183,6 +3272,7 @@ def tela_nova_ficha():
                             r_final,
                             st.session_state['usuario_id'],
                             acao="Corrigida",
+                            alteracoes=alteracoes,
                         )
                         limpar_campos_com_erro(prefixo, p_ant, r_ant)
                         st.session_state["nova_ficha_salva"] = (
@@ -3247,9 +3337,10 @@ def tela_edicao():
                         fluxo_origem = buscar_fluxo_ficha(prefixo, pesagem, revisao)
                         novo_registro['Pesagem'] = str(int(p_final))
                         novo_registro['Revisao'] = str(int(r_final))
-                        if not atualizar_ficha(
+                        alteracoes = atualizar_ficha(
                             prefixo, pesagem, revisao, novo_registro
-                        ):
+                        )
+                        if alteracoes is None:
                             st.error(
                                 "Não foi possível localizar a ficha selecionada "
                                 "para salvar as alterações. Atualize a página e tente novamente."
@@ -3258,6 +3349,7 @@ def tela_edicao():
                         registrar_ficha(
                             prefixo, p_final, r_final, st.session_state['usuario_id'],
                             acao="Alterada",
+                            alteracoes=alteracoes,
                         )
                         if fluxo_origem['gerador_usuario'] == st.session_state['usuario_id']:
                             limpar_campos_com_erro(prefixo, pesagem, revisao)
