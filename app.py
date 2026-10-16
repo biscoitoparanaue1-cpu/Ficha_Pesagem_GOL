@@ -758,6 +758,7 @@ def invalidar_cache_fichas():
     carregar_fichas_para_momento_flaps.clear()
     buscar_momento_flaps_banco.clear()
     buscar_fluxo_ficha.clear()
+    montar_resumo_frota.clear()
     carregar_campos_com_erro.clear()
     carregar_historico_ficha.clear()
     carregar_assinatura_usuario.clear()
@@ -1838,6 +1839,380 @@ def ultimas_fichas(df):
         .drop(columns=['_pesagem', '_revisao'])
         .reset_index(drop=True)
     )
+
+
+CORES_MODELOS = {
+    "737-700": "#3B6BC7",
+    "737-800": "#E8590C",
+    "737 MAX 8": "#2A9D8F",
+}
+
+
+def nome_modelo_grafico(modelo):
+    texto = safe_str(modelo).upper()
+    if "MAX" in texto:
+        return "737 MAX 8"
+    if "800" in texto:
+        return "737-800"
+    if "700" in texto:
+        return "737-700"
+    return safe_str(modelo) or "Não informado"
+
+
+def calcular_resumo_pesagem(prefixo, row):
+    """Peso básico e C.G. da ficha, com as mesmas contas do Weighing Report."""
+    info_aero = dict_tipos_aeronave.get(prefixo, {})
+    lh = (
+        safe_float(row.get('Peso MLG LH 1', 0)) + safe_float(row.get('Peso MLG LH2', 0))
+        + safe_float(row.get('Peso MLG LH 1 pesagem 2', 0))
+        + safe_float(row.get('Peso MLG LH2 pesagem 2', 0))
+    ) / 2
+    rh = (
+        safe_float(row.get('Peso MLG RH 1 ', 0)) + safe_float(row.get('Peso MLG RH 2', 0))
+        + safe_float(row.get('Peso MLG RH 1  pesagem 2', row.get('Peso MLG RH 1 pesagem 2', 0)))
+        + safe_float(row.get('Peso MLG RH 2 pesagem 2', 0))
+    ) / 2
+    nose = (
+        (safe_float(row.get('Peso nariz LH', 0)) + safe_float(row.get('Peso nariz LH pesagem 2', 0))) / 2
+        + (safe_float(row.get('Peso Nariz RH', 0)) + safe_float(row.get('Peso Nariz RH pesagem 2', 0))) / 2
+    )
+    tail = safe_float(row.get('Tail', 0))
+    arm_b_lh = (safe_float(row.get('Canela MLG LH', 0)) * 0.1304) + 706.17
+    arm_b_rh = (safe_float(row.get('Canela MLG RH', 0)) * 0.1304) + 706.17
+    arm_a = info_aero.get('armnose', 93.0000)
+    arm_c = 1298.9000
+
+    tot_reg_weight = lh + rh + nose + tail
+    tot_reg_moment = lh * arm_b_lh + rh * arm_b_rh + nose * arm_a + tail * arm_c
+
+    _, level_correction_moment, level_correction_side = calcular_level_correction(
+        normalizar_angulo_level_correction(row.get('Graus correção do cg', '')),
+        tot_reg_weight,
+    )
+
+    def itens(campo_desc, campo_peso, campo_braco, limite):
+        lista = []
+        for i in range(1, limite + 1):
+            desc = row.get(campo_desc.format(i), None)
+            if pd.notna(desc) and str(desc).strip() != '':
+                lista.append((
+                    str(desc),
+                    safe_float(row.get(campo_peso.format(i), None)),
+                    safe_float(row.get(campo_braco.format(i), None)),
+                ))
+        return lista
+
+    deducoes = itens('Deductions description {}', 'Deductions Weigth {}', 'Deductions arm {}', MAX_DEDUCTIONS)
+    adicoes = itens('Additions Description {}', 'Additions weigth {}', 'Additions arm {}', MAX_ADDITIONS)
+
+    ded_weight = sum(peso for _, peso, _ in deducoes)
+    ded_moment = sum(peso * braco for _, peso, braco in deducoes)
+    if level_correction_side == "deductions":
+        ded_moment += level_correction_moment
+
+    momento_extra_flaps = 0.0
+    if any("flap" in desc.casefold() for desc, _, _ in adicoes):
+        momento_extra_flaps = (
+            momento_flaps_do_registro(row)
+            or buscar_momento_flaps_banco(prefixo, info_aero.get('modelo', ""))
+        )
+    add_weight = sum(peso for _, peso, _ in adicoes)
+    add_moment = sum(peso * braco for _, peso, braco in adicoes) + momento_extra_flaps
+    if level_correction_side == "additions":
+        add_moment += level_correction_moment
+
+    basic_weight = tot_reg_weight + add_weight - ded_weight
+    basic_moment = tot_reg_moment + add_moment - ded_moment
+    basic_arm = basic_moment / basic_weight if basic_weight > 0 else 0.0
+    cg_mac = ((basic_arm - 627.1) / 1.558) if basic_arm > 0 else 0.0
+    return {"peso": basic_weight, "braco": basic_arm, "cg_mac": cg_mac}
+
+
+def data_pesagem(valor):
+    texto = safe_str(valor)
+    if not texto:
+        return pd.NaT
+    iso = len(texto) >= 10 and texto[4] == "-"
+    data = pd.to_datetime(texto, dayfirst=not iso, errors="coerce")
+    # Datas no futuro são erro de digitação na ficha; ficam sem data.
+    if pd.notna(data) and data > pd.Timestamp.now():
+        return pd.NaT
+    return data
+
+
+@st.cache_data
+def montar_resumo_frota():
+    linhas = []
+    for _, row in ultimas_fichas(carregar_dados_banco()).iterrows():
+        prefixo = safe_str(row.get('Prefixo'))
+        info_aero = dict_tipos_aeronave.get(prefixo, {})
+        resumo = calcular_resumo_pesagem(prefixo, row)
+        linhas.append({
+            "Aeronave": prefixo,
+            "Modelo": nome_modelo_grafico(info_aero.get('modelo') or row.get('Tipo_aeronave')),
+            "Pesagem": safe_str(row.get('Pesagem')),
+            "Revisão": safe_str(row.get('Revisao')),
+            "Data da pesagem": data_pesagem(row.get('Data_da_Pesagem')),
+            "Peso básico (kg)": round(resumo["peso"], 1),
+            "C.G. (% MAC)": round(resumo["cg_mac"], 2),
+        })
+    return pd.DataFrame(
+        linhas,
+        columns=["Aeronave", "Modelo", "Pesagem", "Revisão", "Data da pesagem",
+                 "Peso básico (kg)", "C.G. (% MAC)"],
+    )
+
+
+def formatar_kg(valor):
+    return f"{valor:,.0f} kg".replace(",", ".")
+
+
+def formatar_pct(valor):
+    return f"{valor:.2f} %".replace(".", ",")
+
+
+LOCALE_GRAFICOS = {
+    "number": {"decimal": ",", "thousands": ".", "grouping": [3], "currency": ["R$ ", ""]},
+}
+
+
+def mostrar_grafico(grafico, **kwargs):
+    st.altair_chart(grafico.configure(locale=LOCALE_GRAFICOS), **kwargs)
+
+
+def motivos_fora_do_padrao(df):
+    """Aponta fichas cujo peso ou C.G. foge muito do que é normal para o modelo."""
+    mediana_peso = df.groupby("Modelo")["Peso básico (kg)"].transform("median")
+    mediana_cg = df.groupby("Modelo")["C.G. (% MAC)"].transform("median")
+    peso_fora = (df["Peso básico (kg)"] - mediana_peso).abs() > 0.04 * mediana_peso
+    cg_fora = (df["C.G. (% MAC)"] - mediana_cg).abs() > 4
+    motivos = pd.Series("", index=df.index)
+    motivos[peso_fora] = "Peso fora do padrão"
+    motivos[cg_fora] = "C.G. fora do padrão"
+    motivos[peso_fora & cg_fora] = "Peso e C.G. fora do padrão"
+    return motivos
+
+
+@protegido
+def tela_graficos():
+    import altair as alt
+
+    cabecalho(
+        "Gráficos da frota",
+        "Peso básico e C.G. de cada aeronave pela última pesagem e revisão.",
+    )
+    if st.button("Atualizar", key="atualizar_graficos"):
+        invalidar_cache_fichas()
+        st.rerun()
+
+    frota = montar_resumo_frota()
+    validas = frota[(frota["Peso básico (kg)"] > 0) & (frota["C.G. (% MAC)"] > 0)]
+    if validas.empty:
+        st.info("Ainda não há fichas com dados de célula de carga para montar os gráficos.")
+        return
+
+    modelos_disponiveis = [m for m in CORES_MODELOS if m in set(validas["Modelo"])]
+    modelos_disponiveis += sorted(set(validas["Modelo"]) - set(modelos_disponiveis))
+    modelos = st.pills(
+        "Modelos", modelos_disponiveis, selection_mode="multi",
+        default=modelos_disponiveis, key="graficos_modelos",
+    ) or modelos_disponiveis
+    selecionadas = validas[validas["Modelo"].isin(modelos)].copy()
+    selecionadas["Conferir"] = motivos_fora_do_padrao(selecionadas)
+    para_conferir = selecionadas[selecionadas["Conferir"] != ""]
+    ignorar = st.toggle(
+        "Deixar de fora as fichas com valores fora do padrão do modelo",
+        value=True, key="graficos_ignorar_fora_padrao",
+        disabled=para_conferir.empty,
+    )
+    dados = selecionadas[selecionadas["Conferir"] == ""] if ignorar else selecionadas
+    dados = dados.drop(columns=["Conferir"])
+
+    sem_celulas = len(frota) - len(validas)
+    st.caption(
+        f"{len(dados)} aeronaves nos gráficos, cada uma com a sua ficha mais recente "
+        "(aprovada ou não)."
+        + (f" {sem_celulas} ficha(s) sem pesos de célula de carga ficaram de fora." if sem_celulas else "")
+        + (f" {len(para_conferir)} ficha(s) para conferir, listadas no fim da página."
+           if not para_conferir.empty else "")
+    )
+
+    mais_pesada = dados.loc[dados["Peso básico (kg)"].idxmax()]
+    mais_leve = dados.loc[dados["Peso básico (kg)"].idxmin()]
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Peso básico médio", formatar_kg(dados["Peso básico (kg)"].mean()))
+    k2.metric("C.G. médio", formatar_pct(dados["C.G. (% MAC)"].mean()))
+    k3.metric(
+        "Mais pesada", mais_pesada["Aeronave"],
+        formatar_kg(mais_pesada["Peso básico (kg)"]), delta_color="off", delta_arrow="off",
+    )
+    k4.metric(
+        "Mais leve", mais_leve["Aeronave"],
+        formatar_kg(mais_leve["Peso básico (kg)"]), delta_color="off", delta_arrow="off",
+    )
+
+    # O Altair lê "." no nome do campo como campo aninhado; os gráficos usam nomes simples.
+    grafico = dados.rename(columns={
+        "Aeronave": "aeronave", "Modelo": "modelo", "Pesagem": "pesagem",
+        "Revisão": "revisao", "Data da pesagem": "data",
+        "Peso básico (kg)": "peso", "C.G. (% MAC)": "cg",
+    })
+
+    escala_cor = alt.Scale(
+        domain=modelos_disponiveis,
+        range=[CORES_MODELOS.get(m, "#8A8F98") for m in modelos_disponiveis],
+    )
+    cor = alt.Color("modelo:N", scale=escala_cor, legend=alt.Legend(orient="top", title=None))
+    dica = [
+        alt.Tooltip("aeronave:N", title="Aeronave"),
+        alt.Tooltip("modelo:N", title="Modelo"),
+        alt.Tooltip("peso:Q", title="Peso básico (kg)", format=",.0f"),
+        alt.Tooltip("cg:Q", title="C.G. (% MAC)", format=".2f"),
+        alt.Tooltip("pesagem:N", title="Pesagem"),
+        alt.Tooltip("revisao:N", title="Revisão"),
+        alt.Tooltip("data:T", title="Data da pesagem", format="%d/%m/%Y"),
+    ]
+
+    por_modelo = (
+        grafico.groupby("modelo", as_index=False)
+        .agg(aeronaves=("aeronave", "count"), peso=("peso", "mean"), cg=("cg", "mean"))
+    )
+
+    def barras_por_modelo(campo, titulo, formato):
+        base = alt.Chart(por_modelo).encode(
+            y=alt.Y("modelo:N", sort=modelos_disponiveis, title=None),
+            x=alt.X(f"{campo}:Q", title=titulo),
+            tooltip=[
+                alt.Tooltip("modelo:N", title="Modelo"),
+                alt.Tooltip("aeronaves:Q", title="Aeronaves"),
+                alt.Tooltip(f"{campo}:Q", title=titulo, format=formato),
+            ],
+        )
+        barras = base.mark_bar(cornerRadiusEnd=4, height=22).encode(
+            color=alt.Color("modelo:N", scale=escala_cor, legend=None)
+        )
+        rotulos = base.mark_text(align="left", dx=6, color="#1F2430").encode(
+            text=alt.Text(f"{campo}:Q", format=formato)
+        )
+        return (barras + rotulos).properties(height=60 * len(por_modelo) + 30)
+
+    c1, c2 = st.columns(2)
+    with c1.container(border=True):
+        st.markdown("**Peso básico médio por modelo**")
+        mostrar_grafico(
+            barras_por_modelo("peso", "kg", ",.0f"), use_container_width=True
+        )
+    with c2.container(border=True):
+        st.markdown("**C.G. médio por modelo**")
+        mostrar_grafico(
+            barras_por_modelo("cg", "% MAC", ".2f"), use_container_width=True
+        )
+
+    with st.container(border=True):
+        st.markdown("**Peso × C.G. de cada aeronave**")
+        st.caption("As linhas tracejadas marcam a média da seleção. Passe o mouse para ver a aeronave.")
+        pontos = alt.Chart(grafico).mark_circle(size=90, opacity=0.85, stroke="white", strokeWidth=1.5).encode(
+            x=alt.X("cg:Q", title="C.G. (% MAC)", scale=alt.Scale(zero=False)),
+            y=alt.Y("peso:Q", title="Peso básico (kg)", scale=alt.Scale(zero=False)),
+            color=cor,
+            tooltip=dica,
+        )
+        media_x = alt.Chart(pd.DataFrame({"v": [dados["C.G. (% MAC)"].mean()]})).mark_rule(
+            strokeDash=[4, 4], color="#6B7280"
+        ).encode(x="v:Q")
+        media_y = alt.Chart(pd.DataFrame({"v": [dados["Peso básico (kg)"].mean()]})).mark_rule(
+            strokeDash=[4, 4], color="#6B7280"
+        ).encode(y="v:Q")
+        mostrar_grafico((media_x + media_y + pontos).properties(height=380), use_container_width=True)
+
+    c3, c4 = st.columns(2)
+    with c3.container(border=True):
+        st.markdown("**10 aeronaves mais pesadas**")
+        top = grafico.nlargest(10, "peso")
+        # Pontos em vez de barras: as dez ficam perto umas das outras e a barra
+        # partindo do zero esconderia a diferença.
+        base = alt.Chart(top).encode(
+            y=alt.Y("aeronave:N", title=None,
+                    sort=alt.EncodingSortField("peso", order="descending")),
+            x=alt.X("peso:Q", title="Peso básico (kg)",
+                    scale=alt.Scale(zero=False, nice=True, padding=30)),
+            tooltip=dica,
+        )
+        mostrar_grafico(
+            (
+                base.mark_circle(size=120, opacity=1).encode(color=cor)
+                + base.mark_text(align="left", dx=10, color="#1F2430").encode(
+                    text=alt.Text("peso:Q", format=",.0f")
+                )
+            ).properties(height=330),
+            use_container_width=True,
+        )
+    with c4.container(border=True):
+        st.markdown("**Distribuição do C.G.**")
+        mostrar_grafico(
+            alt.Chart(grafico).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+                x=alt.X("cg:Q", bin=alt.Bin(step=1), title="C.G. (% MAC), faixas de 1 %"),
+                y=alt.Y("count():Q", title="Aeronaves", stack=True),
+                color=cor,
+                tooltip=[alt.Tooltip("modelo:N", title="Modelo"), alt.Tooltip("count():Q", title="Aeronaves")],
+            ).properties(height=330),
+            use_container_width=True,
+        )
+
+    com_data = grafico.dropna(subset=["data"]).copy()
+    if not com_data.empty:
+        with st.container(border=True):
+            st.markdown("**Ano da última pesagem**")
+            sem_data = len(dados) - len(com_data)
+            st.caption(
+                "Quantas aeronaves tiveram a última pesagem em cada ano."
+                + (f" {sem_data} sem data válida na ficha." if sem_data else "")
+            )
+            com_data["ano"] = com_data["data"].dt.year.astype(str)
+            mostrar_grafico(
+                alt.Chart(com_data).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+                    x=alt.X("ano:O", title=None, axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y("count():Q", title="Aeronaves"),
+                    color=cor,
+                    tooltip=[alt.Tooltip("ano:O", title="Ano"), alt.Tooltip("modelo:N", title="Modelo"),
+                             alt.Tooltip("count():Q", title="Aeronaves")],
+                ).properties(height=260),
+                use_container_width=True,
+            )
+
+    if not para_conferir.empty:
+        with st.expander(f"Fichas para conferir ({len(para_conferir)})"):
+            st.caption(
+                "Peso mais de 4 % longe da mediana do modelo ou C.G. mais de 4 % MAC "
+                "longe da mediana do modelo. Costuma ser célula de carga, canela ou "
+                "item digitado errado na ficha."
+            )
+            st.dataframe(
+                para_conferir.sort_values(["Modelo", "Aeronave"]),
+                hide_index=True, use_container_width=True,
+                column_config={
+                    "Data da pesagem": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                    "Peso básico (kg)": st.column_config.NumberColumn(format="%.1f"),
+                    "C.G. (% MAC)": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+
+    with st.expander("Ver tabela das aeronaves"):
+        tabela = dados.sort_values("Peso básico (kg)", ascending=False)
+        st.dataframe(
+            tabela, hide_index=True, use_container_width=True,
+            column_config={
+                "Data da pesagem": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Peso básico (kg)": st.column_config.NumberColumn(format="%.1f"),
+                "C.G. (% MAC)": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+        st.download_button(
+            "Baixar CSV",
+            tabela.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+            file_name="frota_peso_cg.csv",
+            mime="text/csv",
+        )
 
 
 def renderizar_ficha_visualizacao(
@@ -3813,6 +4188,7 @@ MARCA_HTML = (
 
 PAGINAS = {
     'consulta': ("Fichas", ":material/dashboard:", tela_consulta, {1, 2, 3, 4}),
+    'graficos': ("Gráficos da frota", ":material/bar_chart:", tela_graficos, {1, 2, 3, 4}),
     'nova_ficha': ("Nova ficha", ":material/add_circle:", tela_nova_ficha, {1, 3}),
     'edicao': ("Editar ficha", ":material/edit_note:", tela_edicao, {1, 3}),
     'aprovar': ("Aprovação", ":material/task_alt:", tela_aprovar_fichas, {1, 3}),
@@ -3822,7 +4198,7 @@ PAGINAS = {
     'excluir': ("Excluir ficha", ":material/delete:", tela_excluir_ficha, {1, 3}),
 }
 GRUPOS_MENU = [
-    ("Fichas", ['consulta', 'nova_ficha', 'edicao', 'aprovar']),
+    ("Fichas", ['consulta', 'graficos', 'nova_ficha', 'edicao', 'aprovar']),
     ("Administração", ['cadastrar_aeronave', 'criar_login', 'assinaturas', 'excluir']),
 ]
 
