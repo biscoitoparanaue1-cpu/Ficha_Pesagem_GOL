@@ -169,6 +169,7 @@ ICONES_LUCIDE = {
     'menu_edicao': 'file-pen-line', 'menu_aprovar': 'circle-check-big',
     'menu_cadastrar_aeronave': 'plane', 'menu_criar_login': 'users',
     'menu_assinaturas': 'signature', 'menu_excluir': 'trash-2',
+    'menu_gerou_aprovou': 'user-check',
     'menu_sair': 'log-out', 'atualizar_fichas': 'refresh-cw',
     'atualizar_graficos': 'refresh-cw',
 }
@@ -802,6 +803,7 @@ def invalidar_cache_fichas():
     carregar_historico_ficha.clear()
     carregar_assinatura_usuario.clear()
     listar_fichas_devolvidas_usuario.clear()
+    listar_fichas_gerou_aprovou.clear()
 
 
 @st.cache_data
@@ -1589,6 +1591,96 @@ def aprovar_ficha(prefixo, pesagem, revisao, usuario):
                 agora,
             )
         )
+    invalidar_cache_fichas()
+
+
+# Só a conta da Engenharia preenche, à mão, quem gerou e quem aprovou as fichas
+# que vieram do banco antigo sem esse registro.
+USUARIO_GEROU_APROVOU = "engenharia"
+
+
+def pode_preencher_gerou_aprovou():
+    return (
+        safe_str(st.session_state.get('usuario_id')).casefold()
+        == USUARIO_GEROU_APROVOU
+    )
+
+
+@st.cache_data
+def listar_fichas_gerou_aprovou():
+    fluxos = carregar_fluxos_fichas()
+    with conectar_banco() as conn:
+        registros = conn.execute(
+            """SELECT dados->>'Prefixo' AS prefixo,
+                      dados->>'Pesagem' AS pesagem,
+                      COALESCE(dados->>'Revisao', dados->>'revisao') AS revisao,
+                      dados->>'Data_da_Pesagem' AS data
+               FROM pesagens
+               WHERE NULLIF(btrim(dados->>'Prefixo'), '') IS NOT NULL"""
+        ).fetchall()
+    linhas = []
+    for registro in registros:
+        chave = (
+            safe_str(registro["prefixo"]),
+            normalizar_chave_ficha(registro["pesagem"]),
+            normalizar_chave_ficha(registro["revisao"]),
+        )
+        fluxo = fluxos.get(chave, {})
+        linhas.append({
+            "chave": chave,
+            "Aeronave": chave[0],
+            "Pesagem": chave[1],
+            "Revisão": chave[2],
+            "Data da pesagem": data_pesagem(registro["data"]),
+            "gerado_por": fluxo.get("gerador_usuario") or None,
+            "aprovado_por": fluxo.get("aprovador_usuario") or None,
+            "pesagem_num": safe_float(chave[1]),
+            "revisao_num": safe_float(chave[2]),
+        })
+    colunas = [
+        "chave", "Aeronave", "Pesagem", "Revisão", "Data da pesagem",
+        "gerado_por", "aprovado_por", "pesagem_num", "revisao_num",
+    ]
+    df = pd.DataFrame(linhas, columns=colunas)
+    return (
+        df.sort_values(["Aeronave", "pesagem_num", "revisao_num"])
+        .drop_duplicates("chave")
+        .reset_index(drop=True)
+    )
+
+
+def definir_gerou_aprovou(mudancas, usuario):
+    """Grava quem gerou/aprovou sem a regra da edição (não troca o emissor
+    nem desfaz a aprovação de quem não foi alterado)."""
+    if not pode_preencher_gerou_aprovou():
+        raise PermissionError("Só o usuário Engenharia pode informar quem gerou e aprovou.")
+    agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with conectar_banco() as conn:
+        for chave, mudanca in mudancas.items():
+            conn.execute(
+                '''INSERT INTO fluxo_fichas
+                   (prefixo, pesagem, revisao, gerado_por, aprovado_por,
+                    criado_em, aprovado_em)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(prefixo, pesagem, revisao) DO UPDATE SET
+                       gerado_por = excluded.gerado_por,
+                       aprovado_por = excluded.aprovado_por,
+                       aprovado_em = CASE
+                           WHEN excluded.aprovado_por IS NULL THEN NULL
+                           ELSE COALESCE(fluxo_fichas.aprovado_em, excluded.aprovado_em)
+                       END''',
+                (
+                    *chave,
+                    mudanca["gerado_por"],
+                    mudanca["aprovado_por"],
+                    agora,
+                    agora if mudanca["aprovado_por"] else None,
+                ),
+            )
+            inserir_historico(
+                conn, *chave, "Emissor/aprovador informado", usuario, agora,
+                mudanca["alteracoes"],
+            )
     invalidar_cache_fichas()
 
 @st.cache_resource
@@ -4564,6 +4656,221 @@ def tela_aprovar_fichas():
                     destacar_erros=True,
                 )
 
+GA_FALTANDO = "Faltando quem gerou ou aprovou"
+GA_TODAS = "Todas as fichas"
+# Rótulo da célula vazia na tabela (o Streamlit mostraria "None").
+GA_VAZIO = "—"
+
+
+def ga_login(valor):
+    return valor if isinstance(valor, str) and valor else None
+
+
+def ga_novo_login(novos, coluna, antes, usuario_por_rotulo):
+    if coluna not in novos:
+        return antes
+    rotulo = novos[coluna]
+    if not isinstance(rotulo, str) or rotulo in ("", GA_VAZIO):
+        return None
+    return usuario_por_rotulo.get(rotulo, antes)
+
+
+def ga_guardar_edicoes():
+    # Passa o que foi digitado na tabela para a lista de alterações pendentes,
+    # para não se perder quando o filtro muda.
+    estado = st.session_state.get(f"ga_editor_{st.session_state.get('ga_versao', 0)}")
+    exibidas = st.session_state.get("ga_chaves_exibidas", [])
+    pendentes = st.session_state.setdefault("ga_pendentes", {})
+    if estado:
+        for posicao, valores in estado.get("edited_rows", {}).items():
+            if int(posicao) < len(exibidas):
+                pendentes.setdefault(exibidas[int(posicao)], {}).update(valores)
+    st.session_state["ga_versao"] = st.session_state.get("ga_versao", 0) + 1
+
+
+def ga_descartar():
+    st.session_state["ga_pendentes"] = {}
+    st.session_state["ga_versao"] = st.session_state.get("ga_versao", 0) + 1
+
+
+@protegido
+def tela_gerou_aprovou():
+    if not pode_preencher_gerou_aprovou():
+        st.error("Esta tela é só do usuário Engenharia.")
+        return
+
+    cabecalho(
+        "Gerou e aprovou",
+        "Informe quem gerou e quem aprovou as fichas que vieram do banco "
+        "antigo sem esse registro.",
+    )
+    mensagem = st.session_state.pop("ga_mensagem", None)
+    if mensagem:
+        st.success(mensagem)
+
+    df = listar_fichas_gerou_aprovou()
+    usuarios = listar_usuarios_assinaturas()
+
+    # Rótulo de cada usuário na lista: o nome; se dois tiverem o mesmo nome,
+    # o login vai junto.
+    nomes = [safe_str(u["nome"]) or u["usuario"] for u in usuarios]
+    rotulo_por_usuario = {}
+    for usuario, nome in zip((u["usuario"] for u in usuarios), nomes):
+        rotulo_por_usuario[usuario] = (
+            f"{nome} ({usuario})" if nomes.count(nome) > 1 else nome
+        )
+    # Logins gravados que não existem mais em Usuários continuam aparecendo.
+    for valor in pd.concat([df["gerado_por"], df["aprovado_por"]]).dropna().unique():
+        rotulo_por_usuario.setdefault(valor, f"{valor} (sem cadastro)")
+    usuario_por_rotulo = {rotulo: usuario for usuario, rotulo in rotulo_por_usuario.items()}
+    opcoes = sorted(usuario_por_rotulo, key=str.casefold)
+
+    sem_gerou = int(df["gerado_por"].isna().sum())
+    sem_aprovou = int(df["aprovado_por"].isna().sum())
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Fichas", len(df))
+    m2.metric("Sem quem gerou", sem_gerou)
+    m3.metric("Sem quem aprovou", sem_aprovou)
+
+    f1, f2 = st.columns([1, 1.4])
+    mostrar = f1.radio(
+        "Mostrar", [GA_FALTANDO, GA_TODAS], key="ga_mostrar",
+        horizontal=True, on_change=ga_guardar_edicoes,
+    )
+    aeronaves = f2.multiselect(
+        "Aeronaves", sorted(df["Aeronave"].unique()), key="ga_aeronaves",
+        placeholder="Todas", on_change=ga_guardar_edicoes,
+    )
+    filtrado = df
+    if mostrar == GA_FALTANDO:
+        filtrado = filtrado.loc[
+            filtrado["gerado_por"].isna() | filtrado["aprovado_por"].isna()
+        ]
+    if aeronaves:
+        filtrado = filtrado.loc[filtrado["Aeronave"].isin(aeronaves)]
+    filtrado = filtrado.reset_index(drop=True)
+
+    pendentes = st.session_state.setdefault("ga_pendentes", {})
+
+    with st.expander("Preencher várias fichas de uma vez"):
+        st.caption(
+            "Coloca a pessoa escolhida só nos campos vazios das fichas listadas "
+            "abaixo. Nada é gravado até você clicar em Salvar."
+        )
+        l1, l2, l3 = st.columns([1, 1, 0.8], vertical_alignment="bottom")
+        lote_gerou = l1.selectbox(
+            "Gerou", opcoes, index=None, key="ga_lote_gerou", placeholder="Não alterar"
+        )
+        lote_aprovou = l2.selectbox(
+            "Aprovou", opcoes, index=None, key="ga_lote_aprovou", placeholder="Não alterar"
+        )
+        if l3.button(
+            f"Preencher {len(filtrado)} fichas", key="ga_lote",
+            disabled=filtrado.empty or not (lote_gerou or lote_aprovou),
+            use_container_width=True,
+        ):
+            ga_guardar_edicoes()
+            for _, linha in filtrado.iterrows():
+                atual = {
+                    "Gerou": rotulo_por_usuario.get(linha["gerado_por"]),
+                    "Aprovou": rotulo_por_usuario.get(linha["aprovado_por"]),
+                    **pendentes.get(linha["chave"], {}),
+                }
+                novos = {}
+                if lote_gerou and atual["Gerou"] in (None, "", GA_VAZIO):
+                    novos["Gerou"] = lote_gerou
+                if lote_aprovou and atual["Aprovou"] in (None, "", GA_VAZIO):
+                    novos["Aprovou"] = lote_aprovou
+                if novos:
+                    pendentes.setdefault(linha["chave"], {}).update(novos)
+            st.rerun()
+
+    # Campos vazios aparecem como "—" (e não como "None") na tabela.
+    tabela = pd.DataFrame({
+        "Aeronave": filtrado["Aeronave"],
+        "Pesagem": filtrado["Pesagem"],
+        "Revisão": filtrado["Revisão"],
+        "Data da pesagem": filtrado["Data da pesagem"].map(
+            lambda data: data.strftime("%d/%m/%Y") if pd.notna(data) else ""
+        ),
+        "Gerou": filtrado["gerado_por"].map(rotulo_por_usuario).fillna(GA_VAZIO),
+        "Aprovou": filtrado["aprovado_por"].map(rotulo_por_usuario).fillna(GA_VAZIO),
+    })
+    for posicao, chave in enumerate(filtrado["chave"]):
+        for coluna, valor in pendentes.get(chave, {}).items():
+            tabela.at[posicao, coluna] = valor
+    st.session_state["ga_chaves_exibidas"] = list(filtrado["chave"])
+
+    if filtrado.empty:
+        st.success("Nenhuma ficha faltando quem gerou ou aprovou nesta seleção.")
+        editada = tabela
+    else:
+        editada = st.data_editor(
+            tabela,
+            key=f"ga_editor_{st.session_state.get('ga_versao', 0)}",
+            hide_index=True,
+            use_container_width=True,
+            height=min(38 + 35 * max(len(tabela), 1), 560),
+            disabled=["Aeronave", "Pesagem", "Revisão", "Data da pesagem"],
+            column_config={
+                "Gerou": st.column_config.SelectboxColumn(options=[GA_VAZIO, *opcoes], width="medium"),
+                "Aprovou": st.column_config.SelectboxColumn(options=[GA_VAZIO, *opcoes], width="medium"),
+            },
+        )
+
+    # Junta o que está na tabela agora com o que ficou guardado de outros filtros.
+    valores = dict(pendentes)
+    for posicao, chave in enumerate(filtrado["chave"]):
+        valores[chave] = {
+            "Gerou": editada.at[posicao, "Gerou"],
+            "Aprovou": editada.at[posicao, "Aprovou"],
+        }
+    originais = df.set_index("chave")
+    mudancas = {}
+    for chave, novos in valores.items():
+        if chave not in originais.index:
+            continue
+        # O pandas pode trocar None por NaN; tudo que não é login vira None.
+        antes_gerou = ga_login(originais.at[chave, "gerado_por"])
+        antes_aprovou = ga_login(originais.at[chave, "aprovado_por"])
+        novo_gerou = ga_novo_login(novos, "Gerou", antes_gerou, usuario_por_rotulo)
+        novo_aprovou = ga_novo_login(novos, "Aprovou", antes_aprovou, usuario_por_rotulo)
+        alteracoes = [
+            {
+                "campo": campo,
+                "antes": rotulo_por_usuario.get(antes, "—") if antes else "—",
+                "depois": rotulo_por_usuario.get(depois, "—") if depois else "—",
+            }
+            for campo, antes, depois in (
+                ("Gerada por", antes_gerou, novo_gerou),
+                ("Aprovada por", antes_aprovou, novo_aprovou),
+            )
+            if antes != depois
+        ]
+        if alteracoes:
+            mudancas[chave] = {
+                "gerado_por": novo_gerou,
+                "aprovado_por": novo_aprovou,
+                "alteracoes": alteracoes,
+            }
+
+    b1, b2, b3 = st.columns([1, 1, 2], vertical_alignment="center")
+    if b1.button(
+        f"Salvar {len(mudancas)} fichas" if mudancas else "Salvar",
+        key="ga_salvar", type="primary", disabled=not mudancas,
+        use_container_width=True,
+    ):
+        definir_gerou_aprovou(mudancas, st.session_state["usuario_id"])
+        ga_descartar()
+        st.session_state["ga_mensagem"] = f"{len(mudancas)} fichas atualizadas."
+        st.rerun()
+    b2.button(
+        "Descartar alterações", key="ga_descartar", disabled=not mudancas,
+        on_click=ga_descartar, use_container_width=True,
+    )
+    if mudancas:
+        b3.caption(f"{len(mudancas)} fichas com alterações ainda não salvas.")
+
 def excluir_ficha(prefixo, pesagem, revisao):
     garantir_pode_emitir()
     chave = (
@@ -4679,12 +4986,20 @@ PAGINAS = {
     'criar_login': ("Usuários", ":material/group:", tela_criar_login, {3}),
     'assinaturas': ("Assinaturas", ":material/draw:", tela_assinaturas, {3}),
     'excluir': ("Excluir ficha", ":material/delete:", tela_excluir_ficha, {1, 3}),
+    # Além do perfil, só aparece para o usuário Engenharia (pode_preencher_gerou_aprovou).
+    'gerou_aprovou': ("Gerou e aprovou", ":material/how_to_reg:", tela_gerou_aprovou, {1, 2, 3, 4, 5}),
 }
 GRUPOS_MENU = [
     ("Consulta", ['consulta', 'graficos']),
     ("Emissão", ['nova_ficha', 'edicao', 'aprovar', 'excluir']),
-    ("Administração", ['cadastrar_aeronave', 'criar_login', 'assinaturas']),
+    ("Administração", ['cadastrar_aeronave', 'criar_login', 'assinaturas', 'gerou_aprovou']),
 ]
+
+
+def pagina_permitida(pagina, nivel):
+    if pagina == 'gerou_aprovou' and not pode_preencher_gerou_aprovou():
+        return False
+    return pagina in PAGINAS and nivel in PAGINAS[pagina][3]
 
 
 def ir_para(pagina):
@@ -4752,13 +5067,13 @@ elif not st.session_state['usuario_logado']:
     carregar_prefixos_fichas()
 else:
     nivel = st.session_state['nivel_acesso']
-    if nivel not in PAGINAS.get(st.session_state['pagina_atual'], (None, None, None, set()))[3]:
+    if not pagina_permitida(st.session_state['pagina_atual'], nivel):
         st.session_state['pagina_atual'] = 'consulta'
 
     with st.sidebar:
         st.markdown(MARCA_HTML, unsafe_allow_html=True)
         for grupo, paginas in GRUPOS_MENU:
-            visiveis = [p for p in paginas if nivel in PAGINAS[p][3]]
+            visiveis = [p for p in paginas if pagina_permitida(p, nivel)]
             if not visiveis:
                 continue
             st.markdown(f'<div class="grupo-menu">{grupo}</div>', unsafe_allow_html=True)
