@@ -103,9 +103,12 @@ st.markdown(
 NIVEL_CONSULTA, NIVEL_OPERACAO, NIVEL_ADMIN = 2, 1, 3
 # Engenharia de Operações só vê, na consulta, a ficha mais recente de cada aeronave.
 NIVEL_ENG_OPERACOES = 4
+# Especialistas GOL abrem as telas de emissão e aprovação, mas não gravam nada.
+NIVEL_ESPECIALISTA = 5
 PERFIS = {
     NIVEL_CONSULTA: "Consulta",
     NIVEL_ENG_OPERACOES: "Engenharia de Operações",
+    NIVEL_ESPECIALISTA: "Especialista GOL (só visualiza emissão)",
     NIVEL_OPERACAO: "Gera e aprova",
     NIVEL_ADMIN: "Administrador",
 }
@@ -134,6 +137,25 @@ def exigir_nivel(*niveis):
         return True
     st.error("Seu perfil não tem acesso a esta tela.")
     return False
+
+
+def pode_emitir():
+    return nivel_atual() in (NIVEL_OPERACAO, NIVEL_ADMIN)
+
+
+def garantir_pode_emitir():
+    # Barreira no servidor: nenhuma gravação de ficha passa sem perfil de emissão,
+    # mesmo que um botão desabilitado seja acionado por fora da interface.
+    if not pode_emitir():
+        raise PermissionError("Seu perfil não pode gerar, alterar ou aprovar fichas.")
+
+
+def aviso_somente_visualizacao():
+    if not pode_emitir():
+        st.info(
+            "Modo visualização: seu perfil pode ver esta tela, mas não pode "
+            "gerar, alterar, devolver ou aprovar fichas."
+        )
 
 
 ICONES_LUCIDE = {
@@ -575,6 +597,7 @@ def bloquear_prefixo(conn, prefixo):
 
 
 def inserir_ficha(registro):
+    garantir_pode_emitir()
     with conectar_banco() as conn:
         bloquear_prefixo(conn, registro.get("Prefixo", ""))
         if buscar_id_ficha(
@@ -647,6 +670,7 @@ def comparar_registros(anterior, novo):
 
 def atualizar_ficha(prefixo, pesagem, revisao, registro):
     """Grava a ficha e devolve a lista de campos alterados (None se não achou)."""
+    garantir_pode_emitir()
     dados_novos = preparar_registro_json(registro)
     with conectar_banco() as conn:
         bloquear_prefixo(conn, prefixo)
@@ -1243,6 +1267,7 @@ def carregar_historico_ficha(prefixo, pesagem, revisao):
 def registrar_ficha(prefixo, pesagem, revisao, usuario, acao="Gerada", alteracoes=None):
     # Quem gera ou edita a ficha passa a ser o emissor (e a assinatura dele vai
     # na ficha); a aprovação anterior é desfeita.
+    garantir_pode_emitir()
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with conectar_banco() as conn:
         inserir_historico(
@@ -1494,6 +1519,7 @@ def listar_fichas_pendentes():
 
 
 def salvar_campos_com_erro(prefixo, pesagem, revisao, campos, usuario):
+    garantir_pode_emitir()
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
     chave = (
         safe_str(prefixo),
@@ -1524,6 +1550,7 @@ def salvar_campos_com_erro(prefixo, pesagem, revisao, campos, usuario):
 
 
 def limpar_campos_com_erro(prefixo, pesagem, revisao):
+    garantir_pode_emitir()
     with conectar_banco() as conn:
         conn.execute(
             '''DELETE FROM campos_com_erro
@@ -1537,6 +1564,7 @@ def limpar_campos_com_erro(prefixo, pesagem, revisao):
     invalidar_cache_fichas()
 
 def aprovar_ficha(prefixo, pesagem, revisao, usuario):
+    garantir_pode_emitir()
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with conectar_banco() as conn:
         inserir_historico(conn, prefixo, pesagem, revisao, "Aprovada", usuario, agora)
@@ -2962,6 +2990,7 @@ def renderizar_ficha_visualizacao(
                 if st.button(
                     "Enviar para o emissor alterar",
                     type="secondary",
+                    disabled=not pode_emitir(),
                     key=f"enviar_correcao_{prefixo}_{pesagem}_{revisao}",
                 ):
                     salvar_campos_com_erro(
@@ -2982,6 +3011,7 @@ def renderizar_ficha_visualizacao(
                 )
                 if st.button(
                     "Limpar sinalizações",
+                    disabled=not pode_emitir(),
                     key=f"limpar_correcao_{prefixo}_{pesagem}_{revisao}",
                 ):
                     salvar_campos_com_erro(
@@ -2997,7 +3027,8 @@ def renderizar_ficha_visualizacao(
                 st.caption("Marque “Erro” ao lado dos campos que precisam de correção.")
 
             pode_aprovar = (
-                not campos_pendentes
+                pode_emitir()
+                and not campos_pendentes
                 and not campos_selecionados
                 and fluxo['gerador_usuario'] != st.session_state['usuario_id']
             )
@@ -3009,6 +3040,8 @@ def renderizar_ficha_visualizacao(
                 )
             elif fluxo['gerador_usuario'] == st.session_state['usuario_id']:
                 st.warning("Quem emitiu a ficha não pode aprová-la.")
+            elif not pode_emitir():
+                st.caption("Seu perfil não pode aprovar fichas.")
             else:
                 conferiu_cg = st.checkbox(
                     "Confirmei os dados e o valor do C.G. (% MAC).",
@@ -3268,7 +3301,7 @@ for _categoria, _valores in carregar_opcoes_cadastradas().items():
 def salvar_opcao_digitada(categoria, chave_widget):
     """Grava no banco uma opção digitada que ainda não existe na lista."""
     valor = safe_str(st.session_state.get(chave_widget))
-    if not valor or any(
+    if not pode_emitir() or not valor or any(
         valor.casefold() == opcao.casefold() for opcao in PRESETS.get(categoria, [])
     ):
         return
@@ -3849,9 +3882,10 @@ def aviso_celulas_ficha(registro, ficha_base=None):
 def tela_nova_ficha():
     st.session_state["historico_colunas"] = ()
 
-    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN):
+    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN, NIVEL_ESPECIALISTA):
         return
     cabecalho("Nova ficha", "Escolha a aeronave e preencha as abas em ordem. O Preview mostra o resultado antes de salvar.")
+    aviso_somente_visualizacao()
     ficha_salva = st.session_state.get("nova_ficha_salva")
     if ficha_salva:
         # Evita que um segundo clique em "Salvar" grave outra revisão igual.
@@ -4056,7 +4090,10 @@ def tela_nova_ficha():
                 label_salvar,
                 type="primary",
                 use_container_width=True,
-                disabled=bool(ficha_ja_existe) or not confirmou_incompleta,
+                disabled=(
+                    bool(ficha_ja_existe) or not confirmou_incompleta
+                    or not pode_emitir()
+                ),
             ):
                 ficha_existente = False
                 if not df_aero.empty:
@@ -4109,8 +4146,9 @@ def tela_nova_ficha():
 def tela_edicao():
     st.session_state["historico_colunas"] = ()
     cabecalho("Editar ficha", "Altere uma revisão já emitida. Ela volta para aprovação.")
-    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN):
+    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN, NIVEL_ESPECIALISTA):
         return
+    aviso_somente_visualizacao()
 
     prefixos = [""] + carregar_prefixos_fichas()
     prefixo = st.selectbox("Aeronave", prefixos)
@@ -4142,7 +4180,10 @@ def tela_edicao():
                 st.divider()
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
-                    if st.button("Salvar alterações", type="primary", use_container_width=True):
+                    if st.button(
+                        "Salvar alterações", type="primary",
+                        use_container_width=True, disabled=not pode_emitir(),
+                    ):
                         fluxo_origem = buscar_fluxo_ficha(prefixo, pesagem, revisao)
                         novo_registro['Pesagem'] = str(int(p_final))
                         novo_registro['Revisao'] = str(int(r_final))
@@ -4185,6 +4226,7 @@ def tela_criar_login():
         nivel = st.selectbox(
             "Perfil", list(PERFIS), format_func=PERFIS.get,
             help="Consulta só visualiza. Gera e aprova emite, edita e aprova fichas. "
+                 "Especialista GOL vê as telas de emissão e aprovação, mas não gera nem aprova. "
                  "Administrador também gerencia usuários e assinaturas.",
         )
         enviar = st.form_submit_button("Criar usuário", type="primary")
@@ -4427,10 +4469,11 @@ def tela_assinaturas():
 @st.fragment
 @protegido
 def tela_aprovar_fichas():
-    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN):
+    if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN, NIVEL_ESPECIALISTA):
         return
 
     cabecalho("Aprovação", "Revise, devolva para correção ou aprove as fichas emitidas.")
+    aviso_somente_visualizacao()
     pendentes_aprovacao, pendentes_correcao = listar_fichas_pendentes()
     aba_aprovacao, aba_correcao = st.tabs(
         ["Pendentes de aprovação", "Pendentes de correção"]
@@ -4517,6 +4560,7 @@ def tela_aprovar_fichas():
                 )
 
 def excluir_ficha(prefixo, pesagem, revisao):
+    garantir_pode_emitir()
     chave = (
         safe_str(prefixo),
         normalizar_chave_ficha(pesagem),
@@ -4621,11 +4665,11 @@ MARCA_HTML = (
 )
 
 PAGINAS = {
-    'consulta': ("Consultar fichas", ":material/dashboard:", tela_consulta, {1, 2, 3, 4}),
-    'graficos': ("Gráficos da frota", ":material/bar_chart:", tela_graficos, {1, 2, 3}),
-    'nova_ficha': ("Nova ficha", ":material/add_circle:", tela_nova_ficha, {1, 3}),
-    'edicao': ("Editar ficha", ":material/edit_note:", tela_edicao, {1, 3}),
-    'aprovar': ("Aprovação", ":material/task_alt:", tela_aprovar_fichas, {1, 3}),
+    'consulta': ("Consultar fichas", ":material/dashboard:", tela_consulta, {1, 2, 3, 4, 5}),
+    'graficos': ("Gráficos da frota", ":material/bar_chart:", tela_graficos, {1, 2, 3, 5}),
+    'nova_ficha': ("Nova ficha", ":material/add_circle:", tela_nova_ficha, {1, 3, 5}),
+    'edicao': ("Editar ficha", ":material/edit_note:", tela_edicao, {1, 3, 5}),
+    'aprovar': ("Aprovação", ":material/task_alt:", tela_aprovar_fichas, {1, 3, 5}),
     'cadastrar_aeronave': ("Aeronaves", ":material/flight:", tela_cadastrar_aeronave, {1, 3}),
     'criar_login': ("Usuários", ":material/group:", tela_criar_login, {3}),
     'assinaturas': ("Assinaturas", ":material/draw:", tela_assinaturas, {3}),
