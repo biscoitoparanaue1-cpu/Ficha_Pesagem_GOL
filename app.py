@@ -3822,20 +3822,10 @@ def formulario_pesagem(
 OPCAO_NUMERACAO_MANUAL = "Digitar Pesagem e Revisão manualmente"
 
 
-def resumo_abas_ficha(registro, ficha_base=None):
-    """Mostra, junto do botão Salvar, o que já foi preenchido em cada aba.
-
-    As abas ficam lado a lado e é fácil salvar sem ter visto Células de
-    Carga, Deductions e Additions. Com ficha_base (nova pesagem), as células
-    copiadas da pesagem anterior e não redigitadas contam como pendentes.
-    Devolve o aviso das células, ou None quando estão em ordem.
+def aviso_celulas_ficha(registro, ficha_base=None):
+    """Diz se as Células de Carga estão vazias ou, numa nova pesagem, ainda
+    iguais às copiadas da pesagem anterior. Devolve None quando estão em ordem.
     """
-    def contar_itens(chave_descricao, maximo):
-        return sum(
-            1 for i in range(1, maximo + 1)
-            if safe_str(registro.get(chave_descricao.format(i))).strip()
-        )
-
     chaves_celulas = [
         get_real_col(nomes)
         for nomes in (
@@ -3846,32 +3836,12 @@ def resumo_abas_ficha(registro, ficha_base=None):
     ]
     celulas = [safe_float(registro.get(chave)) for chave in chaves_celulas]
     if sum(celulas) <= 0:
-        aviso_celulas = "vazias"
-    elif ficha_base and celulas == [
+        return "vazias"
+    if ficha_base and celulas == [
         safe_float(ficha_base.get(chave)) for chave in chaves_celulas
     ]:
-        aviso_celulas = "iguais às da pesagem anterior"
-    else:
-        aviso_celulas = None
-    n_deducoes = contar_itens('Deductions description {}', MAX_DEDUCTIONS)
-    n_adicoes = contar_itens('Additions Description {}', MAX_ADDITIONS)
-    grau = registro.get(get_real_col(['Graus correção do cg']))
-
-    def item(ok, texto):
-        cor = "green" if ok else "orange"
-        simbolo = "✓" if ok else "!"
-        return f":{cor}[{simbolo} {texto}]"
-
-    st.markdown("**Antes de salvar, confira as abas acima:**")
-    st.markdown("  \n".join([
-        item(not aviso_celulas, "Células de Carga: "
-             + (aviso_celulas or "preenchidas")),
-        item(n_deducoes > 0, f"Deductions: {n_deducoes} item(ns)"),
-        item(n_adicoes > 0, f"Additions: {n_adicoes} item(ns)"),
-        item(True, "Level Correction: "
-             + (f"{grau}" if grau else "sem correção")),
-    ]))
-    return aviso_celulas
+        return "iguais às da pesagem anterior"
+    return None
 
 
 @st.fragment
@@ -4064,7 +4034,7 @@ def tela_nova_ficha():
         )
         
         st.divider()
-        aviso_celulas = resumo_abas_ficha(
+        aviso_celulas = aviso_celulas_ficha(
             novo_registro,
             linha_base if int(p_final) != int(p_ant) else None,
         )
