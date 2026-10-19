@@ -83,7 +83,12 @@ st.markdown(
     }
     .grupo-menu {
         color: #9AA1AD; font-size: .7rem; font-weight: 600; letter-spacing: .06em;
-        text-transform: uppercase; margin: 1.2rem 0 .3rem .75rem;
+        text-transform: uppercase; margin: 1.1rem 0 .1rem .75rem;
+    }
+    /* O Streamlit puxa o texto seguinte 1rem para cima; nos rótulos do menu isso
+       fazia o botão ativo cobrir o nome do grupo. */
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"]:has(> .grupo-menu, > .usuario) {
+        margin-bottom: 0;
     }
     .cabecalho h1 { font-size: 1.75rem; font-weight: 700; margin: 0; padding: 0; }
     .cabecalho p { color: #6B7280; margin: .25rem 0 1.2rem; }
