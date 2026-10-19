@@ -3819,6 +3819,31 @@ def formulario_pesagem(
 
     return novo_registro, id_pesagem_input, rev_input
 
+OPCAO_NUMERACAO_MANUAL = "Digitar Pesagem e Revisão manualmente"
+
+
+def aviso_celulas_ficha(registro, ficha_base=None):
+    """Diz se as Células de Carga estão vazias ou, numa nova pesagem, ainda
+    iguais às copiadas da pesagem anterior. Devolve None quando estão em ordem.
+    """
+    chaves_celulas = [
+        get_real_col(nomes)
+        for nomes in (
+            ['Peso nariz LH'], ['Peso Nariz RH'],
+            ['Peso MLG RH 1 ', 'Peso MLG RH 1'], ['Peso MLG LH 1', 'Peso MLG LH 1 '],
+            ['Peso MLG RH 2', 'Peso MLG RH 2 '], ['Peso MLG LH2', 'Peso MLG LH 2'],
+        )
+    ]
+    celulas = [safe_float(registro.get(chave)) for chave in chaves_celulas]
+    if sum(celulas) <= 0:
+        return "vazias"
+    if ficha_base and celulas == [
+        safe_float(ficha_base.get(chave)) for chave in chaves_celulas
+    ]:
+        return "iguais às da pesagem anterior"
+    return None
+
+
 @st.fragment
 @protegido
 def tela_nova_ficha():
@@ -3922,20 +3947,35 @@ def tela_nova_ficha():
             u_rev = int(ultima_linha['Revisao_num'])
             
             st.info(f"📋 **Base Encontrada:** A última ficha dessa aeronave foi a **Pesagem {u_pes} | Revisão {u_rev}**. Os dados foram copiados para agilizar o preenchimento.")
-            tipo_acao = st.radio("Escolha a ação desejada:", ["Nova Revisão (Mantém Pesagem atual)", "Nova Pesagem (Inicia do zero)"], horizontal=True)
+            tipo_acao = st.radio(
+                "Escolha a ação desejada:",
+                [
+                    f"Nova Revisão (Pesagem {u_pes}, Revisão {u_rev + 1})",
+                    f"Nova Pesagem (Pesagem {u_pes + 1}, Revisão 0)",
+                    OPCAO_NUMERACAO_MANUAL,
+                ],
+                horizontal=True,
+                key=f"tipo_acao_{prefixo}",
+            )
             
-            if "Revisão" in tipo_acao:
-                p_nova = u_pes
-                r_nova = u_rev + 1
-            else:
+            if tipo_acao.startswith("Nova Pesagem"):
                 p_nova = u_pes + 1
                 r_nova = 0
+            else:
+                p_nova = u_pes
+                r_nova = u_rev + 1
                 
             p_ant = u_pes
             r_ant = u_rev
             campos_correcao = set()
         else:
             st.info("🆕 **Nenhuma ficha anterior encontrada.** Iniciando a primeira Pesagem (1), Revisão (0) com a ficha em branco.")
+            tipo_acao = st.radio(
+                "Escolha a ação desejada:",
+                ["Primeira ficha (Pesagem 1, Revisão 0)", OPCAO_NUMERACAO_MANUAL],
+                horizontal=True,
+                key=f"tipo_acao_{prefixo}",
+            )
             linha_base = {}
             p_nova = 1
             r_nova = 0
@@ -3953,10 +3993,8 @@ def tela_nova_ficha():
                     + "; ".join(campo['descricao'] for campo in campos_pendentes)
                 )
 
-        if not correcao_selecionada and st.checkbox(
-            "Definir número da Pesagem e Revisão manualmente",
-            key=f"numeracao_manual_{prefixo}",
-        ):
+        ficha_ja_existe = False
+        if not correcao_selecionada and tipo_acao == OPCAO_NUMERACAO_MANUAL:
             col_pesagem, col_revisao = st.columns(2)
             p_nova = col_pesagem.number_input(
                 "Número da Pesagem",
@@ -3972,6 +4010,18 @@ def tela_nova_ficha():
                 step=1,
                 key=f"revisao_manual_{prefixo}",
             )
+            # Digitar um número que já existe gravaria por cima de uma ficha
+            # emitida; o aviso aparece antes de a pessoa preencher as abas.
+            ficha_ja_existe = not df_aero.empty and (
+                (df_aero['Pesagem_num'] == int(p_nova))
+                & (df_aero['Revisao_num'] == int(r_nova))
+            ).any()
+            if ficha_ja_existe:
+                st.error(
+                    f"Já existe uma ficha para {prefixo}, Pesagem {int(p_nova)}, "
+                    f"Revisão {int(r_nova)}. Escolha outro número. Para alterar "
+                    "essa ficha, use a tela Editar ficha."
+                )
             
         novo_registro, p_final, r_final = formulario_pesagem(
             prefixo,
@@ -3984,6 +4034,17 @@ def tela_nova_ficha():
         )
         
         st.divider()
+        aviso_celulas = aviso_celulas_ficha(
+            novo_registro,
+            linha_base if int(p_final) != int(p_ant) else None,
+        )
+        confirmou_incompleta = True
+        if aviso_celulas and not correcao_selecionada:
+            confirmou_incompleta = st.checkbox(
+                f"As Células de Carga estão {aviso_celulas}. Quero salvar "
+                "mesmo assim para continuar depois.",
+                key=f"salvar_incompleta_{prefixo}_{p_nova}_{r_nova}",
+            )
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             label_salvar = (
@@ -3991,7 +4052,12 @@ def tela_nova_ficha():
                 if correcao_selecionada
                 else "Salvar Ficha"
             )
-            if st.button(label_salvar, type="primary", use_container_width=True):
+            if st.button(
+                label_salvar,
+                type="primary",
+                use_container_width=True,
+                disabled=bool(ficha_ja_existe) or not confirmou_incompleta,
+            ):
                 ficha_existente = False
                 if not df_aero.empty:
                     ficha_existente = (
