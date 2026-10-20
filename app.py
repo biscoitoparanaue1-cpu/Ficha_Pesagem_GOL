@@ -3570,6 +3570,7 @@ def formulario_pesagem(
     r_anterior,
     linha_existente=None,
     campos_com_erro=None,
+    modo="nova",
 ):
     if linha_existente is None: linha_existente = {}
     campos_com_erro = set(campos_com_erro or ())
@@ -3581,7 +3582,9 @@ def formulario_pesagem(
 
     info_aero = dict_tipos_aeronave.get(prefixo_selecionado, {})
     tipo_a = info_aero.get('modelo', "")
-    form_key = f"{prefixo_selecionado}_{p_sugerida}_{r_sugerida}"
+    # O modo separa os campos de cada tela: sem ele, a Nova ficha e o Editar
+    # ficha da mesma revisão dividiam as linhas de Additions/Deductions.
+    form_key = f"{modo}_{prefixo_selecionado}_{p_sugerida}_{r_sugerida}"
 
     aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs(["Dados da Ficha", "Células de Carga", "Deductions", "Additions", "Level Correction", "Preview"])
 
@@ -4030,6 +4033,11 @@ def tela_nova_ficha():
 
     if prefixo:
         st.divider()
+        chave_ficha_anterior = f"ficha_anterior_{prefixo}"
+        ficha_anterior = (
+            not correcao_selecionada
+            and st.session_state.get(chave_ficha_anterior, False)
+        )
         df_aero = carregar_fichas_prefixo(prefixo)
         st.session_state["historico_colunas"] = tuple(
             df_aero.columns if not df_aero.empty else df_historico.columns
@@ -4066,9 +4074,27 @@ def tela_nova_ficha():
             st.markdown("**Campos que precisam de correção:**")
             for erro in correcao_selecionada["erros"]:
                 st.markdown(f":red[🔴 {erro['descricao']}]")
+        elif not df_aero.empty and ficha_anterior:
+            df_aero = df_aero.sort_values(by=['Pesagem_num', 'Revisao_num'])
+            st.info(
+                "📥 **Cadastrar ficha anterior.** Use para incluir uma ficha "
+                "antiga que não está no sistema. Digite a Pesagem e a Revisão "
+                "dela e preencha as abas com os dados da ficha em papel. Ela "
+                "não muda a última ficha da aeronave."
+            )
+            if st.button("Voltar para nova ficha", key=f"cancelar_anterior_{prefixo}"):
+                st.session_state.pop(chave_ficha_anterior, None)
+                st.rerun()
+            u_pes = int(df_aero.iloc[-1]['Pesagem_num'])
+            u_rev = int(df_aero.iloc[-1]['Revisao_num'])
+            tipo_acao = OPCAO_NUMERACAO_MANUAL
+            linha_base = {}
+            p_nova, r_nova = (u_pes, u_rev - 1) if u_rev > 0 else (max(u_pes - 1, 1), 0)
+            p_ant = r_ant = 0
+            campos_correcao = set()
         elif not df_aero.empty:
             df_aero = df_aero.sort_values(by=['Pesagem_num', 'Revisao_num'])
-            
+
             ultima_linha = df_aero.iloc[-1]
             linha_base = ultima_linha.to_dict()
             linha_base.pop('Pesagem_num', None)
@@ -4088,7 +4114,16 @@ def tela_nova_ficha():
                 horizontal=True,
                 key=f"tipo_acao_{prefixo}",
             )
-            
+            if st.button(
+                "Cadastrar ficha anterior que falta no sistema",
+                icon=":material/history:",
+                key=f"abrir_anterior_{prefixo}",
+                help="Inclui uma ficha antiga (por exemplo, a que veio antes "
+                "da última) sem copiar os dados da última ficha.",
+            ):
+                st.session_state[chave_ficha_anterior] = True
+                st.rerun()
+
             if tipo_acao.startswith("Nova Pesagem"):
                 p_nova = u_pes + 1
                 r_nova = 0
@@ -4132,14 +4167,14 @@ def tela_nova_ficha():
                 min_value=1,
                 value=max(1, int(p_nova)),
                 step=1,
-                key=f"pesagem_manual_{prefixo}",
+                key=f"pesagem_manual_{prefixo}_{int(ficha_anterior)}",
             )
             r_nova = col_revisao.number_input(
                 "Número da Revisão",
                 min_value=0,
                 value=max(0, int(r_nova)),
                 step=1,
-                key=f"revisao_manual_{prefixo}",
+                key=f"revisao_manual_{prefixo}_{int(ficha_anterior)}",
             )
             # Digitar um número que já existe gravaria por cima de uma ficha
             # emitida; o aviso aparece antes de a pessoa preencher as abas.
@@ -4162,6 +4197,7 @@ def tela_nova_ficha():
             r_ant,
             linha_existente=linha_base,
             campos_com_erro=campos_correcao,
+            modo="anterior" if ficha_anterior else "nova",
         )
         
         st.divider()
@@ -4181,6 +4217,8 @@ def tela_nova_ficha():
             label_salvar = (
                 "Emitir ficha e enviar para aprovação"
                 if correcao_selecionada
+                else "Cadastrar ficha anterior"
+                if ficha_anterior
                 else "Salvar Ficha"
             )
             if st.button(
@@ -4227,7 +4265,11 @@ def tela_nova_ficha():
                 elif not inserir_ficha(novo_registro):
                     st.error(f"Já existe uma ficha para {prefixo}, Pesagem {int(p_final)}, Revisão {int(r_final)}.")
                 else:
-                    registrar_ficha(prefixo, p_final, r_final, st.session_state['usuario_id'])
+                    registrar_ficha(
+                        prefixo, p_final, r_final, st.session_state['usuario_id'],
+                        acao="Ficha anterior cadastrada" if ficha_anterior else "Gerada",
+                    )
+                    st.session_state.pop(chave_ficha_anterior, None)
                     st.session_state["nova_ficha_salva"] = (
                         prefixo, int(p_final), int(r_final)
                     )
@@ -4272,7 +4314,7 @@ def tela_edicao():
                 p_ant = u_pes
                 r_ant = u_rev
                 
-                novo_registro, p_final, r_final = formulario_pesagem(prefixo, p_nova, r_nova, p_ant, r_ant, linha_existente=linha_atual)
+                novo_registro, p_final, r_final = formulario_pesagem(prefixo, p_nova, r_nova, p_ant, r_ant, linha_existente=linha_atual, modo="edicao")
                 
                 st.divider()
                 col_btn1, col_btn2 = st.columns(2)
