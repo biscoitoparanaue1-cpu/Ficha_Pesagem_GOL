@@ -317,12 +317,20 @@ def valor_canela_em_polegadas(valor, unidade):
     return valor / 25.4 if unidade == "mm" else valor
 
 
+CAMPO_ULTIMA_PESAGEM_INFORMADA = 'Ultima pesagem informada'
+CAMPO_ULTIMA_REVISAO_INFORMADA = 'Ultima revisao informada'
+
+
 def ultima_ficha_gravada(registro):
-    """Pesagem/revisão anterior digitadas na ficha ("" quando não há)."""
-    pesagem = normalizar_chave_ficha(registro.get('Pesagem anterior'))
+    """Última pesagem/revisão digitadas à mão, para quando a ficha anterior
+    não está no sistema ("" quando não há). As colunas antigas 'Pesagem
+    anterior'/'Revisão Anterior' não são usadas: vieram do banco antigo sem
+    padrão."""
+    pesagem = normalizar_chave_ficha(registro.get(CAMPO_ULTIMA_PESAGEM_INFORMADA))
     if safe_float(pesagem) <= 0:
         return "", ""
-    return pesagem, normalizar_chave_ficha(registro.get('Revisão Anterior')) or "0"
+    revisao = normalizar_chave_ficha(registro.get(CAMPO_ULTIMA_REVISAO_INFORMADA))
+    return pesagem, revisao or "0"
 
 
 def formatar_data_ficha(valor):
@@ -3075,7 +3083,7 @@ def renderizar_ficha_visualizacao(
             "serial_number": safe_str(safe_str(row.get('SERIAL')) or info_aero.get('serial', '')),
             "line_number": safe_str(safe_str(row.get('LINE')) or info_aero.get('line', '')),
             "numero_pesagem": str(int(pesagem_atual)) if pesagem_atual else "",
-            "revisao": str(int(revisao_atual)) if revisao_atual else "",
+            "revisao": str(int(revisao_atual)),
             "reactions": {
                 'LH': {'weight': lh, 'arm': arm_b_lh, 'moment': m_lh},
                 'RH': {'weight': rh, 'arm': arm_b_rh, 'moment': m_rh},
@@ -3639,22 +3647,44 @@ def formulario_pesagem(
         cp1, cp2 = st.columns(2)
         id_pesagem_input = cp1.number_input("Número da Pesagem:", value=int(p_sugerida), disabled=True)
         rev_input = cp2.number_input("Número da Revisão:", value=int(r_sugerida), disabled=True)
-        # Última ficha que vai no rodapé do PDF. Vem gravada na ficha ou da
-        # anterior no sistema, e pode ser digitada quando ela não está no sistema.
-        up_salva, ur_salva = ultima_ficha_gravada(linha_existente)
-        cu1, cu2 = st.columns(2)
-        ultima_pesagem = cu1.text_input(
-            "Última pesagem:",
-            value=up_salva or (str(int(p_anterior)) if p_anterior > 0 else ""),
-            key=f"{form_key}_ultima_pesagem",
-            help="Número da pesagem da ficha anterior. Preencha se ela não estiver no sistema.",
-        ).strip()
-        ultima_revisao = cu2.text_input(
-            "Última revisão:",
-            value=ur_salva or (str(int(r_anterior)) if p_anterior > 0 else ""),
-            key=f"{form_key}_ultima_revisao",
-            help="Número da revisão da ficha anterior. Preencha se ela não estiver no sistema.",
-        ).strip()
+        # A última ficha do rodapé do PDF vem do sistema. Só quando ela não
+        # está no banco a pessoa abre esta opção e digita os números.
+        # Na Nova ficha a base é a ficha anterior: o valor digitado nela não vale aqui.
+        mesma_ficha = (
+            normalizar_chave_ficha(linha_existente.get('Pesagem')) == str(int(p_sugerida))
+            and normalizar_chave_ficha(linha_existente.get('Revisao')) == str(int(r_sugerida))
+        )
+        up_salva, ur_salva = (
+            ultima_ficha_gravada(linha_existente) if mesma_ficha else ("", "")
+        )
+        ultima_sistema = (
+            f"Pesagem {int(p_anterior)}, Revisão {int(r_anterior)}"
+            if p_anterior > 0 else "nenhuma"
+        )
+        with st.expander(
+            f"Última ficha no sistema: {ultima_sistema}. "
+            "Ela não está no sistema? Clique para informar.",
+            expanded=bool(up_salva),
+        ):
+            cu1, cu2 = st.columns(2)
+            pesagem_informada = cu1.text_input(
+                "Última pesagem:",
+                value=up_salva,
+                key=f"{form_key}_ultima_pesagem",
+                placeholder="Deixe em branco para usar a do sistema",
+            ).strip()
+            revisao_informada = cu2.text_input(
+                "Última revisão:",
+                value=ur_salva,
+                key=f"{form_key}_ultima_revisao",
+                placeholder="Deixe em branco para usar a do sistema",
+            ).strip()
+        if pesagem_informada:
+            ultima_pesagem, ultima_revisao = pesagem_informada, revisao_informada or "0"
+        elif p_anterior > 0:
+            ultima_pesagem, ultima_revisao = str(int(p_anterior)), str(int(r_anterior))
+        else:
+            ultima_pesagem = ultima_revisao = ""
         st.divider()
 
         c1, c2, c3 = st.columns(3)
@@ -3978,8 +4008,10 @@ def formulario_pesagem(
     novo_registro[get_real_col(['Peso MLG RH 2 pesagem 2'])] = p2_rhm2
     novo_registro[get_real_col(['Peso MLG LH2 pesagem 2'])] = p2_lhm2
     
-    novo_registro['Pesagem anterior'] = ultima_pesagem
-    novo_registro['Revisão Anterior'] = ultima_revisao
+    novo_registro[CAMPO_ULTIMA_PESAGEM_INFORMADA] = pesagem_informada or None
+    novo_registro[CAMPO_ULTIMA_REVISAO_INFORMADA] = (
+        (revisao_informada or "0") if pesagem_informada else None
+    )
     novo_registro[get_real_col(['Canela MLG LH'])] = canela_lh
     novo_registro[get_real_col(['Canela MLG RH'])] = canela_rh
     novo_registro[get_real_col(['Tail'])] = tail_val
@@ -4181,6 +4213,7 @@ def tela_nova_ficha():
             if st.button(
                 "Cadastrar ficha anterior que falta no sistema",
                 icon=":material/history:",
+                type="tertiary",
                 key=f"abrir_anterior_{prefixo}",
                 help="Inclui uma ficha antiga (por exemplo, a que veio antes "
                 "da última) sem copiar os dados da última ficha.",
