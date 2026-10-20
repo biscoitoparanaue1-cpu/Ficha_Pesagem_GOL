@@ -5,6 +5,7 @@ import functools
 import hashlib
 import hmac
 import json
+import re
 import secrets
 
 import openpyxl
@@ -314,6 +315,25 @@ def converter_unidade_canela(unidade_key, unidade_anterior_key, chaves_valores):
 
 def valor_canela_em_polegadas(valor, unidade):
     return valor / 25.4 if unidade == "mm" else valor
+
+
+def ultima_ficha_gravada(registro):
+    """Pesagem/revisão anterior digitadas na ficha ("" quando não há)."""
+    pesagem = normalizar_chave_ficha(registro.get('Pesagem anterior'))
+    if safe_float(pesagem) <= 0:
+        return "", ""
+    return pesagem, normalizar_chave_ficha(registro.get('Revisão Anterior')) or "0"
+
+
+def formatar_data_ficha(valor):
+    """Datas da ficha no formato 20/10/2026 (o banco guarda 2026-10-20)."""
+    texto = safe_str(valor)
+    if re.match(r"^\d{4}-\d{2}-\d{2}", texto):
+        try:
+            return datetime.date.fromisoformat(texto[:10]).strftime("%d/%m/%Y")
+        except ValueError:
+            return texto
+    return texto
 
 
 def separar_campos_lopa(registro):
@@ -1758,7 +1778,7 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
     ws['V8'] = dados.get('pesado_por', '')
     ws['G9'] = dados.get('modelo', '')
     ws['V9'] = dados.get('local', '')
-    ws['V10'] = dados.get('data', '')
+    ws['V10'] = formatar_data_ficha(dados.get('data', ''))
     ws['V12'] = dados.get('razao', '')
     ws['G13'] = dados.get('config_lopa', '')
     ws['G14'] = dados.get('lopa', '')
@@ -1766,7 +1786,7 @@ def gerar_excel_por_template(dados, caminho_template="exemplo_ficha.xlsx"):
     ws['S24'] = dados.get('arm_b_lh', '')
     ws['S25'] = dados.get('arm_b_rh', '')
     
-    ws['P43'] = dados.get('issue_date', '') 
+    ws['P43'] = formatar_data_ficha(dados.get('issue_date', ''))
     ws['O65'] = dados.get('ultima_pesagem', '') 
     ws['W65'] = dados.get('ultima_revisao', '') 
     
@@ -3019,6 +3039,9 @@ def renderizar_ficha_visualizacao(
         
         ultima_p = str(int(df_prev.iloc[-1]['Pesagem_num'])) if not df_prev.empty else ""
         ultima_r = str(int(df_prev.iloc[-1]['Revisao_num'])) if not df_prev.empty else ""
+        up_salva, ur_salva = ultima_ficha_gravada(row)
+        if up_salva:
+            ultima_p, ultima_r = up_salva, ur_salva
         lopa, config_lopa = separar_campos_lopa(row)
 
         deducoes_excel = [
@@ -3214,6 +3237,8 @@ def nome_arquivo_ficha(prefixo, pesagem, revisao):
 
 
 def botoes_exportacao(container, obter_dados, prefixo, pesagem, revisao, chave):
+    # obter_dados roda no clique do download, fora da execução da tela, onde
+    # st.session_state não está disponível: passe os dados já capturados.
     nome = nome_arquivo_ficha(prefixo, pesagem, revisao)
     col_excel, col_pdf = container.columns(2)
     col_excel.download_button(
@@ -3456,6 +3481,21 @@ def renderizar_editor_itens(
     quantidade_inicial = max(len(itens), 1)
     chave_linhas = f"{key}_linhas"
     chave_proximo_id = f"{key}_proximo_id"
+    chave_base = f"{key}_base"
+    # Se a ficha de origem mudou (outra ficha, ou a mesma já salva com outros
+    # itens), as linhas guardadas da tela anterior não valem mais: sem isso a
+    # edição mostrava linhas vazias no lugar dos itens gravados.
+    base_itens = repr([
+        (safe_str(item.get("Descrição")), item.get("Peso (Kg)"), item.get("Braço (in)"))
+        for item in itens
+    ])
+    if st.session_state.get(chave_base) != base_itens:
+        for chave_widget in [
+            chave for chave in st.session_state
+            if isinstance(chave, str) and chave.startswith(f"{key}_")
+        ]:
+            del st.session_state[chave_widget]
+        st.session_state[chave_base] = base_itens
     if chave_linhas not in st.session_state:
         quantidade_anterior = max(
             quantidade_inicial,
@@ -3498,19 +3538,25 @@ def renderizar_editor_itens(
             on_change=salvar_opcao_digitada if categoria else None,
             args=(categoria, f"{key}_{id_linha}_descricao") if categoria else None,
         )
+        # O flap entra só pelo momento extra; peso e braço ficam travados em 0.
+        eh_flap = "flap" in safe_str(descricao).casefold()
+        sufixo_flap = "_flap" if eh_flap else ""
         peso = peso_col.number_input(
             f"Peso (Kg), linha {posicao + 1}",
-            value=safe_float(item.get("Peso (Kg)", 0.0)),
+            value=0.0 if eh_flap else safe_float(item.get("Peso (Kg)", 0.0)),
             step=0.1,
-            key=f"{key}_{id_linha}_peso",
+            key=f"{key}_{id_linha}_peso{sufixo_flap}",
             label_visibility="collapsed",
+            disabled=eh_flap,
         )
         braco = braco_col.number_input(
             f"Braço (in), linha {posicao + 1}",
-            value=safe_float(item.get("Braço (in)", 0.0)),
+            value=0.0 if eh_flap else safe_float(item.get("Braço (in)", 0.0)),
             step=0.1,
-            key=f"{key}_{id_linha}_braco",
+            key=f"{key}_{id_linha}_braco{sufixo_flap}",
             label_visibility="collapsed",
+            disabled=eh_flap,
+            help="O flap entra só pelo momento; peso e braço ficam em 0." if eh_flap else None,
         )
 
         descricao = safe_str(descricao)
@@ -3559,7 +3605,7 @@ def excluir_linha(chave_linhas, prefixo_widget, id_linha):
     st.session_state[chave_linhas] = [
         linha for linha in st.session_state[chave_linhas] if linha != id_linha
     ]
-    for campo in ("descricao", "peso", "braco"):
+    for campo in ("descricao", "peso", "braco", "peso_flap", "braco_flap"):
         st.session_state.pop(f"{prefixo_widget}_{id_linha}_{campo}", None)
 
 def formulario_pesagem(
@@ -3593,6 +3639,22 @@ def formulario_pesagem(
         cp1, cp2 = st.columns(2)
         id_pesagem_input = cp1.number_input("Número da Pesagem:", value=int(p_sugerida), disabled=True)
         rev_input = cp2.number_input("Número da Revisão:", value=int(r_sugerida), disabled=True)
+        # Última ficha que vai no rodapé do PDF. Vem gravada na ficha ou da
+        # anterior no sistema, e pode ser digitada quando ela não está no sistema.
+        up_salva, ur_salva = ultima_ficha_gravada(linha_existente)
+        cu1, cu2 = st.columns(2)
+        ultima_pesagem = cu1.text_input(
+            "Última pesagem:",
+            value=up_salva or (str(int(p_anterior)) if p_anterior > 0 else ""),
+            key=f"{form_key}_ultima_pesagem",
+            help="Número da pesagem da ficha anterior. Preencha se ela não estiver no sistema.",
+        ).strip()
+        ultima_revisao = cu2.text_input(
+            "Última revisão:",
+            value=ur_salva or (str(int(r_anterior)) if p_anterior > 0 else ""),
+            key=f"{form_key}_ultima_revisao",
+            help="Número da revisão da ficha anterior. Preencha se ela não estiver no sistema.",
+        ).strip()
         st.divider()
 
         c1, c2, c3 = st.columns(3)
@@ -3861,8 +3923,8 @@ def formulario_pesagem(
             "razao": razao, "cg_mac": cg_mac_val,
             "arm_a": arm_a, "arm_b_lh": arm_b_lh, "arm_b_rh": arm_b_rh,
             "issue_date": str(data_emissao),
-            "ultima_pesagem": str(p_anterior) if p_anterior > 0 else "",
-            "ultima_revisao": str(r_anterior) if p_anterior > 0 else "",
+            "ultima_pesagem": ultima_pesagem,
+            "ultima_revisao": ultima_revisao,
             "vrbl_number": vrbl, "serial_number": serial, "line_number": line,
             "numero_pesagem": str(int(id_pesagem_input)), "revisao": str(int(rev_input)),
             "reactions": {
@@ -3916,6 +3978,8 @@ def formulario_pesagem(
     novo_registro[get_real_col(['Peso MLG RH 2 pesagem 2'])] = p2_rhm2
     novo_registro[get_real_col(['Peso MLG LH2 pesagem 2'])] = p2_lhm2
     
+    novo_registro['Pesagem anterior'] = ultima_pesagem
+    novo_registro['Revisão Anterior'] = ultima_revisao
     novo_registro[get_real_col(['Canela MLG LH'])] = canela_lh
     novo_registro[get_real_col(['Canela MLG RH'])] = canela_rh
     novo_registro[get_real_col(['Tail'])] = tail_val
@@ -4208,8 +4272,8 @@ def tela_nova_ficha():
         confirmou_incompleta = True
         if aviso_celulas and not correcao_selecionada:
             confirmou_incompleta = st.checkbox(
-                f"As Células de Carga estão {aviso_celulas}. Quero salvar "
-                "mesmo assim para continuar depois.",
+                f"As Células de Carga estão {aviso_celulas}. Quero gerar "
+                "a ficha mesmo assim.",
                 key=f"salvar_incompleta_{prefixo}_{p_nova}_{r_nova}",
             )
         col_btn1, col_btn2 = st.columns(2)
@@ -4219,7 +4283,7 @@ def tela_nova_ficha():
                 if correcao_selecionada
                 else "Cadastrar ficha anterior"
                 if ficha_anterior
-                else "Salvar Ficha"
+                else "Gerar ficha e enviar para aprovação"
             )
             if st.button(
                 label_salvar,
@@ -4276,7 +4340,7 @@ def tela_nova_ficha():
                     st.rerun()
         with col_btn2:
             botoes_exportacao(
-                st, lambda: st.session_state["dados_excel_temp"], prefixo,
+                st, lambda dados=st.session_state["dados_excel_temp"]: dados, prefixo,
                 p_final, r_final, f"nova_{prefixo}",
             )
 
@@ -4311,8 +4375,16 @@ def tela_edicao():
                 
                 p_nova = u_pes
                 r_nova = u_rev
-                p_ant = u_pes
-                r_ant = u_rev
+                # A anterior é a ficha logo antes desta no sistema (não ela mesma).
+                anteriores = sorted(
+                    (safe_float(p), safe_float(r))
+                    for p, r in zip(df_filtrado['Pesagem'], df_filtrado['Revisao'])
+                    if (safe_float(p), safe_float(r)) < (u_pes, u_rev)
+                )
+                p_ant, r_ant = (
+                    (int(anteriores[-1][0]), int(anteriores[-1][1]))
+                    if anteriores else (0, 0)
+                )
                 
                 novo_registro, p_final, r_final = formulario_pesagem(prefixo, p_nova, r_nova, p_ant, r_ant, linha_existente=linha_atual, modo="edicao")
                 
@@ -4320,7 +4392,7 @@ def tela_edicao():
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.button(
-                        "Salvar alterações", type="primary",
+                        "Enviar alterações para aprovação", type="primary",
                         use_container_width=True, disabled=not pode_emitir(),
                     ):
                         fluxo_origem = buscar_fluxo_ficha(prefixo, pesagem, revisao)
@@ -4347,7 +4419,7 @@ def tela_edicao():
                         )
                 with col_btn2:
                     botoes_exportacao(
-                        st, lambda: st.session_state["dados_excel_temp"], prefixo,
+                        st, lambda dados=st.session_state["dados_excel_temp"]: dados, prefixo,
                         p_final, r_final, f"edicao_{prefixo}",
                     )
 
