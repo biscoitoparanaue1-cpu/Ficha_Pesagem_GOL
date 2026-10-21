@@ -1913,7 +1913,7 @@ def grade_celulas(render):
 
 def mostrar_relatorio_pesagem(tabela, peso, braco, cg_mac):
     r1, r2, r3 = st.columns(3)
-    r1.metric("Aircraft Basic Weight", f"{peso:,.2f} kg")
+    r1.metric("Aircraft Basic Weight", f"{peso:,.2f} kgf")
     r2.metric("Aircraft Basic Arm", f"{braco:,.4f} in")
     r3.metric("C.G. (% MAC)", f"{cg_mac:.2f} %")
     st.dataframe(
@@ -1921,9 +1921,9 @@ def mostrar_relatorio_pesagem(tabela, peso, braco, cg_mac):
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Weight (kg)": st.column_config.NumberColumn(format="%.2f"),
+            "Weight (kgf)": st.column_config.NumberColumn(format="%.2f"),
             "Arm (inch)": st.column_config.NumberColumn(format="%.4f"),
-            "Moment (kg x inch)": st.column_config.NumberColumn(format="%,.2f"),
+            "Moment (kgf x inch)": st.column_config.NumberColumn(format="%,.2f"),
         },
     )
 
@@ -2138,18 +2138,18 @@ def montar_resumo_frota():
             "Pesagem": safe_str(row.get('Pesagem')),
             "Revisão": safe_str(row.get('Revisao')),
             "Data da pesagem": data_pesagem(row.get('Data_da_Pesagem')),
-            "Peso básico (kg)": round(resumo["peso"], 1),
+            "Peso básico (kgf)": round(resumo["peso"], 1),
             "C.G. (% MAC)": round(resumo["cg_mac"], 2),
         })
     return pd.DataFrame(
         linhas,
         columns=["Aeronave", "Modelo", "Pesagem", "Revisão", "Data da pesagem",
-                 "Peso básico (kg)", "C.G. (% MAC)"],
+                 "Peso básico (kgf)", "C.G. (% MAC)"],
     )
 
 
 def formatar_kg(valor):
-    return f"{valor:,.0f} kg".replace(",", ".")
+    return f"{valor:,.0f} kgf".replace(",", ".")
 
 
 def formatar_pct(valor):
@@ -2167,9 +2167,9 @@ def mostrar_grafico(grafico, **kwargs):
 
 def motivos_fora_do_padrao(df):
     """Aponta fichas cujo peso ou C.G. foge muito do que é normal para o modelo."""
-    mediana_peso = df.groupby("Modelo")["Peso básico (kg)"].transform("median")
+    mediana_peso = df.groupby("Modelo")["Peso básico (kgf)"].transform("median")
     mediana_cg = df.groupby("Modelo")["C.G. (% MAC)"].transform("median")
-    peso_fora = (df["Peso básico (kg)"] - mediana_peso).abs() > 0.04 * mediana_peso
+    peso_fora = (df["Peso básico (kgf)"] - mediana_peso).abs() > 0.04 * mediana_peso
     cg_fora = (df["C.G. (% MAC)"] - mediana_cg).abs() > 4
     motivos = pd.Series("", index=df.index)
     motivos[peso_fora] = "Peso fora do padrão"
@@ -2178,7 +2178,7 @@ def motivos_fora_do_padrao(df):
     return motivos
 
 
-# Peso máximo de pouso de cada modelo (kg), base dos limites da FAA AC 120-27F.
+# Peso máximo de pouso de cada modelo (kgf), base dos limites da FAA AC 120-27F.
 # Conferir no AFM da frota.
 PESO_MAXIMO_POUSO = {
     "737-700": 58060,
@@ -2279,7 +2279,7 @@ def aba_variacao(alt, historico, modelos, escala_cor, cor):
     k2.metric("Passaram do limite", len(fora))
     k3.metric(
         "Variação média de peso",
-        f"{variacao['delta_peso'].mean():+,.0f} kg".replace(",", "."),
+        f"{variacao['delta_peso'].mean():+,.0f} kgf".replace(",", "."),
     )
 
     tol_maior = max(
@@ -2301,7 +2301,7 @@ def aba_variacao(alt, historico, modelos, escala_cor, cor):
         alt.Tooltip("modelo:N", title="Modelo"),
         alt.Tooltip("de:N", title="De"),
         alt.Tooltip("para:N", title="Para"),
-        alt.Tooltip("delta_peso:Q", title="Δ peso (kg)", format="+,.1f"),
+        alt.Tooltip("delta_peso:Q", title="Δ peso (kgf)", format="+,.1f"),
         alt.Tooltip("delta_cg:Q", title="Δ C.G. (% MAC)", format="+.2f"),
         alt.Tooltip("situacao:N", title="Situação"),
     ]
@@ -2323,7 +2323,7 @@ def aba_variacao(alt, historico, modelos, escala_cor, cor):
                 size=90, opacity=0.85, stroke="white", strokeWidth=1.5
             ).encode(
                 x=alt.X("delta_cg:Q", title="Δ C.G. (% MAC)", scale=escala_x),
-                y=alt.Y("delta_peso:Q", title="Δ peso básico (kg)", scale=escala_y),
+                y=alt.Y("delta_peso:Q", title="Δ peso básico (kgf)", scale=escala_y),
                 color=cor,
                 tooltip=dica,
             )
@@ -2342,12 +2342,12 @@ def aba_variacao(alt, historico, modelos, escala_cor, cor):
                 .drop(columns=["abs_peso", "tol_peso"])
                 .rename(columns={
                     "aeronave": "Aeronave", "modelo": "Modelo", "de": "De", "para": "Para",
-                    "delta_peso": "Δ peso (kg)", "delta_cg": "Δ C.G. (% MAC)",
+                    "delta_peso": "Δ peso (kgf)", "delta_cg": "Δ C.G. (% MAC)",
                     "situacao": "Situação",
                 }),
                 hide_index=True, use_container_width=True,
                 column_config={
-                    "Δ peso (kg)": st.column_config.NumberColumn(format="%+.1f"),
+                    "Δ peso (kgf)": st.column_config.NumberColumn(format="%+.1f"),
                     "Δ C.G. (% MAC)": st.column_config.NumberColumn(format="%+.2f"),
                 },
             )
@@ -2383,7 +2383,7 @@ def aba_historico(alt, historico, modelos, escala_cor):
     dica = [
         alt.Tooltip("ficha:N", title="Ficha"),
         alt.Tooltip("data:T", title="Data da pesagem", format="%d/%m/%Y"),
-        alt.Tooltip("peso:Q", title="Peso básico (kg)", format=",.1f"),
+        alt.Tooltip("peso:Q", title="Peso básico (kgf)", format=",.1f"),
         alt.Tooltip("cg:Q", title="C.G. (% MAC)", format=".2f"),
     ]
 
@@ -2412,7 +2412,7 @@ def aba_historico(alt, historico, modelos, escala_cor):
     with st.container(border=True):
         st.markdown("**Peso básico em cada ficha**")
         mostrar_grafico(
-            evolucao("peso", "peso_min", "peso_max", "Peso básico (kg)", ",.0f", bool(tol_peso)),
+            evolucao("peso", "peso_min", "peso_max", "Peso básico (kgf)", ",.0f", bool(tol_peso)),
             use_container_width=True,
         )
     with st.container(border=True):
@@ -2428,7 +2428,7 @@ def aba_carta_controle(alt, selecionadas, modelos):
         "Modelo", modelos, horizontal=True, key="graficos_carta_modelo",
     )
     dados = selecionadas[selecionadas["Modelo"] == modelo].rename(columns={
-        "Aeronave": "aeronave", "Peso básico (kg)": "peso", "C.G. (% MAC)": "cg",
+        "Aeronave": "aeronave", "Peso básico (kgf)": "peso", "C.G. (% MAC)": "cg",
     })
     if len(dados) < 3:
         st.info("Esse modelo tem poucas aeronaves para montar a carta de controle.")
@@ -2490,7 +2490,7 @@ def aba_carta_controle(alt, selecionadas, modelos):
         grafico = alt.layer(*camadas).properties(height=320)
         return grafico, fora, (lic, media, lsc)
 
-    for campo, titulo, formato in (("peso", "Peso básico (kg)", 0), ("cg", "C.G. (% MAC)", 2)):
+    for campo, titulo, formato in (("peso", "Peso básico (kgf)", 0), ("cg", "C.G. (% MAC)", 2)):
         grafico, fora, (lic, media, lsc) = carta(campo, titulo, formato)
         with st.container(border=True):
             st.markdown(f"**Carta de controle · {titulo}**")
@@ -2516,7 +2516,7 @@ def tela_graficos():
         st.rerun()
 
     frota = montar_resumo_frota()
-    validas = frota[(frota["Peso básico (kg)"] > 0) & (frota["C.G. (% MAC)"] > 0)]
+    validas = frota[(frota["Peso básico (kgf)"] > 0) & (frota["C.G. (% MAC)"] > 0)]
     if validas.empty:
         st.info("Ainda não há fichas com dados de célula de carga para montar os gráficos.")
         return
@@ -2563,31 +2563,31 @@ def tela_graficos():
     with aba_carta:
         aba_carta_controle(alt, selecionadas, modelos)
     with aba_hoje:
-        mais_pesada = dados.loc[dados["Peso básico (kg)"].idxmax()]
-        mais_leve = dados.loc[dados["Peso básico (kg)"].idxmin()]
+        mais_pesada = dados.loc[dados["Peso básico (kgf)"].idxmax()]
+        mais_leve = dados.loc[dados["Peso básico (kgf)"].idxmin()]
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Peso básico médio", formatar_kg(dados["Peso básico (kg)"].mean()))
+        k1.metric("Peso básico médio", formatar_kg(dados["Peso básico (kgf)"].mean()))
         k2.metric("C.G. médio", formatar_pct(dados["C.G. (% MAC)"].mean()))
         k3.metric(
             "Mais pesada", mais_pesada["Aeronave"],
-            formatar_kg(mais_pesada["Peso básico (kg)"]), delta_color="off", delta_arrow="off",
+            formatar_kg(mais_pesada["Peso básico (kgf)"]), delta_color="off", delta_arrow="off",
         )
         k4.metric(
             "Mais leve", mais_leve["Aeronave"],
-            formatar_kg(mais_leve["Peso básico (kg)"]), delta_color="off", delta_arrow="off",
+            formatar_kg(mais_leve["Peso básico (kgf)"]), delta_color="off", delta_arrow="off",
         )
 
         # O Altair lê "." no nome do campo como campo aninhado; os gráficos usam nomes simples.
         grafico = dados.rename(columns={
             "Aeronave": "aeronave", "Modelo": "modelo", "Pesagem": "pesagem",
             "Revisão": "revisao", "Data da pesagem": "data",
-            "Peso básico (kg)": "peso", "C.G. (% MAC)": "cg",
+            "Peso básico (kgf)": "peso", "C.G. (% MAC)": "cg",
         })
 
         dica = [
             alt.Tooltip("aeronave:N", title="Aeronave"),
             alt.Tooltip("modelo:N", title="Modelo"),
-            alt.Tooltip("peso:Q", title="Peso básico (kg)", format=",.0f"),
+            alt.Tooltip("peso:Q", title="Peso básico (kgf)", format=",.0f"),
             alt.Tooltip("cg:Q", title="C.G. (% MAC)", format=".2f"),
             alt.Tooltip("pesagem:N", title="Pesagem"),
             alt.Tooltip("revisao:N", title="Revisão"),
@@ -2621,7 +2621,7 @@ def tela_graficos():
         with c1.container(border=True):
             st.markdown("**Peso básico médio por modelo**")
             mostrar_grafico(
-                barras_por_modelo("peso", "kg", ",.0f"), use_container_width=True
+                barras_por_modelo("peso", "kgf", ",.0f"), use_container_width=True
             )
         with c2.container(border=True):
             st.markdown("**C.G. médio por modelo**")
@@ -2634,14 +2634,14 @@ def tela_graficos():
             st.caption("As linhas tracejadas marcam a média da seleção. Passe o mouse para ver a aeronave.")
             pontos = alt.Chart(grafico).mark_circle(size=90, opacity=0.85, stroke="white", strokeWidth=1.5).encode(
                 x=alt.X("cg:Q", title="C.G. (% MAC)", scale=alt.Scale(zero=False)),
-                y=alt.Y("peso:Q", title="Peso básico (kg)", scale=alt.Scale(zero=False)),
+                y=alt.Y("peso:Q", title="Peso básico (kgf)", scale=alt.Scale(zero=False)),
                 color=cor,
                 tooltip=dica,
             )
             media_x = alt.Chart(pd.DataFrame({"v": [dados["C.G. (% MAC)"].mean()]})).mark_rule(
                 strokeDash=[4, 4], color="#6B7280"
             ).encode(x="v:Q")
-            media_y = alt.Chart(pd.DataFrame({"v": [dados["Peso básico (kg)"].mean()]})).mark_rule(
+            media_y = alt.Chart(pd.DataFrame({"v": [dados["Peso básico (kgf)"].mean()]})).mark_rule(
                 strokeDash=[4, 4], color="#6B7280"
             ).encode(y="v:Q")
             mostrar_grafico((media_x + media_y + pontos).properties(height=380), use_container_width=True)
@@ -2655,7 +2655,7 @@ def tela_graficos():
             base = alt.Chart(top).encode(
                 y=alt.Y("aeronave:N", title=None,
                         sort=alt.EncodingSortField("peso", order="descending")),
-                x=alt.X("peso:Q", title="Peso básico (kg)",
+                x=alt.X("peso:Q", title="Peso básico (kgf)",
                         scale=alt.Scale(zero=False, nice=True, padding=30)),
                 tooltip=dica,
             )
@@ -2713,18 +2713,18 @@ def tela_graficos():
                     hide_index=True, use_container_width=True,
                     column_config={
                         "Data da pesagem": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                        "Peso básico (kg)": st.column_config.NumberColumn(format="%.1f"),
+                        "Peso básico (kgf)": st.column_config.NumberColumn(format="%.1f"),
                         "C.G. (% MAC)": st.column_config.NumberColumn(format="%.2f"),
                     },
                 )
 
         with st.expander("Ver tabela das aeronaves"):
-            tabela = dados.sort_values("Peso básico (kg)", ascending=False)
+            tabela = dados.sort_values("Peso básico (kgf)", ascending=False)
             st.dataframe(
                 tabela, hide_index=True, use_container_width=True,
                 column_config={
                     "Data da pesagem": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                    "Peso básico (kg)": st.column_config.NumberColumn(format="%.1f"),
+                    "Peso básico (kgf)": st.column_config.NumberColumn(format="%.1f"),
                     "C.G. (% MAC)": st.column_config.NumberColumn(format="%.2f"),
                 },
             )
@@ -2822,7 +2822,7 @@ def renderizar_ficha_visualizacao(
             return
         larguras = [0.5, 4, 1.2, 1.2, 1.5, 0.8]
         cab = st.columns(larguras, vertical_alignment="center")
-        for coluna, titulo in zip(cab, ["#", "Descrição", "Peso (kg)", "Braço (in)", "Momento", "Erro"]):
+        for coluna, titulo in zip(cab, ["#", "Descrição", "Peso (kgf)", "Braço (in)", "Momento", "Erro"]):
             coluna.markdown(f"<span style='color:#6B7280;font-size:.82rem;font-weight:600'>{titulo}</span>", unsafe_allow_html=True)
         for indice, descricao, peso, braco in itens:
             campo = f"{tipo} {campo_desc} {indice}"
@@ -2933,7 +2933,7 @@ def renderizar_ficha_visualizacao(
             peso = row.get(f'Deductions Weigth {i}', None)
             arm = row.get(f'Deductions arm {i}', None)
             if pd.notna(desc) and str(desc).strip() != '':
-                deducoes_lista.append({"Descrição": desc, "Peso [Kg]": safe_float(peso), "Arm [pol]": safe_float(arm)})
+                deducoes_lista.append({"Descrição": desc, "Peso [kgf]": safe_float(peso), "Arm [pol]": safe_float(arm)})
         if modo_aprovacao:
             tabela_itens_aprovacao("Deductions", "description", "Weigth", "arm", MAX_DEDUCTIONS)
         elif deducoes_lista:
@@ -2946,7 +2946,7 @@ def renderizar_ficha_visualizacao(
             peso = row.get(f'Additions weigth {i}', None)
             arm = row.get(f'Additions arm {i}', None)
             if pd.notna(desc) and str(desc).strip() != '':
-                adicoes_lista.append({"Descrição": desc, "Peso [Kg]": safe_float(peso), "Arm [pol]": safe_float(arm)})
+                adicoes_lista.append({"Descrição": desc, "Peso [kgf]": safe_float(peso), "Arm [pol]": safe_float(arm)})
         if modo_aprovacao:
             tabela_itens_aprovacao("Additions", "Description", "weigth", "arm", MAX_ADDITIONS)
         elif adicoes_lista:
@@ -3003,8 +3003,8 @@ def renderizar_ficha_visualizacao(
             calcular_level_correction(level_correction_angle, tot_reg_weight)
         )
 
-        ded_weight = sum([item["Peso [Kg]"] for item in deducoes_lista])
-        ded_moment = sum([item["Peso [Kg]"] * item["Arm [pol]"] for item in deducoes_lista])
+        ded_weight = sum([item["Peso [kgf]"] for item in deducoes_lista])
+        ded_moment = sum([item["Peso [kgf]"] * item["Arm [pol]"] for item in deducoes_lista])
         if level_correction_side == "deductions":
             ded_moment += level_correction_moment
         ded_arm = ded_moment / ded_weight if ded_weight > 0 else 0.0
@@ -3017,8 +3017,8 @@ def renderizar_ficha_visualizacao(
                 or buscar_momento_flaps_banco(prefixo, tipo_aeronave)
             )
 
-        add_weight = sum([item["Peso [Kg]"] for item in adicoes_lista])
-        add_moment = sum([item["Peso [Kg]"] * item["Arm [pol]"] for item in adicoes_lista]) + momento_extra_flaps
+        add_weight = sum([item["Peso [kgf]"] for item in adicoes_lista])
+        add_moment = sum([item["Peso [kgf]"] * item["Arm [pol]"] for item in adicoes_lista]) + momento_extra_flaps
         if level_correction_side == "additions":
             add_moment += level_correction_moment
         add_arm = add_moment / add_weight if add_weight > 0 else 0.0
@@ -3030,9 +3030,9 @@ def renderizar_ficha_visualizacao(
 
         report_data = {
             "Reaction / Item": ["LH", "RH", "NOSE", "TAIL", "TOTAL REGISTERED", "LEVEL CORRECTION", "DEDUCTIONS", "ADDITIONS", "AIRCRAFT BASIC WEIGHT"],
-            "Weight (kg)": [lh, rh, nose, tail, tot_reg_weight, 0.0, ded_weight, add_weight, basic_weight],
+            "Weight (kgf)": [lh, rh, nose, tail, tot_reg_weight, 0.0, ded_weight, add_weight, basic_weight],
             "Arm (inch)": [arm_b_lh, arm_b_rh, arm_a, arm_c, tot_reg_arm, level_correction_factor, ded_arm, add_arm, basic_arm],
-            "Moment (kg x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_moment, level_correction_moment, ded_moment, add_moment, basic_moment]
+            "Moment (kgf x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_moment, level_correction_moment, ded_moment, add_moment, basic_moment]
         }
         mostrar_relatorio_pesagem(report_data, basic_weight, basic_arm, cg_mac)
             
@@ -3053,11 +3053,11 @@ def renderizar_ficha_visualizacao(
         lopa, config_lopa = separar_campos_lopa(row)
 
         deducoes_excel = [
-            {'desc': d["Descrição"], 'w': d["Peso [Kg]"], 'a': d["Arm [pol]"], 'm': d["Peso [Kg]"] * d["Arm [pol]"]}
+            {'desc': d["Descrição"], 'w': d["Peso [kgf]"], 'a': d["Arm [pol]"], 'm': d["Peso [kgf]"] * d["Arm [pol]"]}
             for d in deducoes_lista
         ]
         adicoes_excel = [
-            {'desc': a["Descrição"], 'w': a["Peso [Kg]"], 'a': a["Arm [pol]"], 'm': a["Peso [Kg]"] * a["Arm [pol]"] + (momento_extra_flaps if "flap" in a["Descrição"].casefold() else 0)}
+            {'desc': a["Descrição"], 'w': a["Peso [kgf]"], 'a': a["Arm [pol]"], 'm': a["Peso [kgf]"] * a["Arm [pol]"] + (momento_extra_flaps if "flap" in a["Descrição"].casefold() else 0)}
             for a in adicoes_lista
         ]
         if level_correction_side == "deductions":
@@ -3485,7 +3485,7 @@ def renderizar_editor_itens(
     categoria=None,
 ):
     campos_com_erro = {safe_str(campo).casefold() for campo in campos_com_erro or ()}
-    colunas = ["Descrição", "Peso (Kg)", "Braço (in)", "Momento (kg.in)"]
+    colunas = ["Descrição", "Peso (kgf)", "Braço (in)", "Momento (kgf.in)"]
     quantidade_inicial = max(len(itens), 1)
     chave_linhas = f"{key}_linhas"
     chave_proximo_id = f"{key}_proximo_id"
@@ -3494,7 +3494,7 @@ def renderizar_editor_itens(
     # itens), as linhas guardadas da tela anterior não valem mais: sem isso a
     # edição mostrava linhas vazias no lugar dos itens gravados.
     base_itens = repr([
-        (safe_str(item.get("Descrição")), item.get("Peso (Kg)"), item.get("Braço (in)"))
+        (safe_str(item.get("Descrição")), item.get("Peso (kgf)"), item.get("Braço (in)"))
         for item in itens
     ])
     if st.session_state.get(chave_base) != base_itens:
@@ -3550,8 +3550,8 @@ def renderizar_editor_itens(
         eh_flap = "flap" in safe_str(descricao).casefold()
         sufixo_flap = "_flap" if eh_flap else ""
         peso = peso_col.number_input(
-            f"Peso (Kg), linha {posicao + 1}",
-            value=0.0 if eh_flap else safe_float(item.get("Peso (Kg)", 0.0)),
+            f"Peso (kgf), linha {posicao + 1}",
+            value=0.0 if eh_flap else safe_float(item.get("Peso (kgf)", 0.0)),
             step=0.1,
             key=f"{key}_{id_linha}_peso{sufixo_flap}",
             label_visibility="collapsed",
@@ -3576,9 +3576,9 @@ def renderizar_editor_itens(
         if descricao:
             linhas.append({
                 "Descrição": descricao,
-                "Peso (Kg)": peso,
+                "Peso (kgf)": peso,
                 "Braço (in)": braco,
-                "Momento (kg.in)": momento,
+                "Momento (kgf.in)": momento,
             })
 
         excluir_col.button(
@@ -3815,10 +3815,10 @@ def formulario_pesagem(
             if pd.notna(desc) and str(desc).strip():
                 peso = safe_float(linha_existente.get(f'Deductions Weigth {i}'))
                 arm = safe_float(linha_existente.get(f'Deductions arm {i}'))
-                ded_ex.append({"Descrição": desc, "Peso (Kg)": peso, "Braço (in)": arm, "Momento (kg.in)": peso * arm, "slot": i})
+                ded_ex.append({"Descrição": desc, "Peso (kgf)": peso, "Braço (in)": arm, "Momento (kgf.in)": peso * arm, "slot": i})
                 
         if not ded_ex:
-            ded_ex = [{"Descrição": "Fuel (Usable)", "Peso (Kg)": 0.0, "Braço (in)": 660.5, "Momento (kg.in)": 0.0}]
+            ded_ex = [{"Descrição": "Fuel (Usable)", "Peso (kgf)": 0.0, "Braço (in)": 660.5, "Momento (kgf.in)": 0.0}]
 
         deducoes_editadas = renderizar_editor_itens(
             st,
@@ -3845,10 +3845,10 @@ def formulario_pesagem(
                 arm = safe_float(linha_existente.get(f'Additions arm {i}'))
                 m_calc = peso * arm
                 if "flap" in str(desc).casefold(): m_calc += momento_extra_flaps
-                add_ex.append({"Descrição": desc, "Peso (Kg)": peso, "Braço (in)": arm, "Momento (kg.in)": m_calc, "slot": i})
+                add_ex.append({"Descrição": desc, "Peso (kgf)": peso, "Braço (in)": arm, "Momento (kgf.in)": m_calc, "slot": i})
                 
         if not add_ex:
-            add_ex = [{"Descrição": "Flaps 0 - 40° (up when weighed)", "Peso (Kg)": 0.0, "Braço (in)": 0.0, "Momento (kg.in)": momento_extra_flaps}]
+            add_ex = [{"Descrição": "Flaps 0 - 40° (up when weighed)", "Peso (kgf)": 0.0, "Braço (in)": 0.0, "Momento (kgf.in)": momento_extra_flaps}]
 
         adicoes_editadas = renderizar_editor_itens(
             st,
@@ -3897,8 +3897,8 @@ def formulario_pesagem(
         tot_reg_m = m_lh + m_rh + m_nose + m_tail
         tot_reg_arm = tot_reg_m / tot_reg_w if tot_reg_w > 0 else 0.0
 
-        ded_w = deducoes_editadas["Peso (Kg)"].sum() if not deducoes_editadas.empty else 0.0
-        ded_m = (deducoes_editadas["Peso (Kg)"] * deducoes_editadas["Braço (in)"]).sum() if not deducoes_editadas.empty else 0.0
+        ded_w = deducoes_editadas["Peso (kgf)"].sum() if not deducoes_editadas.empty else 0.0
+        ded_m = (deducoes_editadas["Peso (kgf)"] * deducoes_editadas["Braço (in)"]).sum() if not deducoes_editadas.empty else 0.0
         level_correction_factor, level_correction_moment, level_correction_side = (
             calcular_level_correction(angulo_level_correction, tot_reg_w)
         )
@@ -3906,10 +3906,10 @@ def formulario_pesagem(
             ded_m += level_correction_moment
         ded_arm = ded_m / ded_w if ded_w > 0 else 0.0
 
-        add_w = adicoes_editadas["Peso (Kg)"].sum() if not adicoes_editadas.empty else 0.0
+        add_w = adicoes_editadas["Peso (kgf)"].sum() if not adicoes_editadas.empty else 0.0
         add_m = 0.0
         for idx, row in adicoes_editadas.iterrows():
-            m = row["Peso (Kg)"] * row["Braço (in)"]
+            m = row["Peso (kgf)"] * row["Braço (in)"]
             if "flap" in str(row["Descrição"]).casefold(): m += momento_extra_flaps
             add_m += m
         if level_correction_side == "additions":
@@ -3923,17 +3923,17 @@ def formulario_pesagem(
 
         mostrar_relatorio_pesagem({
             "Reaction / Item": ["LH", "RH", "NOSE", "TAIL", "TOTAL REGISTERED", "LEVEL CORRECTION", "DEDUCTIONS", "ADDITIONS", "AIRCRAFT BASIC WEIGHT"],
-            "Weight (kg)": [lh_val, rh_val, nose_val, tail_val, tot_reg_w, 0.0, ded_w, add_w, basic_w],
+            "Weight (kgf)": [lh_val, rh_val, nose_val, tail_val, tot_reg_w, 0.0, ded_w, add_w, basic_w],
             "Arm (inch)": [arm_b_lh, arm_b_rh, arm_a, arm_c, tot_reg_arm, level_correction_factor, ded_arm, add_arm, basic_arm],
-            "Moment (kg x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_m, level_correction_moment, ded_m, add_m, basic_m]
+            "Moment (kgf x inch)": [m_lh, m_rh, m_nose, m_tail, tot_reg_m, level_correction_moment, ded_m, add_m, basic_m]
         }, basic_w, basic_arm, cg_mac_val)
         
         deducoes_excel = [
-            {'desc': d["Descrição"], 'w': d["Peso (Kg)"], 'a': d["Braço (in)"], 'm': d["Peso (Kg)"] * d["Braço (in)"]}
+            {'desc': d["Descrição"], 'w': d["Peso (kgf)"], 'a': d["Braço (in)"], 'm': d["Peso (kgf)"] * d["Braço (in)"]}
             for d in deducoes_editadas.to_dict('records')
         ]
         adicoes_excel = [
-            {'desc': a["Descrição"], 'w': a["Peso (Kg)"], 'a': a["Braço (in)"], 'm': a["Peso (Kg)"] * a["Braço (in)"] + (momento_extra_flaps if "flap" in str(a["Descrição"]).casefold() else 0)}
+            {'desc': a["Descrição"], 'w': a["Peso (kgf)"], 'a': a["Braço (in)"], 'm': a["Peso (kgf)"] * a["Braço (in)"] + (momento_extra_flaps if "flap" in str(a["Descrição"]).casefold() else 0)}
             for a in adicoes_editadas.to_dict('records')
         ]
         if level_correction_side == "deductions":
@@ -4034,7 +4034,7 @@ def formulario_pesagem(
         novo_registro[f'Deductions arm {i}'] = None
     for i, row in enumerate(deducoes_editadas.to_dict('records')[:MAX_DEDUCTIONS], start=1):
         novo_registro[f'Deductions description {i}'] = row.get('Descrição')
-        novo_registro[f'Deductions Weigth {i}'] = row.get('Peso (Kg)')
+        novo_registro[f'Deductions Weigth {i}'] = row.get('Peso (kgf)')
         novo_registro[f'Deductions arm {i}'] = row.get('Braço (in)')
 
     for i in range(1, MAX_ADDITIONS + 1):
@@ -4043,7 +4043,7 @@ def formulario_pesagem(
         novo_registro[f'Additions arm {i}'] = None
     for i, row in enumerate(adicoes_editadas.to_dict('records')[:MAX_ADDITIONS], start=1):
         novo_registro[f'Additions Description {i}'] = row.get('Descrição')
-        novo_registro[f'Additions weigth {i}'] = row.get('Peso (Kg)')
+        novo_registro[f'Additions weigth {i}'] = row.get('Peso (kgf)')
         novo_registro[f'Additions arm {i}'] = row.get('Braço (in)')
 
     return novo_registro, id_pesagem_input, rev_input
