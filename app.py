@@ -4093,7 +4093,7 @@ def formulario_pesagem(
     if passo_atual == "Células de Carga" and celulas_pendentes:
         st.warning(
             f"As Células de Carga estão {aviso_celulas}. Confira os valores "
-            "antes de seguir."
+            "antes de seguir: a Próxima tela confirma que estão certas."
         )
     elif indice_passo == len(PASSOS_FICHA) - 1 and celulas_pendentes:
         st.warning(
@@ -4111,7 +4111,7 @@ def formulario_pesagem(
         proximo = PASSOS_FICHA[indice_passo + 1]
         confirmar = passo_atual == "Células de Carga" and celulas_pendentes
         col_proxima.button(
-            "Estão certas, continuar" if confirmar else f"Próxima: {proximo}",
+            "Próxima tela",
             icon=":material/arrow_forward:",
             icon_position="right",
             type="primary",
