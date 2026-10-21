@@ -1007,6 +1007,23 @@ def inicializar_controle_acesso():
                 PRIMARY KEY (prefixo, pesagem, revisao)
             )
         ''')
+        # Fichas migradas que estavam pendentes quando a Aprovação foi limpa:
+        # ficam só em "Gerou e aprovou" até alguém gerar ou editar de novo.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS fichas_fora_aprovacao (
+                prefixo TEXT NOT NULL,
+                pesagem TEXT NOT NULL,
+                revisao TEXT NOT NULL,
+                separado_em TEXT NOT NULL,
+                PRIMARY KEY (prefixo, pesagem, revisao)
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS ajustes_aplicados (
+                nome TEXT PRIMARY KEY,
+                aplicado_em TEXT NOT NULL
+            )
+        ''')
         conn.execute('''
             CREATE TABLE IF NOT EXISTS campos_com_erro (
                 prefixo TEXT NOT NULL,
@@ -1302,10 +1319,19 @@ def carregar_historico_ficha(prefixo, pesagem, revisao):
 
 def registrar_ficha(prefixo, pesagem, revisao, usuario, acao="Gerada", alteracoes=None):
     # Quem gera ou edita a ficha passa a ser o emissor (e a assinatura dele vai
-    # na ficha); a aprovação anterior é desfeita.
+    # na ficha); a aprovação anterior é desfeita e ela volta para a Aprovação.
     garantir_pode_emitir()
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with conectar_banco() as conn:
+        conn.execute(
+            '''DELETE FROM fichas_fora_aprovacao
+               WHERE prefixo = ? AND pesagem = ? AND revisao = ?''',
+            (
+                safe_str(prefixo),
+                normalizar_chave_ficha(pesagem),
+                normalizar_chave_ficha(revisao),
+            ),
+        )
         inserir_historico(
             conn, prefixo, pesagem, revisao, acao, usuario, agora, alteracoes
         )
@@ -1480,6 +1506,7 @@ def listar_fichas_devolvidas_usuario(usuario):
 @st.cache_data
 def listar_fichas_pendentes():
     fluxos = carregar_fluxos_fichas()
+    fora_aprovacao = carregar_fichas_fora_aprovacao()
     with conectar_banco() as conn:
         registros_erros = conn.execute(
             '''SELECT prefixo, pesagem, revisao, campo, descricao
@@ -1541,6 +1568,7 @@ def listar_fichas_pendentes():
             not ficha["fluxo"]["aprovador_usuario"]
             and ficha["revisao_num"]
             == ultima_revisao[ficha["chave_pesagem"]]
+            and ficha["chave"] not in fora_aprovacao
         ):
             pendentes_aprovacao.append(ficha)
 
@@ -1552,6 +1580,55 @@ def listar_fichas_pendentes():
     return sorted(pendentes_aprovacao, key=ordenar), sorted(
         pendentes_correcao, key=ordenar
     )
+
+
+def carregar_fichas_fora_aprovacao():
+    with conectar_banco() as conn:
+        registros = conn.execute(
+            'SELECT prefixo, pesagem, revisao FROM fichas_fora_aprovacao'
+        ).fetchall()
+    return {
+        (
+            safe_str(registro['prefixo']),
+            normalizar_chave_ficha(registro['pesagem']),
+            normalizar_chave_ficha(registro['revisao']),
+        )
+        for registro in registros
+    }
+
+
+AJUSTE_PENDENTES_MIGRADAS = "pendentes_migradas_fora_aprovacao"
+
+
+@st.cache_resource
+def separar_pendentes_migradas():
+    """Roda uma vez só: as fichas que aguardavam aprovação em 21/10/2026 (as
+    migradas sem quem gerou/aprovou) saem da Aprovação e ficam só em
+    "Gerou e aprovou". Fichas geradas depois seguem o fluxo normal."""
+    with conectar_banco() as conn:
+        if conn.execute(
+            'SELECT 1 FROM ajustes_aplicados WHERE nome = ?',
+            (AJUSTE_PENDENTES_MIGRADAS,),
+        ).fetchone():
+            return
+    listar_fichas_pendentes.clear()
+    pendentes_aprovacao, _ = listar_fichas_pendentes()
+    agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with conectar_banco() as conn:
+        if pendentes_aprovacao:
+            conn.executemany(
+                '''INSERT INTO fichas_fora_aprovacao
+                   (prefixo, pesagem, revisao, separado_em)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING''',
+                [(*ficha["chave"], agora) for ficha in pendentes_aprovacao],
+            )
+        conn.execute(
+            '''INSERT INTO ajustes_aplicados (nome, aplicado_em) VALUES (?, ?)
+               ON CONFLICT DO NOTHING''',
+            (AJUSTE_PENDENTES_MIGRADAS, agora),
+        )
+    listar_fichas_pendentes.clear()
 
 
 def salvar_campos_com_erro(prefixo, pesagem, revisao, campos, usuario):
@@ -1768,6 +1845,7 @@ try:
 except DBAPIError as erro:
     avisar_banco_indisponivel(erro)
 normalizar_chaves_fluxo()
+separar_pendentes_migradas()
 dict_tipos_aeronave.update(carregar_aeronaves_cadastradas())
 df_historico = carregar_dados_banco()
 
@@ -5007,6 +5085,12 @@ def tela_gerou_aprovou():
     m1.metric("Fichas", len(df))
     m2.metric("Sem quem gerou", sem_gerou)
     m3.metric("Sem quem aprovou", sem_aprovou)
+    fora_aprovacao = carregar_fichas_fora_aprovacao()
+    if fora_aprovacao:
+        st.caption(
+            f"{len(fora_aprovacao)} fichas que aguardavam aprovação em 21/10/2026 "
+            "não aparecem na tela Aprovação: são resolvidas só aqui."
+        )
 
     f1, f2 = st.columns([1, 1.4])
     mostrar = f1.radio(
