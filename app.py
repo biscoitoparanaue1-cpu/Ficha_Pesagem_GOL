@@ -11,6 +11,7 @@ import secrets
 import openpyxl
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import time
 from openpyxl.drawing.image import Image as ExcelImage
 from PIL import Image as PillowImage, UnidentifiedImageError
@@ -3703,7 +3704,11 @@ def formulario_pesagem(
     linha_existente=None,
     campos_com_erro=None,
     modo="nova",
+    checar_celulas=False,
+    celulas_base=None,
 ):
+    """Desenha a ficha em etapas e devolve (registro, pesagem, revisão,
+    na_ultima_etapa, celulas_pendentes)."""
     if linha_existente is None: linha_existente = {}
     campos_com_erro = set(campos_com_erro or ())
 
@@ -3718,7 +3723,32 @@ def formulario_pesagem(
     # ficha da mesma revisão dividiam as linhas de Additions/Deductions.
     form_key = f"{modo}_{prefixo_selecionado}_{p_sugerida}_{r_sugerida}"
 
-    aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs(["Dados da Ficha", "Células de Carga", "Deductions", "Additions", "Level Correction", "Preview"])
+    # Etapas no lugar das abas: todas são desenhadas (os campos não perdem o
+    # valor), mas só a etapa atual aparece. "Próxima" leva à seguinte.
+    chave_passo = f"{form_key}_passo"
+    st.session_state.setdefault(chave_passo, PASSOS_FICHA[0])
+    st.segmented_control(
+        "Etapa",
+        PASSOS_FICHA,
+        key=chave_passo,
+        required=True,
+        format_func=lambda passo: f"{PASSOS_FICHA.index(passo) + 1}. {passo}",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+    passo_atual = st.session_state[chave_passo]
+    indice_passo = PASSOS_FICHA.index(passo_atual)
+    st.html(
+        "<style>"
+        + "".join(
+            f".st-key-passo_ficha_{i} {{display: none;}}"
+            for i in range(len(PASSOS_FICHA)) if i != indice_passo
+        )
+        + "</style>"
+    )
+    aba1, aba2, aba4, aba3, aba5, aba6 = [
+        st.container(key=f"passo_ficha_{i}") for i in range(len(PASSOS_FICHA))
+    ]
 
     with aba1:
         st.markdown("### Controle de Identificação")
@@ -4124,16 +4154,106 @@ def formulario_pesagem(
         novo_registro[f'Additions weigth {i}'] = row.get('Peso (Kg)')
         novo_registro[f'Additions arm {i}'] = row.get('Braço (in)')
 
-    return novo_registro, id_pesagem_input, rev_input
+    # Células vazias ou iguais às da pesagem anterior são confirmadas na
+    # própria etapa, no botão "Próxima"; a confirmação vale para esses valores.
+    aviso_celulas = (
+        aviso_celulas_ficha(novo_registro, celulas_base) if checar_celulas else None
+    )
+    chave_celulas_ok = f"{form_key}_celulas_ok"
+    valores_celulas = tuple(
+        safe_float(novo_registro.get(chave)) for chave in chaves_celulas_ficha()
+    )
+    celulas_pendentes = bool(aviso_celulas) and (
+        st.session_state.get(chave_celulas_ok) != valores_celulas
+    )
+
+    st.divider()
+    if passo_atual == "Células de Carga" and celulas_pendentes:
+        st.warning(
+            f"As Células de Carga estão {aviso_celulas}. Confira os valores "
+            "antes de seguir: a Próxima tela confirma que estão certas."
+        )
+    elif indice_passo == len(PASSOS_FICHA) - 1 and celulas_pendentes:
+        st.warning(
+            f"As Células de Carga estão {aviso_celulas}. Volte à etapa "
+            "Células de Carga e confirme antes de gerar a ficha."
+        )
+    # Na última etapa o "Voltar" fica na linha do botão de gerar (tela).
+    st.session_state["_voltar_ficha"] = (
+        chave_passo, PASSOS_FICHA[indice_passo - 1], f"{form_key}_voltar"
+    )
+    if indice_passo < len(PASSOS_FICHA) - 1:
+        col_voltar, _, col_proxima = st.columns([1, 1, 1])
+        if indice_passo > 0:
+            botao_voltar_ficha(col_voltar)
+        proximo = PASSOS_FICHA[indice_passo + 1]
+        confirmar = passo_atual == "Células de Carga" and celulas_pendentes
+        col_proxima.button(
+            "Próxima tela",
+            icon=":material/arrow_forward:",
+            icon_position="right",
+            type="primary",
+            key=f"{form_key}_proxima",
+            on_click=ir_para_passo,
+            args=(chave_passo, proximo),
+            kwargs=(
+                {"confirmar": (chave_celulas_ok, valores_celulas)} if confirmar else {}
+            ),
+            use_container_width=True,
+        )
+    rolar_para_o_topo(passo_atual)
+
+    return (
+        novo_registro, id_pesagem_input, rev_input,
+        indice_passo == len(PASSOS_FICHA) - 1, celulas_pendentes,
+    )
+
+
+PASSOS_FICHA = [
+    "Dados da Ficha", "Células de Carga", "Additions", "Deductions",
+    "Level Correction", "Preview",
+]
+
+
+def botao_voltar_ficha(container):
+    chave_passo, anterior, chave = st.session_state["_voltar_ficha"]
+    container.button(
+        f"Voltar: {anterior}",
+        icon=":material/arrow_back:",
+        key=chave,
+        on_click=ir_para_passo,
+        args=(chave_passo, anterior),
+        use_container_width=True,
+    )
+
+
+def ir_para_passo(chave_passo, passo, confirmar=None):
+    if confirmar:
+        st.session_state[confirmar[0]] = confirmar[1]
+    st.session_state[chave_passo] = passo
+
+
+def rolar_para_o_topo(passo):
+    """Ao trocar de etapa, volta a tela para o topo (senão a pessoa fica no
+    rodapé da etapa nova)."""
+    if st.session_state.get("_ultimo_passo_ficha") == passo:
+        return
+    st.session_state["_ultimo_passo_ficha"] = passo
+    components.html(
+        "<script>"
+        "const main = window.parent.document.querySelector("
+        "'[data-testid=\"stMain\"], section.main');"
+        "if (main) main.scrollTo({top: 0, behavior: 'smooth'});"
+        "window.parent.scrollTo({top: 0, behavior: 'smooth'});"
+        f"/* {passo} */</script>",
+        height=0,
+    )
 
 OPCAO_NUMERACAO_MANUAL = "Digitar Pesagem e Revisão manualmente"
 
 
-def aviso_celulas_ficha(registro, ficha_base=None):
-    """Diz se as Células de Carga estão vazias ou, numa nova pesagem, ainda
-    iguais às copiadas da pesagem anterior. Devolve None quando estão em ordem.
-    """
-    chaves_celulas = [
+def chaves_celulas_ficha():
+    return [
         get_real_col(nomes)
         for nomes in (
             ['Peso nariz LH'], ['Peso Nariz RH'],
@@ -4141,6 +4261,13 @@ def aviso_celulas_ficha(registro, ficha_base=None):
             ['Peso MLG RH 2', 'Peso MLG RH 2 '], ['Peso MLG LH2', 'Peso MLG LH 2'],
         )
     ]
+
+
+def aviso_celulas_ficha(registro, ficha_base=None):
+    """Diz se as Células de Carga estão vazias ou, numa nova pesagem, ainda
+    iguais às copiadas da pesagem anterior. Devolve None quando estão em ordem.
+    """
+    chaves_celulas = chaves_celulas_ficha()
     celulas = [safe_float(registro.get(chave)) for chave in chaves_celulas]
     if sum(celulas) <= 0:
         return "vazias"
@@ -4158,7 +4285,7 @@ def tela_nova_ficha():
 
     if not exigir_nivel(NIVEL_OPERACAO, NIVEL_ADMIN, NIVEL_ESPECIALISTA):
         return
-    cabecalho("Nova ficha", "Escolha a aeronave e preencha as abas em ordem. O Preview mostra o resultado antes de salvar.")
+    cabecalho("Nova ficha", "Escolha a aeronave e siga as etapas com o botão Próxima. Na última (Preview) você confere o resultado e gera a ficha.")
     aviso_somente_visualizacao()
     ficha_salva = st.session_state.get("nova_ficha_salva")
     if ficha_salva:
@@ -4364,7 +4491,9 @@ def tela_nova_ficha():
                     "essa ficha, use a tela Editar ficha."
                 )
             
-        novo_registro, p_final, r_final = formulario_pesagem(
+        (
+            novo_registro, p_final, r_final, na_ultima_etapa, celulas_pendentes,
+        ) = formulario_pesagem(
             prefixo,
             p_nova,
             r_nova,
@@ -4373,21 +4502,16 @@ def tela_nova_ficha():
             linha_existente=linha_base,
             campos_com_erro=campos_correcao,
             modo="anterior" if ficha_anterior else "nova",
+            checar_celulas=not correcao_selecionada,
+            celulas_base=linha_base if int(p_nova) != int(p_ant) else None,
         )
-        
-        st.divider()
-        aviso_celulas = aviso_celulas_ficha(
-            novo_registro,
-            linha_base if int(p_final) != int(p_ant) else None,
-        )
-        confirmou_incompleta = True
-        if aviso_celulas and not correcao_selecionada:
-            confirmou_incompleta = st.checkbox(
-                f"As Células de Carga estão {aviso_celulas}. Quero gerar "
-                "a ficha mesmo assim.",
-                key=f"salvar_incompleta_{prefixo}_{p_nova}_{r_nova}",
-            )
-        col_btn1, col_btn2 = st.columns(2)
+        # Gerar e exportar ficam na última etapa (Preview), depois de a pessoa
+        # passar por todas.
+        if not na_ultima_etapa:
+            return
+
+        col_voltar, col_btn1, col_btn2 = st.columns([1, 1.3, 1.7])
+        botao_voltar_ficha(col_voltar)
         with col_btn1:
             label_salvar = (
                 "Emitir ficha e enviar para aprovação"
@@ -4401,7 +4525,7 @@ def tela_nova_ficha():
                 type="primary",
                 use_container_width=True,
                 disabled=(
-                    bool(ficha_ja_existe) or not confirmou_incompleta
+                    bool(ficha_ja_existe) or celulas_pendentes
                     or not pode_emitir()
                 ),
             ):
@@ -4497,10 +4621,15 @@ def tela_edicao():
                     if anteriores else (0, 0)
                 )
                 
-                novo_registro, p_final, r_final = formulario_pesagem(prefixo, p_nova, r_nova, p_ant, r_ant, linha_existente=linha_atual, modo="edicao")
-                
-                st.divider()
-                col_btn1, col_btn2 = st.columns(2)
+                novo_registro, p_final, r_final, na_ultima_etapa, _ = formulario_pesagem(
+                    prefixo, p_nova, r_nova, p_ant, r_ant,
+                    linha_existente=linha_atual, modo="edicao",
+                )
+                if not na_ultima_etapa:
+                    return
+
+                col_voltar, col_btn1, col_btn2 = st.columns([1, 1.3, 1.7])
+                botao_voltar_ficha(col_voltar)
                 with col_btn1:
                     if st.button(
                         "Enviar alterações para aprovação", type="primary",
