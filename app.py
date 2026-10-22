@@ -5360,6 +5360,12 @@ MESES_PLANTAO = [
     "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho",
     "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
 ]
+# Uma cor discreta por pessoa (bolinha antes do nome); o laranja GOL fica
+# para marcar o dia de hoje.
+CORES_COLABORADORES_PLANTAO = [
+    "#4E79A7", "#E15759", "#59A14F", "#B07AA1", "#76B7B2",
+    "#EDC948", "#9C755F", "#FF9DA7", "#2F4B7C", "#BAB0AC",
+]
 COLUNAS_ESCALA_PLANTAO = [
     "data", "colaborador", "categoria", "escalado_original", "motivo",
     "alterado_por", "alterado_em",
@@ -5717,12 +5723,25 @@ def avisos_intervalo_plantao(escala, nomes, datas):
     return avisos
 
 
+def cor_colaborador_plantao(nome, nomes):
+    ordenados = sorted(nomes, key=str.lower)
+    indice = ordenados.index(nome) if nome in ordenados else len(ordenados)
+    return CORES_COLABORADORES_PLANTAO[indice % len(CORES_COLABORADORES_PLANTAO)]
+
+
+def bolinha_plantao(nome, nomes):
+    return (
+        f'<span class="bola" style="background:{cor_colaborador_plantao(nome, nomes)}"></span>'
+    )
+
+
 def calendario_plantao_html(escala, ano, mes, destaque=None):
     import calendar
     import html
 
     hoje = hoje_brasilia()
     por_data = {linha.data: linha for linha in escala.itertuples(index=False)}
+    nomes = set(escala["colaborador"])
     celulas = []
     for semana in calendar.Calendar(firstweekday=0).monthdatescalendar(ano, mes):
         for dia in semana:
@@ -5751,8 +5770,8 @@ def calendario_plantao_html(escala, ano, mes, destaque=None):
                 destacado = destaque and linha.colaborador == destaque
                 evento = (
                     f'<div class="evento{" apagado" if apagado else ""}{" destacado" if destacado else ""}" '
-                    f'title="{titulo}">'
-                    f'{"⇄ " if detalhe else ""}{html.escape(linha.colaborador)}</div>'
+                    f'title="{titulo}">{bolinha_plantao(linha.colaborador, nomes)}'
+                    f'{html.escape(linha.colaborador)}{" ⇄" if detalhe else ""}</div>'
                 )
                 if categoria == 3:
                     evento += '<div class="feriado">Feriado</div>'
@@ -5783,11 +5802,13 @@ def calendario_plantao_html(escala, ano, mes, destaque=None):
 .cal-plantao .dia.cat3 {{ background: #FAFAFB; }}
 .cal-plantao .feriado {{ color: #70757A; font-size: .64rem; font-weight: 600; margin-top: 2px;
   padding: 0 2px; text-transform: uppercase; letter-spacing: .04em; }}
-.cal-plantao .evento {{ color: #1F2430; background: #F1F3F4; border-left: 3px solid #5F6673;
-  border-radius: 2px; padding: 2px 6px; font-size: .78rem; font-weight: 500;
+.cal-plantao .evento {{ color: #3C4043; padding: 1px 2px; font-size: .8rem; font-weight: 500;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }}
-.cal-plantao .evento.destacado {{ background: #1F2430; border-left-color: #1F2430; color: #FFFFFF; }}
-.cal-plantao .evento.apagado {{ color: #C4C7CC; background: transparent; border-left-color: #E3E5E8; }}
+.cal-plantao .bola {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: .4rem; vertical-align: 1px; }}
+.cal-plantao .evento.destacado {{ color: #1F2430; font-weight: 700; }}
+.cal-plantao .evento.apagado {{ color: #C4C7CC; }}
+.cal-plantao .evento.apagado .bola {{ opacity: .25; }}
 .cal-plantao .ajuste {{ color: #70757A; font-size: .66rem; margin-top: 2px; padding: 0 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 @media (max-width: 700px) {{
@@ -5805,6 +5826,7 @@ def agenda_plantao_html(escala, ano, mes, destaque=None):
     import html
 
     hoje = hoje_brasilia()
+    nomes = set(escala["colaborador"])
     por_data = {linha.data: linha for linha in escala.itertuples(index=False)}
     linhas = []
     for bloco in blocos_plantao(escala):
@@ -5835,7 +5857,7 @@ def agenda_plantao_html(escala, ano, mes, destaque=None):
             f'<div class="{" ".join(classes)}">'
             f'<div class="data"><span class="dnum">{dias}</span>'
             f'<span class="dsem">{MESES_PLANTAO[inicio.month - 1][:3]} · {semana}</span></div>'
-            f'<div class="quem">'
+            f'<div class="quem">{bolinha_plantao(bloco["colaborador"], nomes)}'
             f'<b>{html.escape(bloco["colaborador"])}</b>'
             f'<span class="cat">{" + ".join(categorias)}</span>'
             + (f'<span class="aj">⇄ {html.escape(", ".join(ajustes))}</span>' if ajustes else "")
@@ -5860,6 +5882,7 @@ def agenda_plantao_html(escala, ano, mes, destaque=None):
 .agenda-plantao .quem {{ display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
   color: #3C4043; font-size: .9rem; }}
 .agenda-plantao .bola {{ width: 10px; height: 10px; border-radius: 50%; }}
+.agenda-plantao .bola {{ width: 9px; height: 9px; border-radius: 50%; }}
 .agenda-plantao .cat, .agenda-plantao .aj {{ color: #70757A; font-size: .78rem; }}
 .agenda-plantao .tag {{ color: #FF6A13; font-size: .66rem; font-weight: 700;
   text-transform: uppercase; letter-spacing: .05em; }}
@@ -5874,6 +5897,7 @@ def faixa_hoje_plantao_html(escala):
 
     hoje = hoje_brasilia()
     amanha = hoje + datetime.timedelta(days=1)
+    nomes = set(escala["colaborador"])
     por_data = dict(zip(escala["data"], escala["colaborador"]))
     feriado = escala[(escala["data"] > hoje) & (escala["categoria"] == 3)].head(1)
     itens = [("Hoje", hoje, por_data.get(hoje)), ("Amanhã", amanha, por_data.get(amanha))]
@@ -5883,7 +5907,7 @@ def faixa_hoje_plantao_html(escala):
     for rotulo, data, nome in itens:
         partes.append(
             f'<div class="item"><span class="rot">{rotulo} · {formatar_dia_plantao(data)}</span>'
-            f'<span class="nome">'
+            f'<span class="nome">{bolinha_plantao(nome, nomes) if nome else ""}'
             f'{html.escape(nome or "—")}</span></div>'
         )
     return f"""
@@ -6006,6 +6030,16 @@ def aba_calendario_plantao(escala):
         ) or "Mês"
 
     nomes = sorted(set(escala["colaborador"]), key=str.lower)
+    # Bolinha com a cor de cada pessoa nos botões de filtro.
+    st.markdown(
+        "<style>" + "".join(
+            f".st-key-plantao_destaque button:nth-of-type({i}) p::before {{ content: ''; "
+            f"display: inline-block; width: 8px; height: 8px; border-radius: 50%; "
+            f"margin-right: .4rem; background: {cor_colaborador_plantao(nome, nomes)}; }}"
+            for i, nome in enumerate(nomes, start=1)
+        ) + "</style>",
+        unsafe_allow_html=True,
+    )
     destaque = st.pills(
         "Ver só", nomes, selection_mode="single", key="plantao_destaque",
         label_visibility="collapsed",
