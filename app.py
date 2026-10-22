@@ -5360,9 +5360,11 @@ MESES_PLANTAO = [
     "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho",
     "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
 ]
+# Uma cor discreta por pessoa (bolinha antes do nome); o laranja GOL fica
+# para marcar o dia de hoje.
 CORES_COLABORADORES_PLANTAO = [
-    "#FF6A13", "#2F6FB3", "#2E9E6A", "#9B59B6", "#D4A017",
-    "#E0457B", "#1BA5B8", "#7A8B2E", "#B5651D", "#5C6BC0",
+    "#4E79A7", "#E15759", "#59A14F", "#B07AA1", "#76B7B2",
+    "#EDC948", "#9C755F", "#FF9DA7", "#2F4B7C", "#BAB0AC",
 ]
 COLUNAS_ESCALA_PLANTAO = [
     "data", "colaborador", "categoria", "escalado_original", "motivo",
@@ -5727,6 +5729,12 @@ def cor_colaborador_plantao(nome, nomes):
     return CORES_COLABORADORES_PLANTAO[indice % len(CORES_COLABORADORES_PLANTAO)]
 
 
+def bolinha_plantao(nome, nomes):
+    return (
+        f'<span class="bola" style="background:{cor_colaborador_plantao(nome, nomes)}"></span>'
+    )
+
+
 def calendario_plantao_html(escala, ano, mes, destaque=None):
     import calendar
     import html
@@ -5741,63 +5749,178 @@ def calendario_plantao_html(escala, ano, mes, destaque=None):
             classes = ["dia"]
             if dia.month != mes:
                 classes.append("fora")
-            if dia == hoje:
-                classes.append("hoje")
-            conteudo = f'<div class="num">{dia.day}{" · hoje" if dia == hoje else ""}</div>'
+            numero = f'<span class="num{" hoje" if dia == hoje else ""}">{dia.day}</span>'
+            rotulo = ""
+            evento = ""
             if linha is not None:
                 categoria = int(linha.categoria)
-                classes.append(f"cat{categoria}")
-                if destaque:
-                    classes.append("destaque" if linha.colaborador == destaque else "apagado")
-                cor = cor_colaborador_plantao(linha.colaborador, nomes)
-                conteudo += (
-                    f'<div class="nome"><span class="bola" style="background:{cor}"></span>'
-                    f'{html.escape(linha.colaborador)}</div>'
+                if categoria == 3:
+                    classes.append("cat3")
+                apagado = destaque and linha.colaborador != destaque
+                detalhe = []
+                if linha.escalado_original:
+                    detalhe.append(f"era {linha.escalado_original}")
+                if linha.motivo:
+                    detalhe.append(linha.motivo)
+                titulo = html.escape(
+                    f"{linha.colaborador} · {CATEGORIAS_PLANTAO[categoria]}"
+                    + (f" · {' · '.join(detalhe)}" if detalhe else ""),
+                    quote=True,
                 )
-                if categoria != 1:
-                    conteudo += f'<div class="etiqueta">{CATEGORIAS_PLANTAO[categoria]}</div>'
-                if linha.escalado_original or linha.motivo:
-                    detalhe = []
-                    if linha.escalado_original:
-                        detalhe.append(f"era {html.escape(linha.escalado_original)}")
-                    if linha.motivo:
-                        detalhe.append(html.escape(linha.motivo))
-                    conteudo += f'<div class="troca">⇄ {" · ".join(detalhe)}</div>'
-            celulas.append(f'<div class="{" ".join(classes)}">{conteudo}</div>')
+                destacado = destaque and linha.colaborador == destaque
+                evento = (
+                    f'<div class="evento{" apagado" if apagado else ""}{" destacado" if destacado else ""}" '
+                    f'title="{titulo}">{bolinha_plantao(linha.colaborador, nomes)}'
+                    f'{html.escape(linha.colaborador)}{" ⇄" if detalhe else ""}</div>'
+                )
+                if categoria == 3:
+                    evento += '<div class="feriado">Feriado</div>'
+                if detalhe and not apagado:
+                    evento += f'<div class="ajuste">{html.escape(detalhe[0])}</div>'
+            celulas.append(
+                f'<div class="{" ".join(classes)}"><div class="topo">{numero}{rotulo}</div>{evento}</div>'
+            )
 
-    cabecalho_dias = "".join(
-        f'<div class="semana">{dia}</div>' for dia in DIAS_SEMANA_CURTO
-    )
+    cabecalho_dias = "".join(f'<div class="semana">{dia}</div>' for dia in DIAS_SEMANA_CURTO)
     return f"""
 <style>
-.cal-plantao {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }}
-.cal-plantao .semana {{ color: #6B7280; font-size: .75rem; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .05em; padding: 0 .3rem; }}
-.cal-plantao .dia {{ background: #FFFFFF; border: 1px solid #E6E8EC; border-radius: 10px;
-  min-height: 86px; padding: .4rem .5rem; font-size: .85rem; overflow: hidden; }}
-.cal-plantao .dia.cat2 {{ background: #F1F6FC; border-color: #D6E4F3; }}
-.cal-plantao .dia.cat3 {{ background: #FFF4EC; border-color: #FFD3B5; }}
-.cal-plantao .dia.fora {{ opacity: .45; }}
-.cal-plantao .dia.hoje {{ outline: 2px solid #FF6A13; outline-offset: -1px; }}
-.cal-plantao .dia.apagado {{ opacity: .3; }}
-.cal-plantao .dia.destaque {{ outline: 2px solid #1F2430; outline-offset: -1px; }}
-.cal-plantao .num {{ color: #6B7280; font-size: .75rem; font-weight: 600; }}
-.cal-plantao .hoje .num {{ color: #FF6A13; }}
-.cal-plantao .nome {{ font-weight: 600; color: #1F2430; margin-top: .2rem;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.cal-plantao {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  background: #FFFFFF; border: 1px solid #DADCE0; border-radius: 8px; overflow: hidden; }}
+.cal-plantao .semana {{ color: #70757A; font-size: .7rem; font-weight: 500; text-align: center;
+  text-transform: uppercase; letter-spacing: .04em; padding: .5rem 0 .2rem;
+  border-left: 1px solid #DADCE0; }}
+.cal-plantao .semana:nth-child(7n+1), .cal-plantao .dia:nth-child(7n+1) {{ border-left: none; }}
+.cal-plantao .dia {{ border-left: 1px solid #DADCE0; border-top: 1px solid #DADCE0;
+  min-height: 92px; padding: .25rem .3rem .4rem; font-size: .8rem; overflow: hidden; }}
+.cal-plantao .dia.fora .num {{ color: #B0B4BA; }}
+.cal-plantao .dia.fora .evento {{ opacity: .45; }}
+.cal-plantao .topo {{ display: flex; flex-direction: column; align-items: center; gap: 1px;
+  margin-bottom: .2rem; }}
+.cal-plantao .num {{ color: #3C4043; font-size: .78rem; font-weight: 500; width: 24px;
+  height: 24px; line-height: 24px; text-align: center; border-radius: 50%; }}
+.cal-plantao .num.hoje {{ background: #FF6A13; color: #FFFFFF; font-weight: 700; }}
+.cal-plantao .dia.cat3 {{ background: #FAFAFB; }}
+.cal-plantao .feriado {{ color: #70757A; font-size: .64rem; font-weight: 600; margin-top: 2px;
+  padding: 0 2px; text-transform: uppercase; letter-spacing: .04em; }}
+.cal-plantao .evento {{ color: #3C4043; padding: 1px 2px; font-size: .8rem; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }}
 .cal-plantao .bola {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  margin-right: .35rem; vertical-align: 1px; }}
-.cal-plantao .etiqueta {{ font-size: .68rem; color: #6B7280; margin-top: .1rem; }}
-.cal-plantao .cat3 .etiqueta {{ color: #C2410C; font-weight: 600; }}
-.cal-plantao .troca {{ font-size: .7rem; color: #8A5A00; margin-top: .15rem;
+  margin-right: .4rem; vertical-align: 1px; }}
+.cal-plantao .evento.destacado {{ color: #1F2430; font-weight: 700; }}
+.cal-plantao .evento.apagado {{ color: #C4C7CC; }}
+.cal-plantao .evento.apagado .bola {{ opacity: .25; }}
+.cal-plantao .ajuste {{ color: #70757A; font-size: .66rem; margin-top: 2px; padding: 0 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 @media (max-width: 700px) {{
-  .cal-plantao {{ gap: 3px; }}
-  .cal-plantao .dia {{ min-height: 64px; padding: .25rem; font-size: .72rem; }}
-  .cal-plantao .bola, .cal-plantao .troca {{ display: none; }}
+  .cal-plantao .dia {{ min-height: 64px; padding: .15rem; }}
+  .cal-plantao .evento {{ font-size: .62rem; padding: 1px 3px; }}
+  .cal-plantao .ajuste, .cal-plantao .feriado {{ display: none; }}
 }}
 </style>
 <div class="cal-plantao">{cabecalho_dias}{"".join(celulas)}</div>
+"""
+
+
+def agenda_plantao_html(escala, ano, mes, destaque=None):
+    """Lista dos plantões do mês, como a visão Agenda do Google Agenda."""
+    import html
+
+    hoje = hoje_brasilia()
+    nomes = set(escala["colaborador"])
+    por_data = {linha.data: linha for linha in escala.itertuples(index=False)}
+    linhas = []
+    for bloco in blocos_plantao(escala):
+        if not any((d.year, d.month) == (ano, mes) for d in bloco["datas"]):
+            continue
+        if destaque and bloco["colaborador"] != destaque:
+            continue
+        inicio, fim = bloco["inicio"], bloco["fim"]
+        dias = f"{inicio.day}" if inicio == fim else f"{inicio.day}–{fim.day}"
+        semana = DIAS_SEMANA_CURTO[inicio.weekday()]
+        if inicio != fim:
+            semana += f" a {DIAS_SEMANA_CURTO[fim.weekday()]}"
+        if inicio.month != fim.month:
+            dias = f"{inicio:%d/%m}–{fim:%d/%m}"
+        categorias = sorted({CATEGORIAS_PLANTAO[c] for c in bloco["categorias"]})
+        ajustes = sorted({
+            f"era {por_data[d].escalado_original}" if por_data[d].escalado_original
+            else por_data[d].motivo
+            for d in bloco["datas"]
+            if por_data[d].escalado_original or por_data[d].motivo
+        })
+        classes = ["linha"]
+        if fim < hoje:
+            classes.append("passado")
+        if inicio <= hoje <= fim:
+            classes.append("agora")
+        linhas.append(
+            f'<div class="{" ".join(classes)}">'
+            f'<div class="data"><span class="dnum">{dias}</span>'
+            f'<span class="dsem">{MESES_PLANTAO[inicio.month - 1][:3]} · {semana}</span></div>'
+            f'<div class="quem">{bolinha_plantao(bloco["colaborador"], nomes)}'
+            f'<b>{html.escape(bloco["colaborador"])}</b>'
+            f'<span class="cat">{" + ".join(categorias)}</span>'
+            + (f'<span class="aj">⇄ {html.escape(", ".join(ajustes))}</span>' if ajustes else "")
+            + ('<span class="tag">agora</span>' if inicio <= hoje <= fim else "")
+            + "</div></div>"
+        )
+    if not linhas:
+        return '<p style="color:#70757A">Nenhum plantão neste mês.</p>'
+    return f"""
+<style>
+.agenda-plantao {{ background: #FFFFFF; border: 1px solid #DADCE0; border-radius: 8px; }}
+.agenda-plantao .linha {{ display: flex; align-items: center; gap: 1rem; padding: .55rem 1rem;
+  border-top: 1px solid #F1F3F4; }}
+.agenda-plantao .linha:first-child {{ border-top: none; }}
+.agenda-plantao .passado {{ opacity: .5; }}
+.agenda-plantao .agora {{ background: #F7F8FA; box-shadow: inset 3px 0 0 #FF6A13; }}
+.agenda-plantao .data {{ width: 210px; flex-shrink: 0; display: flex; align-items: baseline;
+  gap: .6rem; white-space: nowrap; }}
+.agenda-plantao .dnum {{ font-size: 1.2rem; font-weight: 500; color: #3C4043; min-width: 58px; }}
+.agenda-plantao .agora .dnum {{ color: #FF6A13; }}
+.agenda-plantao .dsem {{ color: #70757A; font-size: .75rem; text-transform: uppercase; }}
+.agenda-plantao .quem {{ display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+  color: #3C4043; font-size: .9rem; }}
+.agenda-plantao .bola {{ width: 10px; height: 10px; border-radius: 50%; }}
+.agenda-plantao .bola {{ width: 9px; height: 9px; border-radius: 50%; }}
+.agenda-plantao .cat, .agenda-plantao .aj {{ color: #70757A; font-size: .78rem; }}
+.agenda-plantao .tag {{ color: #FF6A13; font-size: .66rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em; }}
+@media (max-width: 700px) {{ .agenda-plantao .data {{ width: 110px; }} }}
+</style>
+<div class="agenda-plantao">{"".join(linhas)}</div>
+"""
+
+
+def faixa_hoje_plantao_html(escala):
+    import html
+
+    hoje = hoje_brasilia()
+    amanha = hoje + datetime.timedelta(days=1)
+    nomes = set(escala["colaborador"])
+    por_data = dict(zip(escala["data"], escala["colaborador"]))
+    feriado = escala[(escala["data"] > hoje) & (escala["categoria"] == 3)].head(1)
+    itens = [("Hoje", hoje, por_data.get(hoje)), ("Amanhã", amanha, por_data.get(amanha))]
+    if not feriado.empty:
+        itens.append(("Próximo feriado", feriado["data"].iloc[0], feriado["colaborador"].iloc[0]))
+    partes = []
+    for rotulo, data, nome in itens:
+        partes.append(
+            f'<div class="item"><span class="rot">{rotulo} · {formatar_dia_plantao(data)}</span>'
+            f'<span class="nome">{bolinha_plantao(nome, nomes) if nome else ""}'
+            f'{html.escape(nome or "—")}</span></div>'
+        )
+    return f"""
+<style>
+.faixa-plantao {{ display: flex; flex-wrap: wrap; gap: 2.2rem; padding: .2rem 0 1rem; }}
+.faixa-plantao .item {{ display: flex; flex-direction: column; gap: .15rem; }}
+.faixa-plantao .rot {{ color: #70757A; font-size: .75rem; text-transform: uppercase;
+  letter-spacing: .04em; }}
+.faixa-plantao .nome {{ color: #1F2430; font-size: 1.15rem; font-weight: 600;
+  display: flex; align-items: center; gap: .5rem; }}
+.faixa-plantao .bola {{ width: 10px; height: 10px; border-radius: 50%; }}
+</style>
+<div class="faixa-plantao">{"".join(partes)}</div>
 """
 
 
@@ -5865,56 +5988,70 @@ def plantao_mudar_mes(meses, passo):
     st.session_state['plantao_mes'] = meses[max(0, min(indice, len(meses) - 1))]
 
 
+def plantao_ir_para_hoje(meses):
+    hoje = hoje_brasilia()
+    if (hoje.year, hoje.month) in meses:
+        st.session_state['plantao_mes'] = (hoje.year, hoje.month)
+
+
 def aba_calendario_plantao(escala):
     hoje = hoje_brasilia()
     meses = sorted({(d.year, d.month) for d in escala["data"]})
     atual = (hoje.year, hoje.month)
     if st.session_state.get('plantao_mes') not in meses:
         st.session_state['plantao_mes'] = atual if atual in meses else meses[0]
-
-    c_ant, c_mes, c_prox, c_pessoa = st.columns([0.6, 2.4, 0.6, 2.4], vertical_alignment="bottom")
-    c_ant.button(
-        "‹", key="plantao_mes_anterior", use_container_width=True,
-        on_click=plantao_mudar_mes, args=(meses, -1),
-        disabled=st.session_state['plantao_mes'] == meses[0],
-    )
-    c_mes.selectbox(
-        "Mês", meses, key="plantao_mes",
-        format_func=lambda m: f"{MESES_PLANTAO[m[1] - 1]} de {m[0]}",
-    )
-    c_prox.button(
-        "›", key="plantao_mes_seguinte", use_container_width=True,
-        on_click=plantao_mudar_mes, args=(meses, 1),
-        disabled=st.session_state['plantao_mes'] == meses[-1],
-    )
-    destaque = c_pessoa.selectbox(
-        "Destacar colaborador", ["Todos"] + sorted(set(escala["colaborador"]), key=str.lower),
-        key="plantao_destaque",
-    )
     ano, mes = st.session_state['plantao_mes']
+
+    with st.container(key="plantao_barra"):
+        c_hoje, c_ant, c_prox, c_titulo, c_visao = st.columns(
+            [0.9, 0.45, 0.45, 4, 1.8], vertical_alignment="center"
+        )
+        c_hoje.button(
+            "Hoje", key="plantao_hoje", use_container_width=True,
+            on_click=plantao_ir_para_hoje, args=(meses,),
+        )
+        c_ant.button(
+            "‹", key="plantao_mes_anterior", use_container_width=True,
+            on_click=plantao_mudar_mes, args=(meses, -1),
+            disabled=st.session_state['plantao_mes'] == meses[0],
+        )
+        c_prox.button(
+            "›", key="plantao_mes_seguinte", use_container_width=True,
+            on_click=plantao_mudar_mes, args=(meses, 1),
+            disabled=st.session_state['plantao_mes'] == meses[-1],
+        )
+        c_titulo.markdown(
+            f'<div class="titulo-mes">{MESES_PLANTAO[mes - 1]} de {ano}</div>',
+            unsafe_allow_html=True,
+        )
+        visao = c_visao.segmented_control(
+            "Visão", ["Mês", "Agenda"], default="Mês", key="plantao_visao",
+            label_visibility="collapsed",
+        ) or "Mês"
+
+    nomes = sorted(set(escala["colaborador"]), key=str.lower)
+    # Bolinha com a cor de cada pessoa nos botões de filtro.
     st.markdown(
-        calendario_plantao_html(escala, ano, mes, None if destaque == "Todos" else destaque),
+        "<style>" + "".join(
+            f".st-key-plantao_destaque button:nth-of-type({i}) p::before {{ content: ''; "
+            f"display: inline-block; width: 8px; height: 8px; border-radius: 50%; "
+            f"margin-right: .4rem; background: {cor_colaborador_plantao(nome, nomes)}; }}"
+            for i, nome in enumerate(nomes, start=1)
+        ) + "</style>",
         unsafe_allow_html=True,
     )
-    st.caption(
-        "Fundo azul: fim de semana · fundo laranja: feriado ou ponte · "
-        "⇄ dia que mudou em relação à escala original."
+    destaque = st.pills(
+        "Ver só", nomes, selection_mode="single", key="plantao_destaque",
+        label_visibility="collapsed",
     )
+    if visao == "Agenda":
+        st.markdown(agenda_plantao_html(escala, ano, mes, destaque), unsafe_allow_html=True)
+    else:
+        st.markdown(calendario_plantao_html(escala, ano, mes, destaque), unsafe_allow_html=True)
+        st.caption("⇄ dia trocado em relação à escala original. Passe o mouse no nome para ver o motivo.")
 
-    do_mes = escala[[(d.year, d.month) == (ano, mes) for d in escala["data"]]]
-    with st.expander("Ver o mês em lista"):
-        st.dataframe(
-            pd.DataFrame({
-                "Data": [formatar_dia_plantao(d, com_ano=True) for d in do_mes["data"]],
-                "Colaborador": do_mes["colaborador"],
-                "Categoria": [CATEGORIAS_PLANTAO[int(c)] for c in do_mes["categoria"]],
-                "Antes do ajuste": do_mes["escalado_original"].fillna(""),
-                "Motivo": do_mes["motivo"].fillna(""),
-            }),
-            hide_index=True, use_container_width=True,
-        )
     st.download_button(
-        "Baixar escala completa (Excel)",
+        "Baixar escala em Excel",
         data=escala_para_excel(escala),
         file_name=f"Escala_plantao_{hoje:%Y%m%d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -6211,7 +6348,14 @@ def aba_configurar_plantao(escala, colaboradores):
 
 @protegido
 def tela_plantao():
-    cabecalho("Escala de plantão", "Plantões da Engenharia: quem está de plantão, trocas e totais.")
+    cabecalho("Escala de plantão")
+    st.markdown(
+        """<style>
+        .st-key-plantao_barra .titulo-mes { font-size: 1.35rem; font-weight: 500; color: #3C4043; }
+        .st-key-plantao_barra button { border-radius: 18px; min-height: 2.2rem; }
+        </style>""",
+        unsafe_allow_html=True,
+    )
     escala = carregar_escala_plantao()
     colaboradores = carregar_colaboradores_plantao()
     editar = pode_editar_plantao()
@@ -6222,20 +6366,7 @@ def tela_plantao():
             secao_importar_plantao(escala)
         return
 
-    hoje = hoje_brasilia()
-    por_data = dict(zip(escala["data"], escala["colaborador"]))
-    amanha = hoje + datetime.timedelta(days=1)
-    feriado = escala[(escala["data"] > hoje) & (escala["categoria"] == 3)].head(1)
-    c1, c2, c3 = st.columns(3)
-    c1.metric(f"De plantão hoje · {formatar_dia_plantao(hoje)}", por_data.get(hoje, "—"))
-    c2.metric(f"Amanhã · {formatar_dia_plantao(amanha)}", por_data.get(amanha, "—"))
-    if feriado.empty:
-        c3.metric("Próximo feriado / ponte", "—")
-    else:
-        c3.metric(
-            f"Próximo feriado · {formatar_dia_plantao(feriado['data'].iloc[0])}",
-            feriado["colaborador"].iloc[0],
-        )
+    st.markdown(faixa_hoje_plantao_html(escala), unsafe_allow_html=True)
 
     nomes_abas = ["Calendário", "Trocar plantão", "Totais", "Histórico", "Configurar"]
     if not editar:
