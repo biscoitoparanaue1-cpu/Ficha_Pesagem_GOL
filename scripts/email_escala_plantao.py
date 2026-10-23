@@ -21,7 +21,13 @@ import psycopg
 
 FUSO_BRASILIA = datetime.timezone(datetime.timedelta(hours=-3))
 DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
-CATEGORIAS = {1: "Semana", 2: "Fim de semana", 3: "Feriado / ponte"}
+DIAS_CURTOS = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+CATEGORIAS = {1: "Semana", 2: "Fim de semana", 3: "Feriado"}
+# Mesmas cores do app (CORES_COLABORADORES_PLANTAO), na mesma ordem alfabética.
+CORES = [
+    "#4E79A7", "#E15759", "#59A14F", "#B07AA1", "#76B7B2",
+    "#EDC948", "#9C755F", "#FF9DA7", "#2F4B7C", "#BAB0AC",
+]
 
 
 def semana_atual():
@@ -33,47 +39,96 @@ def semana_atual():
 def carregar_semana(inicio, fim):
     url = os.environ["SUPABASE_DB_URL"].replace("postgresql+psycopg://", "postgresql://")
     with psycopg.connect(url, prepare_threshold=None, connect_timeout=30) as conn:
-        return conn.execute(
+        linhas = conn.execute(
             """SELECT data, colaborador, categoria, escalado_original, motivo
                FROM plantao_escala WHERE data BETWEEN %s AND %s ORDER BY data""",
             (inicio, fim),
         ).fetchall()
+        nomes = [n for (n,) in conn.execute("SELECT DISTINCT colaborador FROM plantao_escala")]
+    return linhas, sorted(nomes, key=str.lower)
 
 
-def montar_html(inicio, fim, linhas):
+def cor(nome, nomes):
+    indice = nomes.index(nome) if nome in nomes else len(nomes)
+    return CORES[indice % len(CORES)]
+
+
+def agrupar(linhas):
+    """Dias seguidos da mesma pessoa viram um plantão só."""
+    blocos = []
+    for data, colaborador, categoria, original, motivo in linhas:
+        ultimo = blocos[-1] if blocos else None
+        if ultimo and ultimo["nome"] == colaborador and (data - ultimo["fim"]).days == 1:
+            ultimo["fim"] = data
+        else:
+            ultimo = {"nome": colaborador, "inicio": data, "fim": data,
+                      "categorias": set(), "trocas": set()}
+            blocos.append(ultimo)
+        ultimo["categorias"].add(categoria)
+        if original:
+            ultimo["trocas"].add(f"no lugar de {original}")
+        elif motivo:
+            ultimo["trocas"].add(motivo)
+    return blocos
+
+
+def montar_html(inicio, fim, linhas, nomes):
+    fonte = "font-family:Segoe UI,Arial,Helvetica,sans-serif;"
     if not linhas:
-        corpo = "<p>A escala desta semana ainda não está cadastrada no site.</p>"
+        conteudo = (
+            f"<tr><td style='padding:24px 28px;{fonte}color:#6B7280;font-size:14px'>"
+            "A escala desta semana ainda não está cadastrada no site.</td></tr>"
+        )
     else:
-        celula = "padding:8px 12px;border-bottom:1px solid #E6E8EC;"
-        tabela = []
-        for data, colaborador, categoria, original, motivo in linhas:
-            observacao = []
-            if original:
-                observacao.append(f"no lugar de {original}")
-            if motivo:
-                observacao.append(motivo)
-            tabela.append(
-                f"<tr><td style='{celula}'>{DIAS[data.weekday()]}, {data:%d/%m}</td>"
-                f"<td style='{celula}font-weight:600'>{html.escape(colaborador)}</td>"
-                f"<td style='{celula}color:#6B7280'>{CATEGORIAS.get(categoria, '')}</td>"
-                f"<td style='{celula}color:#6B7280'>{html.escape(' · '.join(observacao))}</td></tr>"
+        itens = []
+        for bloco in agrupar(linhas):
+            c = cor(bloco["nome"], nomes)
+            i, f = bloco["inicio"], bloco["fim"]
+            if i == f:
+                quando = f"{DIAS[i.weekday()]}, {i:%d/%m}"
+            else:
+                quando = f"{DIAS_CURTOS[i.weekday()].capitalize()} {i:%d/%m} a {DIAS_CURTOS[f.weekday()]} {f:%d/%m}"
+            etiquetas = "".join(
+                "<span style='display:inline-block;margin-left:6px;padding:2px 8px;border-radius:10px;"
+                "font-size:11px;font-weight:600;"
+                + ("background:#FFF1E8;color:#C2410C;" if cat == 3 else "background:#F1F3F6;color:#6B7280;")
+                + f"'>{CATEGORIAS.get(cat, '')}</span>"
+                for cat in sorted(bloco["categorias"]) if cat != 1
             )
-        cabecalho = "".join(
-            f"<th style='text-align:left;padding:8px 12px;color:#6B7280;font-weight:600;"
-            f"border-bottom:2px solid #FF6A13'>{t}</th>"
-            for t in ("Dia", "Plantão", "Categoria", "Observação")
-        )
-        corpo = (
-            "<table style='border-collapse:collapse;font-size:14px'>"
-            f"<tr>{cabecalho}</tr>{''.join(tabela)}</table>"
-        )
-    return (
-        "<div style='font-family:Segoe UI,Arial,sans-serif;color:#1F2430'>"
-        f"<p>Bom dia! Segue a escala de plantão da Engenharia de "
-        f"{inicio:%d/%m} a {fim:%d/%m/%Y}:</p>{corpo}"
-        "<p style='color:#6B7280;font-size:12px;margin-top:16px'>Trocas e detalhes na tela "
-        "Escala de plantão do app Pesagem e Balanceamento. E-mail automático.</p></div>"
-    )
+            troca = (
+                f"<div style='font-size:12px;color:#8A5A00;margin-top:3px'>⇄ "
+                f"{html.escape(', '.join(sorted(bloco['trocas'])))}</div>"
+                if bloco["trocas"] else ""
+            )
+            itens.append(
+                "<tr><td style='padding:6px 28px'>"
+                "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                f"style='background:{c}24;border-left:4px solid {c};border-radius:8px'>"
+                f"<tr><td style='padding:12px 16px;{fonte}'>"
+                f"<div style='font-size:12px;color:#6B7280;text-transform:uppercase;letter-spacing:.04em'>{quando}</div>"
+                f"<div style='font-size:16px;font-weight:600;color:#1F2430;margin-top:2px'>"
+                f"{html.escape(bloco['nome'])}{etiquetas}</div>{troca}"
+                "</td></tr></table></td></tr>"
+            )
+        conteudo = "".join(itens)
+    return f"""<!doctype html><html><body style="margin:0;padding:0;background:#F4F5F7">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F4F5F7;padding:24px 0">
+<tr><td align="center">
+<table role="presentation" width="560" cellpadding="0" cellspacing="0"
+ style="max-width:560px;width:100%;background:#FFFFFF;border-radius:12px;overflow:hidden;border:1px solid #E6E8EC">
+<tr><td style="height:4px;background:#FF6A13;font-size:0;line-height:0">&nbsp;</td></tr>
+<tr><td style="padding:24px 28px 8px;{fonte}">
+<div style="font-size:12px;color:#FF6A13;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Engenharia GOL</div>
+<div style="font-size:22px;font-weight:700;color:#1F2430;margin-top:4px">Plantão da semana</div>
+<div style="font-size:14px;color:#6B7280;margin-top:2px">{inicio:%d/%m} a {fim:%d/%m/%Y}</div>
+</td></tr>
+<tr><td style="height:10px;font-size:0;line-height:0">&nbsp;</td></tr>
+{conteudo}
+<tr><td style="padding:18px 28px 24px;{fonte}font-size:12px;color:#9AA1AD;border-top:1px solid #F1F3F6">
+Trocas e detalhes na tela <b style="color:#6B7280">Escala de plantão</b> do app Pesagem e Balanceamento.
+<br>E-mail automático enviado toda segunda-feira.
+</td></tr>
+</table></td></tr></table></body></html>"""
 
 
 def enviar(assunto, conteudo_html):
@@ -96,8 +151,8 @@ def enviar(assunto, conteudo_html):
 
 def main():
     inicio, fim = semana_atual()
-    linhas = carregar_semana(inicio, fim)
-    conteudo = montar_html(inicio, fim, linhas)
+    linhas, nomes = carregar_semana(inicio, fim)
+    conteudo = montar_html(inicio, fim, linhas, nomes)
     assunto = f"Escala de plantão da Engenharia: {inicio:%d/%m} a {fim:%d/%m}"
     if "--previa" in sys.argv:
         with open("escala_semana.html", "w", encoding="utf-8") as arquivo:
