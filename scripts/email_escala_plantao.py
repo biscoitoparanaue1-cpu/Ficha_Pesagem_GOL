@@ -10,7 +10,8 @@ Variáveis de ambiente:
                    campos SMTP_* não são usados.
   SMTP_USER        e-mail que envia (login no servidor SMTP)
   SMTP_PASSWORD    senha desse e-mail
-  SMTP_HOST        padrão smtp.office365.com (Outlook / Microsoft 365)
+  SMTP_HOST        padrão smtp.office365.com (Outlook / Microsoft 365); para
+                   Gmail use smtp.gmail.com com uma senha de app
   SMTP_PORT        padrão 587 (STARTTLS)
 Com --previa, só grava o HTML em escala_semana.html, sem enviar.
 """
@@ -168,6 +169,13 @@ def enviar(assunto, conteudo_html):
     mensagem["To"] = ", ".join(destinatarios_email)
     mensagem.set_content("Escala de plantão da semana (abra em um leitor com HTML).")
     mensagem.add_alternative(conteudo_html, subtype="html")
+    # Cópia do HTML em anexo: o fluxo do Power Automate que reencaminha pela conta
+    # da GOL usa o anexo como corpo, então o aviso de "e-mail externo" que o
+    # Outlook coloca no corpo da mensagem recebida não vai junto.
+    mensagem.add_attachment(
+        conteudo_html.encode("utf-8"), maintype="text", subtype="html",
+        filename="escala.html",
+    )
     host = os.environ.get("SMTP_HOST") or "smtp.office365.com"
     porta = int(os.environ.get("SMTP_PORT") or 587)
     with smtplib.SMTP(host, porta, timeout=60) as smtp:
