@@ -4,9 +4,9 @@ name: E-mail da escala de plantão
 # Secrets: SUPABASE_DB_URL, EMAIL_PARA e POWER_AUTOMATE_URL (o envio sai pelo
 # fluxo do Power Automate, porque a GOL bloqueia SMTP). Sem POWER_AUTOMATE_URL,
 # usa SMTP_USER/SMTP_PASSWORD (variáveis opcionais SMTP_HOST e SMTP_PORT).
+# Sem agendamento: o envio semanal agora é feito pelo Power Automate lendo o
+# feed de publicar-escala-rss.yml. Este fica só para disparo manual.
 on:
-  schedule:
-    - cron: "0 10 * * 1"
   workflow_dispatch:
 
 jobs:

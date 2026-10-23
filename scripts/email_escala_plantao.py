@@ -14,8 +14,13 @@ Variáveis de ambiente:
                    Gmail use smtp.gmail.com com uma senha de app
   SMTP_PORT        padrão 587 (STARTTLS)
 Com --previa, só grava o HTML em escala_semana.html, sem enviar.
+Com --rss PASTA, grava PASTA/escala.xml (feed RSS com a escala da semana como
+único item), sem enviar. O workflow publica esse feed no GitHub Pages num
+endereço secreto e um fluxo padrão do Power Automate (conector RSS, sem
+Premium) lê o feed toda segunda e manda o e-mail pela conta da GOL.
 """
 import datetime
+import email.utils
 import html
 import json
 import os
@@ -185,6 +190,28 @@ def enviar(assunto, conteudo_html):
     print(f"E-mail enviado para {len(destinatarios_email)} destinatário(s).")
 
 
+def gravar_rss(pasta, assunto, conteudo_html, inicio):
+    publicado = datetime.datetime.combine(inicio, datetime.time(6), FUSO_BRASILIA)
+    # O HTML vai num CDATA; "]]>" fecharia o bloco antes da hora.
+    descricao = conteudo_html.replace("]]>", "]]]]><![CDATA[>")
+    feed = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+<title>Escala de plantão da Engenharia</title>
+<link>https://github.com/</link>
+<description>Escala de plantão da semana</description>
+<item>
+<title>{html.escape(assunto)}</title>
+<guid isPermaLink="false">plantao-{inicio:%Y-%m-%d}</guid>
+<pubDate>{email.utils.format_datetime(publicado)}</pubDate>
+<description><![CDATA[{descricao}]]></description>
+</item>
+</channel></rss>
+"""
+    os.makedirs(pasta, exist_ok=True)
+    with open(os.path.join(pasta, "escala.xml"), "w", encoding="utf-8") as arquivo:
+        arquivo.write(feed)
+
+
 def main():
     inicio, fim = semana_atual()
     linhas, nomes = carregar_semana(inicio, fim)
@@ -194,6 +221,11 @@ def main():
         with open("escala_semana.html", "w", encoding="utf-8") as arquivo:
             arquivo.write(conteudo)
         print(f"{assunto}: {len(linhas)} dia(s). Prévia em escala_semana.html")
+        return
+    if "--rss" in sys.argv:
+        pasta = sys.argv[sys.argv.index("--rss") + 1]
+        gravar_rss(pasta, assunto, conteudo, inicio)
+        print(f"{assunto}: {len(linhas)} dia(s). Feed gravado.")
         return
     enviar(assunto, conteudo)
 
