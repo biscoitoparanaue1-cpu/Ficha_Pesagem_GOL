@@ -26,6 +26,7 @@ import json
 import os
 import smtplib
 import sys
+import uuid
 from email.message import EmailMessage
 
 import psycopg
@@ -51,12 +52,19 @@ def carregar_semana(inicio, fim):
     url = os.environ["SUPABASE_DB_URL"].replace("postgresql+psycopg://", "postgresql://")
     with psycopg.connect(url, prepare_threshold=None, connect_timeout=30) as conn:
         linhas = conn.execute(
-            """SELECT data, colaborador, categoria, escalado_original, motivo
+            """SELECT data, colaborador, categoria
                FROM plantao_escala WHERE data BETWEEN %s AND %s ORDER BY data""",
             (inicio, fim),
         ).fetchall()
         nomes = [n for (n,) in conn.execute("SELECT DISTINCT colaborador FROM plantao_escala")]
-    return linhas, sorted(nomes, key=str.lower)
+        tem_email = conn.execute(
+            """SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'plantao_colaboradores' AND column_name = 'email'"""
+        ).fetchone()
+        emails = dict(conn.execute(
+            "SELECT nome, email FROM plantao_colaboradores WHERE email IS NOT NULL"
+        ).fetchall()) if tem_email else {}
+    return linhas, sorted(nomes, key=str.lower), emails
 
 
 def cor(nome, nomes):
@@ -64,16 +72,18 @@ def cor(nome, nomes):
     return CORES[indice % len(CORES)]
 
 
-def dias_da_semana(linhas):
-    """Um quadrado por dia, com quem está de plantão e a troca, se houver."""
-    dias = []
-    for data, colaborador, categoria, original, motivo in linhas:
-        troca = f"no lugar de {original}" if original else (motivo or "")
-        dias.append({"data": data, "nome": colaborador, "categoria": categoria, "troca": troca})
-    return dias
+def mencao(nome, email):
+    """@Nome como menção do Outlook (link mailto com id OWAAM); sem e-mail, só o texto."""
+    if not email:
+        return f"@{html.escape(nome)}"
+    return (
+        f"<a href='mailto:{html.escape(email)}' id='OWAAM{uuid.uuid4().hex.upper()}Z' "
+        f"style='color:#0B57D0;text-decoration:none'>@{html.escape(nome)}</a>"
+    )
 
 
-def montar_html(inicio, fim, linhas, nomes):
+def montar_html(inicio, fim, linhas, nomes, emails=None):
+    emails = emails or {}
     fonte = "font-family:Segoe UI,Arial,Helvetica,sans-serif;"
     if not linhas:
         conteudo = (
@@ -82,20 +92,15 @@ def montar_html(inicio, fim, linhas, nomes):
         )
     else:
         itens = []
-        for dia in dias_da_semana(linhas):
-            c = cor(dia["nome"], nomes)
-            quando = f"{DIAS[dia['data'].weekday()]}, {dia['data']:%d/%m}"
-            cat = dia["categoria"]
+        for data, nome, cat in linhas:
+            c = cor(nome, nomes)
+            quando = f"{DIAS[data.weekday()]}, {data:%d/%m}"
             etiquetas = (
                 "<span style='display:inline-block;margin-left:6px;padding:2px 8px;border-radius:10px;"
                 "font-size:11px;font-weight:600;"
                 + ("background:#FFF1E8;color:#C2410C;" if cat == 3 else "background:#F1F3F6;color:#6B7280;")
                 + f"'>{CATEGORIAS.get(cat, '')}</span>"
                 if cat in (2, 3) else ""
-            )
-            troca = (
-                f"<div style='font-size:12px;color:#8A5A00;margin-top:3px'>⇄ {html.escape(dia['troca'])}</div>"
-                if dia["troca"] else ""
             )
             itens.append(
                 "<tr><td style='padding:6px 28px'>"
@@ -104,13 +109,17 @@ def montar_html(inicio, fim, linhas, nomes):
                 f"<tr><td style='padding:12px 16px;{fonte}'>"
                 f"<div style='font-size:12px;color:#6B7280;text-transform:uppercase;letter-spacing:.04em'>{quando}</div>"
                 f"<div style='font-size:16px;font-weight:600;color:#1F2430;margin-top:2px'>"
-                f"{html.escape(dia['nome'])}{etiquetas}</div>{troca}"
+                f"{mencao(nome, emails.get(nome))}{etiquetas}</div>"
                 "</td></tr></table></td></tr>"
             )
         conteudo = "".join(itens)
     return f"""<!doctype html><html><body style="margin:0;padding:0;background:#F4F5F7">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F4F5F7;padding:24px 0">
 <tr><td align="center">
+<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">
+<tr><td style="padding:0 4px 16px;{fonte}font-size:15px;line-height:1.5;color:#1F2430">
+Prezados, bom dia!<br><br>Segue o fluxo de plantão dessa semana:
+</td></tr></table>
 <table role="presentation" width="560" cellpadding="0" cellspacing="0"
  style="max-width:560px;width:100%;background:#FFFFFF;border-radius:12px;overflow:hidden;border:1px solid #E6E8EC">
 <tr><td style="height:4px;background:#FF6A13;font-size:0;line-height:0">&nbsp;</td></tr>
@@ -197,8 +206,8 @@ def gravar_rss(pasta, assunto, conteudo_html, inicio):
 
 def main():
     inicio, fim = semana_atual()
-    linhas, nomes = carregar_semana(inicio, fim)
-    conteudo = montar_html(inicio, fim, linhas, nomes)
+    linhas, nomes, emails = carregar_semana(inicio, fim)
+    conteudo = montar_html(inicio, fim, linhas, nomes, emails)
     assunto = f"Escala de plantão da Engenharia: {inicio:%d/%m} a {fim:%d/%m}"
     if "--previa" in sys.argv:
         with open("escala_semana.html", "w", encoding="utf-8") as arquivo:
