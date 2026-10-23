@@ -5393,6 +5393,16 @@ def garantir_pode_editar_plantao():
         raise PermissionError("Seu perfil não pode alterar a escala de plantão.")
 
 
+# Feriados, colaboradores, e-mails e importação da escala: só a conta da Engenharia.
+def pode_configurar_plantao():
+    return pode_preencher_gerou_aprovou()
+
+
+def garantir_pode_configurar_plantao():
+    if not pode_configurar_plantao():
+        raise PermissionError("Só o usuário engenharia configura a escala de plantão.")
+
+
 def hoje_brasilia():
     return datetime.datetime.now(FUSO_BRASILIA).date()
 
@@ -5500,7 +5510,7 @@ def aplicar_trocas_plantao(mudancas, motivo, usuario):
 
 
 def alterar_categoria_plantao(data, categoria, usuario):
-    garantir_pode_editar_plantao()
+    garantir_pode_configurar_plantao()
     with conectar_banco() as conn:
         atual = conn.execute(
             "SELECT categoria FROM plantao_escala WHERE data = ?", (data,)
@@ -5519,7 +5529,7 @@ def alterar_categoria_plantao(data, categoria, usuario):
 
 
 def salvar_colaborador_plantao(nome, ativo, usuario):
-    garantir_pode_editar_plantao()
+    garantir_pode_configurar_plantao()
     with conectar_banco() as conn:
         conn.execute(
             '''INSERT INTO plantao_colaboradores (nome, ativo, cadastrado_em)
@@ -5535,7 +5545,7 @@ def salvar_colaborador_plantao(nome, ativo, usuario):
 
 
 def salvar_emails_plantao(emails):
-    garantir_pode_editar_plantao()
+    garantir_pode_configurar_plantao()
     with conectar_banco() as conn:
         conn.executemany(
             "UPDATE plantao_colaboradores SET email = ? WHERE nome = ?",
@@ -5573,7 +5583,7 @@ def associar_emails_plantao(lista, nomes):
 
 
 def importar_escala_plantao(escala, usuario):
-    garantir_pode_editar_plantao()
+    garantir_pode_configurar_plantao()
     agora = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with conectar_banco() as conn:
         conn.executemany(
@@ -6451,17 +6461,20 @@ def tela_plantao():
     colaboradores = carregar_colaboradores_plantao()
     editar = pode_editar_plantao()
 
+    configurar = pode_configurar_plantao()
+
     if escala.empty:
         st.info("A escala ainda não foi carregada no site.")
-        if editar:
+        if configurar:
             secao_importar_plantao(escala)
         return
 
     st.markdown(faixa_hoje_plantao_html(escala), unsafe_allow_html=True)
 
-    nomes_abas = ["Calendário", "Trocar plantão", "Totais", "Histórico", "Configurar"]
-    if not editar:
-        nomes_abas = ["Calendário", "Totais", "Histórico"]
+    nomes_abas = (
+        ["Calendário"] + (["Trocar plantão"] if editar else [])
+        + ["Totais", "Histórico"] + (["Configurar"] if configurar else [])
+    )
     abas = dict(zip(nomes_abas, st.tabs(nomes_abas)))
     with abas["Calendário"]:
         aba_calendario_plantao(escala)
@@ -6472,7 +6485,7 @@ def tela_plantao():
         aba_totais_plantao(escala, colaboradores)
     with abas["Histórico"]:
         aba_historico_plantao()
-    if editar:
+    if configurar:
         with abas["Configurar"]:
             aba_configurar_plantao(escala, colaboradores)
 
