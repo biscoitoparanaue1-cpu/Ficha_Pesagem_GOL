@@ -5735,6 +5735,12 @@ def bolinha_plantao(nome, nomes):
     )
 
 
+def estilo_bloco_plantao(nome, nomes):
+    # Bloco no estilo do Teams: fundo claro na cor da pessoa e faixa forte à esquerda.
+    cor = cor_colaborador_plantao(nome, nomes)
+    return f"background:{cor}2E;border-left:3px solid {cor}"
+
+
 def calendario_plantao_html(escala, ano, mes, destaque=None):
     import calendar
     import html
@@ -5770,7 +5776,7 @@ def calendario_plantao_html(escala, ano, mes, destaque=None):
                 destacado = destaque and linha.colaborador == destaque
                 evento = (
                     f'<div class="evento{" apagado" if apagado else ""}{" destacado" if destacado else ""}" '
-                    f'title="{titulo}">{bolinha_plantao(linha.colaborador, nomes)}'
+                    f'style="{estilo_bloco_plantao(linha.colaborador, nomes)}" title="{titulo}">'
                     f'{html.escape(linha.colaborador)}{" ⇄" if detalhe else ""}</div>'
                 )
                 if categoria == 3:
@@ -5802,18 +5808,16 @@ def calendario_plantao_html(escala, ano, mes, destaque=None):
 .cal-plantao .dia.cat3 {{ background: #FAFAFB; }}
 .cal-plantao .feriado {{ color: #70757A; font-size: .64rem; font-weight: 600; margin-top: 2px;
   padding: 0 2px; text-transform: uppercase; letter-spacing: .04em; }}
-.cal-plantao .evento {{ color: #3C4043; padding: 1px 2px; font-size: .8rem; font-weight: 500;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }}
-.cal-plantao .bola {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  margin-right: .4rem; vertical-align: 1px; }}
-.cal-plantao .evento.destacado {{ color: #1F2430; font-weight: 700; }}
-.cal-plantao .evento.apagado {{ color: #C4C7CC; }}
-.cal-plantao .evento.apagado .bola {{ opacity: .25; }}
+.cal-plantao .evento {{ color: #1F2430; padding: 4px 8px; font-size: .8rem; font-weight: 600;
+  border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: default; }}
+.cal-plantao .evento.apagado {{ background: #F5F6F7 !important; border-left-color: #E3E5E8 !important;
+  color: #C4C7CC; }}
 .cal-plantao .ajuste {{ color: #70757A; font-size: .66rem; margin-top: 2px; padding: 0 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 @media (max-width: 700px) {{
   .cal-plantao .dia {{ min-height: 64px; padding: .15rem; }}
-  .cal-plantao .evento {{ font-size: .62rem; padding: 1px 3px; }}
+  .cal-plantao .evento {{ font-size: .62rem; padding: 2px 4px; }}
   .cal-plantao .ajuste, .cal-plantao .feriado {{ display: none; }}
 }}
 </style>
@@ -5857,8 +5861,9 @@ def agenda_plantao_html(escala, ano, mes, destaque=None):
             f'<div class="{" ".join(classes)}">'
             f'<div class="data"><span class="dnum">{dias}</span>'
             f'<span class="dsem">{MESES_PLANTAO[inicio.month - 1][:3]} · {semana}</span></div>'
-            f'<div class="quem">{bolinha_plantao(bloco["colaborador"], nomes)}'
-            f'<b>{html.escape(bloco["colaborador"])}</b>'
+            f'<div class="quem"><span class="bloco" '
+            f'style="{estilo_bloco_plantao(bloco["colaborador"], nomes)}">'
+            f'{html.escape(bloco["colaborador"])}</span>'
             f'<span class="cat">{" + ".join(categorias)}</span>'
             + (f'<span class="aj">⇄ {html.escape(", ".join(ajustes))}</span>' if ajustes else "")
             + ('<span class="tag">agora</span>' if inicio <= hoje <= fim else "")
@@ -5882,7 +5887,8 @@ def agenda_plantao_html(escala, ano, mes, destaque=None):
 .agenda-plantao .quem {{ display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
   color: #3C4043; font-size: .9rem; }}
 .agenda-plantao .bola {{ width: 10px; height: 10px; border-radius: 50%; }}
-.agenda-plantao .bola {{ width: 9px; height: 9px; border-radius: 50%; }}
+.agenda-plantao .bloco {{ color: #1F2430; font-weight: 600; border-radius: 6px;
+  padding: 3px 12px; min-width: 110px; }}
 .agenda-plantao .cat, .agenda-plantao .aj {{ color: #70757A; font-size: .78rem; }}
 .agenda-plantao .tag {{ color: #FF6A13; font-size: .66rem; font-weight: 700;
   text-transform: uppercase; letter-spacing: .05em; }}
