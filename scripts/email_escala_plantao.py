@@ -208,7 +208,7 @@ def main():
     inicio, fim = semana_atual()
     linhas, nomes, emails = carregar_semana(inicio, fim)
     conteudo = montar_html(inicio, fim, linhas, nomes, emails)
-    assunto = f"Escala de plantão da Engenharia: {inicio:%d/%m} a {fim:%d/%m}"
+    assunto = f"Escala de plantão Estruturas: {inicio:%d/%m} a {fim:%d/%m}"
     if "--previa" in sys.argv:
         with open("escala_semana.html", "w", encoding="utf-8") as arquivo:
             arquivo.write(conteudo)
