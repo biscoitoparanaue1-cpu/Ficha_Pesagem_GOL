@@ -1103,6 +1103,8 @@ def inicializar_controle_acesso():
                 cadastrado_em TEXT NOT NULL
             )
         ''')
+        # E-mail usado para marcar a pessoa no e-mail semanal da escala.
+        conn.execute("ALTER TABLE plantao_colaboradores ADD COLUMN IF NOT EXISTS email TEXT")
         # Um dia por linha; escalado_original guarda quem estava antes de um ajuste.
         conn.execute('''
             CREATE TABLE IF NOT EXISTS plantao_escala (
@@ -5426,6 +5428,13 @@ def carregar_colaboradores_plantao():
 
 
 @st.cache_data
+def carregar_emails_plantao():
+    with conectar_banco() as conn:
+        linhas = conn.execute("SELECT nome, email FROM plantao_colaboradores").fetchall()
+    return {linha['nome']: linha['email'] or "" for linha in linhas}
+
+
+@st.cache_data
 def carregar_historico_plantao():
     with conectar_banco() as conn:
         linhas = conn.execute(
@@ -5444,6 +5453,7 @@ def carregar_historico_plantao():
 def invalidar_cache_plantao():
     carregar_escala_plantao.clear()
     carregar_colaboradores_plantao.clear()
+    carregar_emails_plantao.clear()
     carregar_historico_plantao.clear()
 
 
@@ -5522,6 +5532,44 @@ def salvar_colaborador_plantao(nome, ativo, usuario):
             "Ativo na escala" if ativo else "Fora da escala", usuario,
         )
     invalidar_cache_plantao()
+
+
+def salvar_emails_plantao(emails):
+    garantir_pode_editar_plantao()
+    with conectar_banco() as conn:
+        conn.executemany(
+            "UPDATE plantao_colaboradores SET email = ? WHERE nome = ?",
+            [(email.strip() or None, nome) for nome, email in emails.items()],
+        )
+    invalidar_cache_plantao()
+
+
+def associar_emails_plantao(lista, nomes):
+    """Lê uma lista copiada do Outlook ("Nome Completo" <email>; ...) e devolve
+    {nome da escala: email}. Cada nome da escala é procurado entre as palavras do
+    nome completo; quem bate com mais de um contato fica com o que sobrar depois
+    que os outros nomes forem resolvidos (ex.: "Fernando" e "Meirelles")."""
+    contatos = [
+        (normalizar_texto_planilha(nome).split(), email)
+        for nome, email in re.findall(r'"?([^";<>]+?)"?\s*<([^<>\s]+@[^<>\s]+)>', lista)
+    ]
+    candidatos = {
+        nome: {email for palavras, email in contatos
+               if set(normalizar_texto_planilha(nome).split()) <= set(palavras)}
+        for nome in nomes
+    }
+    resultado = {}
+    mudou = True
+    while mudou:
+        mudou = False
+        usados = set(resultado.values())
+        for nome, emails in candidatos.items():
+            restantes = emails - usados
+            if nome not in resultado and len(restantes) == 1:
+                resultado[nome] = restantes.pop()
+                mudou = True
+                usados = set(resultado.values())
+    return resultado
 
 
 def importar_escala_plantao(escala, usuario):
@@ -6348,6 +6396,43 @@ def aba_configurar_plantao(escala, colaboradores):
             salvar_colaborador_plantao(nome.strip(), True, st.session_state['usuario_id'])
             st.session_state['plantao_config_ok'] = f"{nome.strip()} incluído na escala."
             st.rerun()
+    st.divider()
+
+    st.markdown("**E-mails**")
+    st.caption("Quem tem e-mail é marcado no e-mail semanal da escala quando estiver de plantão.")
+    emails = carregar_emails_plantao()
+    with st.form("plantao_colar_emails", clear_on_submit=True, border=False):
+        lista = st.text_area(
+            "Colar lista do Outlook",
+            placeholder='"Nome Completo" <nome@voegol.com.br>; "Outro Nome" <outro@voegol.com.br>',
+            help="Copie os destinatários de um e-mail no Outlook e cole aqui. "
+                 "Cada nome da escala é associado ao contato com esse nome.",
+        )
+        if st.form_submit_button("Preencher e-mails") and lista.strip():
+            achados = associar_emails_plantao(lista, list(colaboradores))
+            if achados:
+                salvar_emails_plantao({**emails, **achados})
+                faltando = [n for n in colaboradores if n not in achados and not emails.get(n)]
+                st.session_state['plantao_config_ok'] = (
+                    f"{len(achados)} e-mail(s) preenchido(s)."
+                    + (f" Sem e-mail: {', '.join(faltando)}." if faltando else "")
+                )
+                st.rerun()
+            st.error("Nenhum nome da escala foi encontrado na lista.")
+    with st.form("plantao_emails", border=False):
+        novos = {
+            nome: st.text_input(nome, value=emails.get(nome, ""), placeholder="nome@voegol.com.br",
+                                key=f"plantao_email_{nome}")
+            for nome in colaboradores
+        }
+        if st.form_submit_button("Salvar e-mails"):
+            invalidos = [n for n, e in novos.items() if e.strip() and "@" not in e]
+            if invalidos:
+                st.error(f"E-mail inválido para {', '.join(invalidos)}.")
+            else:
+                salvar_emails_plantao(novos)
+                st.session_state['plantao_config_ok'] = "E-mails salvos."
+                st.rerun()
     st.divider()
     secao_importar_plantao(escala)
 
