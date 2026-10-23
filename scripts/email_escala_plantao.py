@@ -118,7 +118,7 @@ def montar_html(inicio, fim, linhas, nomes, emails=None):
 <tr><td align="center">
 <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">
 <tr><td style="padding:0 4px 16px;{fonte}font-size:15px;line-height:1.5;color:#1F2430">
-Prezados, bom dia!<br><br>Segue o fluxo de plantão dessa semana:
+Prezados,<br><br>Segue a escala de plantão da semana.
 </td></tr></table>
 <table role="presentation" width="560" cellpadding="0" cellspacing="0"
  style="max-width:560px;width:100%;background:#FFFFFF;border-radius:12px;overflow:hidden;border:1px solid #E6E8EC">
