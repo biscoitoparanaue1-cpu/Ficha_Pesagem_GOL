@@ -3028,22 +3028,21 @@ def renderizar_ficha_visualizacao(
             colunas = st.columns(4) + st.columns(4)
             for coluna, (campo, rotulo) in zip(colunas, CAMPOS_BOEING_LB):
                 mostrar_campo(campo, f"{rotulo} (lb)", row.get(campo, ""), coluna)
-            mostrar_campo(
-                "Canela MLG LH", "Balance arm do trem principal (in)",
-                f"{braco_mlg(row.get('Canela MLG LH'), boeing=True):.2f}",
-                colunas[5],
-            )
-            colunas[6].text_input(
-                'DIM "A" calculado (in)',
-                value=f"{safe_float(row.get('Canela MLG LH')):.2f}",
-                disabled=True,
-                key=f"visual_boeing_dim_{prefixo}_{pesagem}_{revisao}_{modo_aprovacao}",
-            )
+            for coluna, lado in zip(colunas[5:7], ("LH", "RH")):
+                canela = row.get(f"Canela MLG {lado}")
+                mostrar_campo(
+                    f"Canela MLG {lado}",
+                    f"Balance arm Main {lado} (in)",
+                    f"{braco_mlg(canela, boeing=True):.2f}",
+                    coluna,
+                )
             total_lb = sum(safe_float(row.get(campo)) for campo, _ in CAMPOS_BOEING_LB)
             st.caption(
                 f"Total {formatar_numero(total_lb)} lb = "
                 f"{formatar_numero(total_lb * LB_PARA_KGF)} kgf. "
-                "Os pesos foram convertidos para kgf na ficha."
+                "Os pesos foram convertidos para kgf na ficha. "
+                f'DIM "A" gravado: LH {safe_float(row.get("Canela MLG LH")):.2f} in, '
+                f'RH {safe_float(row.get("Canela MLG RH")):.2f} in.'
             )
         else:
             campos_pesagem_1 = [
@@ -3788,7 +3787,8 @@ def excluir_linha(chave_linhas, prefixo_widget, id_linha):
 
 def celulas_boeing(form_key, linha_existente, info_aero, rotulo_form):
     """Etapa Células de Carga com a Weighing Form da Boeing: pesos em lb e
-    DIM "A" do trem principal. Devolve (valores em lb, pesos em kgf, DIM A)."""
+    braço de cada lado do trem principal. Devolve (valores em lb, pesos em
+    kgf, DIM "A" LH, DIM "A" RH)."""
     st.info(
         "Digite os valores da WEIGHING FORM da Boeing como estão nela: peso "
         "líquido (NET WGT) em lb. O sistema converte para kgf "
@@ -3812,47 +3812,63 @@ def celulas_boeing(form_key, linha_existente, info_aero, rotulo_form):
         campo: campo_lb(coluna, campo, rotulo)
         for coluna, (campo, rotulo) in zip(colunas, CAMPOS_BOEING_LB[:4])
     }
-    st.markdown("**Nariz e braço do trem principal**")
-    c_nariz, c_braco, c_dim = st.columns(3)
+    # A pessoa digita a BALANCE ARM de cada lado; o banco guarda o DIM "A"
+    # (conta inversa de B.A. = 705.28 + 0.1304 × DIM "A") na canela do lado.
+    st.markdown("**Braço do trem principal**")
+    colunas_braco = st.columns(4)
+    bracos = {}
+    dims = {}
+    for indice, lado in enumerate(("LH", "RH")):
+        campo_canela = get_real_col([f'Canela MLG {lado}'])
+        c_braco, c_dim = colunas_braco[2 * indice], colunas_braco[2 * indice + 1]
+        braco_digitado = c_braco.number_input(
+            rotulo_form(campo_canela, f"Balance arm Main {lado} (in)", c_braco),
+            value=(
+                braco_mlg(linha_existente.get(campo_canela), boeing=True)
+                if ja_boeing else None
+            ),
+            min_value=0.0,
+            step=0.1,
+            format="%.2f",
+            placeholder="ex.: 707.9",
+            key=f"{form_key}_boeing_braco_mlg_{lado}",
+            help=f"BALANCE ARM IN. das linhas Main {lado} da Weighing Form da Boeing.",
+        )
+        bracos[lado] = safe_float(braco_digitado)
+        dims[lado] = (
+            (bracos[lado] - BASE_BRACO_MLG_BOEING) / FATOR_CANELA_MLG
+            if bracos[lado] else 0.0
+        )
+        c_dim.text_input(
+            f'DIM "A" {lado} calculado (in)',
+            value=f"{dims[lado]:.2f}" if bracos[lado] else "",
+            disabled=True,
+            help="DIM \"A\" = (B.A. − 705.28) / 0.1304. É o valor gravado no banco.",
+        )
+    if not (bracos["LH"] and bracos["RH"]):
+        st.warning("Digite a balance arm do trem principal LH e RH (ex.: 707.9).")
+
+    st.markdown("**Nariz**")
+    c_nariz, c_braco_nariz, _ = st.columns(3)
     campo_nariz, rotulo_nariz = CAMPOS_BOEING_LB[4]
     valores_lb[campo_nariz] = campo_lb(c_nariz, campo_nariz, rotulo_nariz)
-    # A pessoa digita a BALANCE ARM da Boeing; o banco guarda o DIM "A"
-    # (conta inversa de B.A. = 705.28 + 0.1304 × DIM "A") no campo da canela.
-    braco_salvo = (
-        braco_mlg(linha_existente.get(get_real_col(['Canela MLG LH'])), boeing=True)
-        if ja_boeing else None
-    )
-    braco_digitado = c_braco.number_input(
-        rotulo_form("Canela MLG LH", "Balance arm do trem principal (in)", c_braco),
-        value=braco_salvo,
-        min_value=0.0,
-        step=0.1,
-        format="%.2f",
-        placeholder="ex.: 707.9",
-        key=f"{form_key}_boeing_braco_mlg",
-        help="BALANCE ARM IN. das linhas Main da Weighing Form da Boeing.",
-    )
-    braco_principal = safe_float(braco_digitado)
-    dim_a = (
-        (braco_principal - BASE_BRACO_MLG_BOEING) / FATOR_CANELA_MLG
-        if braco_principal else 0.0
-    )
-    c_dim.text_input(
-        'DIM "A" calculado (in)',
-        value=f"{dim_a:.2f}" if braco_principal else "",
-        disabled=True,
-        help="DIM \"A\" = (B.A. − 705.28) / 0.1304. É o valor gravado no banco.",
-    )
-    if not braco_principal:
-        st.warning("Digite a balance arm do trem principal (ex.: 707.9).")
-
     braco_nariz = info_aero.get('armnose', 93.0000)
+    c_braco_nariz.text_input(
+        "Balance arm Nose (in)",
+        value=f"{braco_nariz:.2f}",
+        disabled=True,
+        help="Vem do cadastro da aeronave (Aeronaves).",
+    )
+
     linhas = []
     kgf = []
     for campo, rotulo in CAMPOS_BOEING_LB:
         peso_lb = valores_lb[campo]
         peso_kgf = peso_lb * LB_PARA_KGF
-        braco = braco_nariz if campo == campo_nariz else braco_principal
+        if campo == campo_nariz:
+            braco = braco_nariz
+        else:
+            braco = bracos["LH" if "LH" in rotulo else "RH"]
         kgf.append(peso_kgf)
         linhas.append({
             "Ponto": rotulo, "Peso (lb)": peso_lb, "Peso (kgf)": peso_kgf,
@@ -3879,11 +3895,9 @@ def celulas_boeing(form_key, linha_existente, info_aero, rotulo_form):
         },
     )
     st.caption(
-        f"Confira com a linha Reference da Boeing: weight = {formatar_numero(total_kgf)} kgf. "
-        f"O braço do nariz ({braco_nariz:.1f} in) vem do cadastro da aeronave; "
-        "se a Boeing mostrar outro valor, corrija em Aeronaves."
+        f"Confira com a linha Reference da Boeing: weight = {formatar_numero(total_kgf)} kgf."
     )
-    return valores_lb, kgf, dim_a
+    return valores_lb, kgf, dims["LH"], dims["RH"]
 
 
 def formulario_pesagem(
@@ -4049,7 +4063,7 @@ def formulario_pesagem(
 
         valores_boeing_lb = {}
         if origem_boeing:
-            valores_boeing_lb, kgf_boeing, dim_a = celulas_boeing(
+            valores_boeing_lb, kgf_boeing, dim_a_lh, dim_a_rh = celulas_boeing(
                 form_key, linha_existente, info_aero, rotulo_form
             )
             # Os pesos em kgf vão para os campos de sempre (Pesagem 01 e 02
@@ -4061,7 +4075,7 @@ def formulario_pesagem(
             p1_rhm = p2_rhm = rh_ob
             p1_rhm2 = p2_rhm2 = rh_ib
             p1_nlh = p2_nlh = p1_nrh = p2_nrh = nariz / 2
-            canela_lh = canela_rh = dim_a
+            canela_lh, canela_rh = dim_a_lh, dim_a_rh
             tail_val = 0.0
         else:
             def campos_formulario(chaves, rotulos):
