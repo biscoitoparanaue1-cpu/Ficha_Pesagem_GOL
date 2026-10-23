@@ -98,7 +98,11 @@ def montar_html(inicio, fim, linhas, nomes):
             if i == f:
                 quando = f"{DIAS[i.weekday()]}, {i:%d/%m}"
             else:
-                quando = f"{DIAS_CURTOS[i.weekday()].capitalize()} {i:%d/%m} a {DIAS_CURTOS[f.weekday()]} {f:%d/%m}"
+                # Todos os dias por extenso: "Terça, quarta e quinta · 20/10 a 22/10".
+                dias = [DIAS[(i + datetime.timedelta(days=n)).weekday()].lower()
+                        for n in range((f - i).days + 1)]
+                nomes_dias = ", ".join(dias[:-1]) + " e " + dias[-1]
+                quando = f"{nomes_dias.capitalize()} · {i:%d/%m} a {f:%d/%m}"
             etiquetas = "".join(
                 "<span style='display:inline-block;margin-left:6px;padding:2px 8px;border-radius:10px;"
                 "font-size:11px;font-weight:600;"
@@ -135,10 +139,7 @@ def montar_html(inicio, fim, linhas, nomes):
 </td></tr>
 <tr><td style="height:10px;font-size:0;line-height:0">&nbsp;</td></tr>
 {conteudo}
-<tr><td style="padding:18px 28px 24px;{fonte}font-size:12px;color:#9AA1AD;border-top:1px solid #F1F3F6">
-Trocas e detalhes na tela <b style="color:#6B7280">Escala de plantão</b> do app Pesagem e Balanceamento.
-<br>E-mail automático enviado toda segunda-feira.
-</td></tr>
+<tr><td style="height:18px;font-size:0;line-height:0">&nbsp;</td></tr>
 </table></td></tr></table></body></html>"""
 
 
