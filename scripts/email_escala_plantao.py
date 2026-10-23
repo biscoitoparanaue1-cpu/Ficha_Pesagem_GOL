@@ -3,15 +3,20 @@ Usado pelo workflow email-escala-plantao.yml toda segunda de manhã.
 
 Variáveis de ambiente:
   SUPABASE_DB_URL  conexão com o banco (mesmo secret do manter-acordado)
+  EMAIL_PARA       destinatários separados por vírgula
+  POWER_AUTOMATE_URL  endereço do gatilho "Quando uma solicitação HTTP é
+                   recebida" do Power Automate. Com ele, o e-mail sai pela conta
+                   Microsoft 365 da GOL (o SMTP é bloqueado no tenant) e os
+                   campos SMTP_* não são usados.
   SMTP_USER        e-mail que envia (login no servidor SMTP)
   SMTP_PASSWORD    senha desse e-mail
-  EMAIL_PARA       destinatários separados por vírgula
   SMTP_HOST        padrão smtp.office365.com (Outlook / Microsoft 365)
   SMTP_PORT        padrão 587 (STARTTLS)
 Com --previa, só grava o HTML em escala_semana.html, sem enviar.
 """
 import datetime
 import html
+import json
 import os
 import smtplib
 import sys
@@ -131,13 +136,36 @@ Trocas e detalhes na tela <b style="color:#6B7280">Escala de plantão</b> do app
 </table></td></tr></table></body></html>"""
 
 
+def destinatarios():
+    return [e.strip() for e in os.environ["EMAIL_PARA"].split(",") if e.strip()]
+
+
+def enviar_power_automate(assunto, conteudo_html):
+    import urllib.request
+
+    corpo = json.dumps({
+        "assunto": assunto,
+        "html": conteudo_html,
+        "para": "; ".join(destinatarios()),
+    }).encode("utf-8")
+    pedido = urllib.request.Request(
+        os.environ["POWER_AUTOMATE_URL"], data=corpo, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(pedido, timeout=60) as resposta:
+        print(f"Power Automate respondeu HTTP {resposta.status}.")
+
+
 def enviar(assunto, conteudo_html):
+    if os.environ.get("POWER_AUTOMATE_URL"):
+        enviar_power_automate(assunto, conteudo_html)
+        return
     usuario = os.environ["SMTP_USER"]
-    destinatarios = [e.strip() for e in os.environ["EMAIL_PARA"].split(",") if e.strip()]
+    destinatarios_email = destinatarios()
     mensagem = EmailMessage()
     mensagem["Subject"] = assunto
     mensagem["From"] = usuario
-    mensagem["To"] = ", ".join(destinatarios)
+    mensagem["To"] = ", ".join(destinatarios_email)
     mensagem.set_content("Escala de plantão da semana (abra em um leitor com HTML).")
     mensagem.add_alternative(conteudo_html, subtype="html")
     host = os.environ.get("SMTP_HOST") or "smtp.office365.com"
@@ -146,7 +174,7 @@ def enviar(assunto, conteudo_html):
         smtp.starttls()
         smtp.login(usuario, os.environ["SMTP_PASSWORD"])
         smtp.send_message(mensagem)
-    print(f"E-mail enviado para {len(destinatarios)} destinatário(s).")
+    print(f"E-mail enviado para {len(destinatarios_email)} destinatário(s).")
 
 
 def main():

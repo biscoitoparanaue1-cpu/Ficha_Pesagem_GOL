@@ -1,8 +1,9 @@
 name: E-mail da escala de plantão
 
 # Toda segunda às 7h de Brasília (10h UTC) manda a escala da semana.
-# Secrets: SUPABASE_DB_URL, SMTP_USER, SMTP_PASSWORD e EMAIL_PARA.
-# Variáveis opcionais: SMTP_HOST e SMTP_PORT (padrão Outlook / Microsoft 365).
+# Secrets: SUPABASE_DB_URL, EMAIL_PARA e POWER_AUTOMATE_URL (o envio sai pelo
+# fluxo do Power Automate, porque a GOL bloqueia SMTP). Sem POWER_AUTOMATE_URL,
+# usa SMTP_USER/SMTP_PASSWORD (variáveis opcionais SMTP_HOST e SMTP_PORT).
 on:
   schedule:
     - cron: "0 10 * * 1"
@@ -24,11 +25,16 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_PARA: ${{ secrets.EMAIL_PARA }}
+          POWER_AUTOMATE_URL: ${{ secrets.POWER_AUTOMATE_URL }}
           SMTP_HOST: ${{ vars.SMTP_HOST }}
           SMTP_PORT: ${{ vars.SMTP_PORT }}
         run: |
-          if [ -z "$SMTP_USER" ] || [ -z "$SMTP_PASSWORD" ] || [ -z "$EMAIL_PARA" ]; then
-            echo "Cadastre os secrets SMTP_USER, SMTP_PASSWORD e EMAIL_PARA para enviar o e-mail."
+          if [ -z "$EMAIL_PARA" ]; then
+            echo "Cadastre o secret EMAIL_PARA com os destinatários."
+            exit 1
+          fi
+          if [ -z "$POWER_AUTOMATE_URL" ] && { [ -z "$SMTP_USER" ] || [ -z "$SMTP_PASSWORD" ]; }; then
+            echo "Cadastre o secret POWER_AUTOMATE_URL (ou SMTP_USER e SMTP_PASSWORD) para enviar o e-mail."
             exit 1
           fi
           pip install --quiet "psycopg[binary]"
