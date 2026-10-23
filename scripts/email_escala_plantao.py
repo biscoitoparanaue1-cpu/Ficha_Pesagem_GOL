@@ -64,23 +64,13 @@ def cor(nome, nomes):
     return CORES[indice % len(CORES)]
 
 
-def agrupar(linhas):
-    """Dias seguidos da mesma pessoa viram um plantão só."""
-    blocos = []
+def dias_da_semana(linhas):
+    """Um quadrado por dia, com quem está de plantão e a troca, se houver."""
+    dias = []
     for data, colaborador, categoria, original, motivo in linhas:
-        ultimo = blocos[-1] if blocos else None
-        if ultimo and ultimo["nome"] == colaborador and (data - ultimo["fim"]).days == 1:
-            ultimo["fim"] = data
-        else:
-            ultimo = {"nome": colaborador, "inicio": data, "fim": data,
-                      "categorias": set(), "trocas": set()}
-            blocos.append(ultimo)
-        ultimo["categorias"].add(categoria)
-        if original:
-            ultimo["trocas"].add(f"no lugar de {original}")
-        elif motivo:
-            ultimo["trocas"].add(motivo)
-    return blocos
+        troca = f"no lugar de {original}" if original else (motivo or "")
+        dias.append({"data": data, "nome": colaborador, "categoria": categoria, "troca": troca})
+    return dias
 
 
 def montar_html(inicio, fim, linhas, nomes):
@@ -92,28 +82,20 @@ def montar_html(inicio, fim, linhas, nomes):
         )
     else:
         itens = []
-        for bloco in agrupar(linhas):
-            c = cor(bloco["nome"], nomes)
-            i, f = bloco["inicio"], bloco["fim"]
-            if i == f:
-                quando = f"{DIAS[i.weekday()]}, {i:%d/%m}"
-            else:
-                # Todos os dias por extenso: "Terça, quarta e quinta · 20/10 a 22/10".
-                dias = [DIAS[(i + datetime.timedelta(days=n)).weekday()].lower()
-                        for n in range((f - i).days + 1)]
-                nomes_dias = ", ".join(dias[:-1]) + " e " + dias[-1]
-                quando = f"{nomes_dias.capitalize()} · {i:%d/%m} a {f:%d/%m}"
-            etiquetas = "".join(
+        for dia in dias_da_semana(linhas):
+            c = cor(dia["nome"], nomes)
+            quando = f"{DIAS[dia['data'].weekday()]}, {dia['data']:%d/%m}"
+            cat = dia["categoria"]
+            etiquetas = (
                 "<span style='display:inline-block;margin-left:6px;padding:2px 8px;border-radius:10px;"
                 "font-size:11px;font-weight:600;"
                 + ("background:#FFF1E8;color:#C2410C;" if cat == 3 else "background:#F1F3F6;color:#6B7280;")
                 + f"'>{CATEGORIAS.get(cat, '')}</span>"
-                for cat in sorted(bloco["categorias"]) if cat != 1
+                if cat in (2, 3) else ""
             )
             troca = (
-                f"<div style='font-size:12px;color:#8A5A00;margin-top:3px'>⇄ "
-                f"{html.escape(', '.join(sorted(bloco['trocas'])))}</div>"
-                if bloco["trocas"] else ""
+                f"<div style='font-size:12px;color:#8A5A00;margin-top:3px'>⇄ {html.escape(dia['troca'])}</div>"
+                if dia["troca"] else ""
             )
             itens.append(
                 "<tr><td style='padding:6px 28px'>"
@@ -122,7 +104,7 @@ def montar_html(inicio, fim, linhas, nomes):
                 f"<tr><td style='padding:12px 16px;{fonte}'>"
                 f"<div style='font-size:12px;color:#6B7280;text-transform:uppercase;letter-spacing:.04em'>{quando}</div>"
                 f"<div style='font-size:16px;font-weight:600;color:#1F2430;margin-top:2px'>"
-                f"{html.escape(bloco['nome'])}{etiquetas}</div>{troca}"
+                f"{html.escape(dia['nome'])}{etiquetas}</div>{troca}"
                 "</td></tr></table></td></tr>"
             )
         conteudo = "".join(itens)
