@@ -1,0 +1,35 @@
+name: E-mail da escala de plantão
+
+# Toda segunda às 7h de Brasília (10h UTC) manda a escala da semana.
+# Secrets: SUPABASE_DB_URL, SMTP_USER, SMTP_PASSWORD e EMAIL_PARA.
+# Variáveis opcionais: SMTP_HOST e SMTP_PORT (padrão Outlook / Microsoft 365).
+on:
+  schedule:
+    - cron: "0 10 * * 1"
+  workflow_dispatch:
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Enviar escala da semana
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_PARA: ${{ secrets.EMAIL_PARA }}
+          SMTP_HOST: ${{ vars.SMTP_HOST }}
+          SMTP_PORT: ${{ vars.SMTP_PORT }}
+        run: |
+          if [ -z "$SMTP_USER" ] || [ -z "$SMTP_PASSWORD" ] || [ -z "$EMAIL_PARA" ]; then
+            echo "Cadastre os secrets SMTP_USER, SMTP_PASSWORD e EMAIL_PARA para enviar o e-mail."
+            exit 1
+          fi
+          pip install --quiet "psycopg[binary]"
+          python scripts/email_escala_plantao.py
