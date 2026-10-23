@@ -1,0 +1,54 @@
+name: Publicar escala da semana (RSS)
+
+# Toda segunda às 6h de Brasília (9h UTC) publica a escala da semana como feed
+# RSS no GitHub Pages, em https://<dono>.github.io/<repo>/<RSS_TOKEN>/escala.xml.
+# Um fluxo padrão do Power Automate (Recorrência + conector RSS, sem Premium)
+# lê esse feed às 7h e manda o e-mail pela conta da GOL.
+# Precisa: Pages com origem "GitHub Actions" e os secrets SUPABASE_DB_URL e
+# RSS_TOKEN (código aleatório longo; é o que mantém o endereço secreto).
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Gerar feed
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RSS_TOKEN: ${{ secrets.RSS_TOKEN }}
+        run: |
+          if [ ${#RSS_TOKEN} -lt 20 ]; then
+            echo "Cadastre o secret RSS_TOKEN com um código aleatório de pelo menos 20 caracteres."
+            exit 1
+          fi
+          pip install --quiet "psycopg[binary]"
+          mkdir -p site
+          printf 'User-agent: *\nDisallow: /\n' > site/robots.txt
+          touch site/index.html
+          python scripts/email_escala_plantao.py --rss "site/$RSS_TOKEN"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - uses: actions/deploy-pages@v4
