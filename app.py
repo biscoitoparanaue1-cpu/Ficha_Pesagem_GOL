@@ -322,6 +322,39 @@ def valor_canela_em_polegadas(valor, unidade):
 CAMPO_ULTIMA_PESAGEM_INFORMADA = 'Ultima pesagem informada'
 CAMPO_ULTIMA_REVISAO_INFORMADA = 'Ultima revisao informada'
 
+# Braço do trem principal: canela (DIM "A") x 0.1304 + base. Na ficha 1-0 de
+# avião entregue pela Boeing a base é a do manual Boeing (MAIN LANDING GEAR
+# JACK POINT B.A. = 705.28 + 0.1304 * DIM "A"); nas pesagens GOL fica 706.17.
+FATOR_CANELA_MLG = 0.1304
+BASE_BRACO_MLG_GOL = 706.17
+BASE_BRACO_MLG_BOEING = 705.28
+LB_PARA_KGF = 0.45359237
+CAMPO_ORIGEM_CELULAS = 'Origem das celulas'
+ORIGEM_BOEING = 'Boeing'
+OPCAO_CELULAS_GOL = "Pesagem GOL (células de carga em kgf)"
+OPCAO_CELULAS_BOEING = "Weighing Form da Boeing (em lb)"
+# Pontos de reação na ordem da Weighing Form da Boeing.
+CAMPOS_BOEING_LB = [
+    ('Boeing Main LH OB (lb)', 'Main LH OB'),
+    ('Boeing Main LH IB (lb)', 'Main LH IB'),
+    ('Boeing Main RH IB (lb)', 'Main RH IB'),
+    ('Boeing Main RH OB (lb)', 'Main RH OB'),
+    ('Boeing Nose (lb)', 'Nose'),
+]
+
+
+def pesagem_boeing(registro):
+    return safe_str(registro.get(CAMPO_ORIGEM_CELULAS)) == ORIGEM_BOEING
+
+
+def braco_mlg(canela, boeing=False):
+    base = BASE_BRACO_MLG_BOEING if boeing else BASE_BRACO_MLG_GOL
+    return safe_float(canela) * FATOR_CANELA_MLG + base
+
+
+def formatar_numero(valor, casas=1):
+    return f"{valor:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
 
 def ultima_ficha_gravada(registro):
     """Última pesagem/revisão digitadas à mão, para quando a ficha anterior
@@ -2176,8 +2209,8 @@ def calcular_resumo_pesagem(prefixo, row):
         + (safe_float(row.get('Peso Nariz RH', 0)) + safe_float(row.get('Peso Nariz RH pesagem 2', 0))) / 2
     )
     tail = safe_float(row.get('Tail', 0))
-    arm_b_lh = (safe_float(row.get('Canela MLG LH', 0)) * 0.1304) + 706.17
-    arm_b_rh = (safe_float(row.get('Canela MLG RH', 0)) * 0.1304) + 706.17
+    arm_b_lh = braco_mlg(row.get('Canela MLG LH', 0), pesagem_boeing(row))
+    arm_b_rh = braco_mlg(row.get('Canela MLG RH', 0), pesagem_boeing(row))
     arm_a = info_aero.get('armnose', 93.0000)
     arm_c = 1298.9000
 
@@ -2990,55 +3023,78 @@ def renderizar_ficha_visualizacao(
         mostrar_campo("Motivo", "Razão para emissão:", row.get('Motivo', ''))
 
     with aba2:
-        campos_pesagem_1 = [
-            ("Peso nariz LH", "Nariz LH"),
-            ("Peso Nariz RH", "Nariz RH"),
-            ("Peso MLG RH 1 ", "RH MLG 1"),
-            ("Peso MLG LH 1", "LH MLG 1"),
-            ("Peso MLG RH 2", "RH MLG 2"),
-            ("Peso MLG LH2", "LH MLG 2"),
-        ]
-        campos_pesagem_2 = [
-            ("Peso nariz LH pesagem 2", "Nariz LH"),
-            ("Peso Nariz RH pesagem 2", "Nariz RH"),
-            ("Peso MLG RH 1  pesagem 2", "RH MLG 1"),
-            ("Peso MLG LH 1 pesagem 2", "LH MLG 1"),
-            ("Peso MLG RH 2 pesagem 2", "RH MLG 2"),
-            ("Peso MLG LH2 pesagem 2", "LH MLG 2"),
-        ]
-        alternativas_totais = {
-            "Peso MLG RH 1 ": ["Peso MLG RH 1 ", "Peso MLG RH 1"],
-            "Peso MLG LH 1": ["Peso MLG LH 1", "Peso MLG LH 1 "],
-            "Peso MLG RH 2": ["Peso MLG RH 2", "Peso MLG RH 2 "],
-            "Peso MLG LH2": ["Peso MLG LH2", "Peso MLG LH 2"],
-            "Peso MLG RH 1  pesagem 2": ["Peso MLG RH 1  pesagem 2", "Peso MLG RH 1 pesagem 2"],
-        }
-        for titulo, campos in (
-            ("Pesagem 01", campos_pesagem_1),
-            ("Pesagem 02", campos_pesagem_2),
-        ):
-            st.markdown(f"**{titulo}**")
-            ordem = [campos[0], campos[1], campos[2], campos[4], campos[3], campos[5]]
+        if pesagem_boeing(row):
+            st.markdown("**Weighing Form da Boeing (lb)**")
+            colunas = st.columns(4) + st.columns(4)
+            for coluna, (campo, rotulo) in zip(colunas, CAMPOS_BOEING_LB):
+                mostrar_campo(campo, f"{rotulo} (lb)", row.get(campo, ""), coluna)
+            mostrar_campo(
+                "Canela MLG LH", "Balance arm do trem principal (in)",
+                f"{braco_mlg(row.get('Canela MLG LH'), boeing=True):.2f}",
+                colunas[5],
+            )
+            colunas[6].text_input(
+                'DIM "A" calculado (in)',
+                value=f"{safe_float(row.get('Canela MLG LH')):.2f}",
+                disabled=True,
+                key=f"visual_boeing_dim_{prefixo}_{pesagem}_{revisao}_{modo_aprovacao}",
+            )
+            total_lb = sum(safe_float(row.get(campo)) for campo, _ in CAMPOS_BOEING_LB)
+            st.caption(
+                f"Total {formatar_numero(total_lb)} lb = "
+                f"{formatar_numero(total_lb * LB_PARA_KGF)} kgf. "
+                "Os pesos foram convertidos para kgf na ficha."
+            )
+        else:
+            campos_pesagem_1 = [
+                ("Peso nariz LH", "Nariz LH"),
+                ("Peso Nariz RH", "Nariz RH"),
+                ("Peso MLG RH 1 ", "RH MLG 1"),
+                ("Peso MLG LH 1", "LH MLG 1"),
+                ("Peso MLG RH 2", "RH MLG 2"),
+                ("Peso MLG LH2", "LH MLG 2"),
+            ]
+            campos_pesagem_2 = [
+                ("Peso nariz LH pesagem 2", "Nariz LH"),
+                ("Peso Nariz RH pesagem 2", "Nariz RH"),
+                ("Peso MLG RH 1  pesagem 2", "RH MLG 1"),
+                ("Peso MLG LH 1 pesagem 2", "LH MLG 1"),
+                ("Peso MLG RH 2 pesagem 2", "RH MLG 2"),
+                ("Peso MLG LH2 pesagem 2", "LH MLG 2"),
+            ]
+            alternativas_totais = {
+                "Peso MLG RH 1 ": ["Peso MLG RH 1 ", "Peso MLG RH 1"],
+                "Peso MLG LH 1": ["Peso MLG LH 1", "Peso MLG LH 1 "],
+                "Peso MLG RH 2": ["Peso MLG RH 2", "Peso MLG RH 2 "],
+                "Peso MLG LH2": ["Peso MLG LH2", "Peso MLG LH 2"],
+                "Peso MLG RH 1  pesagem 2": ["Peso MLG RH 1  pesagem 2", "Peso MLG RH 1 pesagem 2"],
+            }
+            for titulo, campos in (
+                ("Pesagem 01", campos_pesagem_1),
+                ("Pesagem 02", campos_pesagem_2),
+            ):
+                st.markdown(f"**{titulo}**")
+                ordem = [campos[0], campos[1], campos[2], campos[4], campos[3], campos[5]]
 
-            def render_consulta(container, indice, ordem=ordem):
-                campo, rotulo = ordem[indice]
-                campo = get_real_col(alternativas_totais.get(campo, [campo]))
-                valor = row.get(campo, "")
-                mostrar_campo(campo, rotulo, valor, container)
-                return valor
+                def render_consulta(container, indice, ordem=ordem):
+                    campo, rotulo = ordem[indice]
+                    campo = get_real_col(alternativas_totais.get(campo, [campo]))
+                    valor = row.get(campo, "")
+                    mostrar_campo(campo, rotulo, valor, container)
+                    return valor
 
-            grade_celulas(render_consulta)
+                grade_celulas(render_consulta)
 
-        st.markdown("**Medidas das canelas**")
-        canela_lh, canela_rh = st.columns(2)
-        mostrar_campo(
-            "Canela MLG LH", "Canela MLG LH (in)",
-            row.get("Canela MLG LH", ""), canela_lh,
-        )
-        mostrar_campo(
-            "Canela MLG RH", "Canela MLG RH (in)",
-            row.get("Canela MLG RH", ""), canela_rh,
-        )
+            st.markdown("**Medidas das canelas**")
+            canela_lh, canela_rh = st.columns(2)
+            mostrar_campo(
+                "Canela MLG LH", "Canela MLG LH (in)",
+                row.get("Canela MLG LH", ""), canela_lh,
+            )
+            mostrar_campo(
+                "Canela MLG RH", "Canela MLG RH (in)",
+                row.get("Canela MLG RH", ""), canela_rh,
+            )
 
     with aba3:
         deducoes_lista = []
@@ -3092,8 +3148,8 @@ def renderizar_ficha_visualizacao(
             lh, rh, nose, tail = 0.0, 0.0, 0.0, 0.0
             canela_mlg_lh, canela_mlg_rh = 0.0, 0.0
 
-        arm_b_lh = (canela_mlg_lh * 0.1304) + 706.17
-        arm_b_rh = (canela_mlg_rh * 0.1304) + 706.17
+        arm_b_lh = braco_mlg(canela_mlg_lh, pesagem_boeing(row))
+        arm_b_rh = braco_mlg(canela_mlg_rh, pesagem_boeing(row))
         tipo_aeronave = info_aero.get('modelo', "")
         arm_a = info_aero.get('armnose', 93.0000)
         arm_c = 1298.9000
@@ -3730,6 +3786,106 @@ def excluir_linha(chave_linhas, prefixo_widget, id_linha):
     for campo in ("descricao", "peso", "braco", "peso_flap", "braco_flap"):
         st.session_state.pop(f"{prefixo_widget}_{id_linha}_{campo}", None)
 
+def celulas_boeing(form_key, linha_existente, info_aero, rotulo_form):
+    """Etapa Células de Carga com a Weighing Form da Boeing: pesos em lb e
+    DIM "A" do trem principal. Devolve (valores em lb, pesos em kgf, DIM A)."""
+    st.info(
+        "Digite os valores da WEIGHING FORM da Boeing como estão nela: peso "
+        "líquido (NET WGT) em lb. O sistema converte para kgf "
+        "(1 lb = 0,45359237 kgf)."
+    )
+    ja_boeing = pesagem_boeing(linha_existente)
+
+    def campo_lb(container, campo, rotulo):
+        return container.number_input(
+            rotulo_form(campo, f"{rotulo} (lb)", container),
+            min_value=0.0,
+            value=safe_float(linha_existente.get(campo)) if ja_boeing else 0.0,
+            step=10.0,
+            format="%.1f",
+            key=f"{form_key}_{campo}",
+        )
+
+    st.markdown("**Trem principal**")
+    colunas = st.columns(4)
+    valores_lb = {
+        campo: campo_lb(coluna, campo, rotulo)
+        for coluna, (campo, rotulo) in zip(colunas, CAMPOS_BOEING_LB[:4])
+    }
+    st.markdown("**Nariz e braço do trem principal**")
+    c_nariz, c_braco, c_dim = st.columns(3)
+    campo_nariz, rotulo_nariz = CAMPOS_BOEING_LB[4]
+    valores_lb[campo_nariz] = campo_lb(c_nariz, campo_nariz, rotulo_nariz)
+    # A pessoa digita a BALANCE ARM da Boeing; o banco guarda o DIM "A"
+    # (conta inversa de B.A. = 705.28 + 0.1304 × DIM "A") no campo da canela.
+    braco_salvo = (
+        braco_mlg(linha_existente.get(get_real_col(['Canela MLG LH'])), boeing=True)
+        if ja_boeing else None
+    )
+    braco_digitado = c_braco.number_input(
+        rotulo_form("Canela MLG LH", "Balance arm do trem principal (in)", c_braco),
+        value=braco_salvo,
+        min_value=0.0,
+        step=0.1,
+        format="%.2f",
+        placeholder="ex.: 707.9",
+        key=f"{form_key}_boeing_braco_mlg",
+        help="BALANCE ARM IN. das linhas Main da Weighing Form da Boeing.",
+    )
+    braco_principal = safe_float(braco_digitado)
+    dim_a = (
+        (braco_principal - BASE_BRACO_MLG_BOEING) / FATOR_CANELA_MLG
+        if braco_principal else 0.0
+    )
+    c_dim.text_input(
+        'DIM "A" calculado (in)',
+        value=f"{dim_a:.2f}" if braco_principal else "",
+        disabled=True,
+        help="DIM \"A\" = (B.A. − 705.28) / 0.1304. É o valor gravado no banco.",
+    )
+    if not braco_principal:
+        st.warning("Digite a balance arm do trem principal (ex.: 707.9).")
+
+    braco_nariz = info_aero.get('armnose', 93.0000)
+    linhas = []
+    kgf = []
+    for campo, rotulo in CAMPOS_BOEING_LB:
+        peso_lb = valores_lb[campo]
+        peso_kgf = peso_lb * LB_PARA_KGF
+        braco = braco_nariz if campo == campo_nariz else braco_principal
+        kgf.append(peso_kgf)
+        linhas.append({
+            "Ponto": rotulo, "Peso (lb)": peso_lb, "Peso (kgf)": peso_kgf,
+            "Braço (in)": braco, "Momento (kgf.in)": peso_kgf * braco,
+        })
+    total_lb = sum(valores_lb.values())
+    total_kgf = sum(kgf)
+    momento = sum(linha["Momento (kgf.in)"] for linha in linhas)
+    linhas.append({
+        "Ponto": "TOTAL", "Peso (lb)": total_lb, "Peso (kgf)": total_kgf,
+        "Braço (in)": momento / total_kgf if total_kgf else 0.0,
+        "Momento (kgf.in)": momento,
+    })
+    st.markdown("**Conversão para kgf**")
+    st.dataframe(
+        pd.DataFrame(linhas),
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Peso (lb)": st.column_config.NumberColumn(format="%.1f"),
+            "Peso (kgf)": st.column_config.NumberColumn(format="%.1f"),
+            "Braço (in)": st.column_config.NumberColumn(format="%.2f"),
+            "Momento (kgf.in)": st.column_config.NumberColumn(format="%.0f"),
+        },
+    )
+    st.caption(
+        f"Confira com a linha Reference da Boeing: weight = {formatar_numero(total_kgf)} kgf. "
+        f"O braço do nariz ({braco_nariz:.1f} in) vem do cadastro da aeronave; "
+        "se a Boeing mostrar outro valor, corrija em Aeronaves."
+    )
+    return valores_lb, kgf, dim_a
+
+
 def formulario_pesagem(
     prefixo_selecionado,
     p_sugerida,
@@ -3872,84 +4028,120 @@ def formulario_pesagem(
         razao = campo_com_preset(st, rotulo_form(chave_motivo, "Razão para emissão:"), linha_existente.get(chave_motivo, ''), PRESETS["motivo"], f"{form_key}_motivo", categoria="motivo")
 
     with aba2:
-        def campos_formulario(chaves, rotulos):
-            def render(container, indice):
-                return container.number_input(
-                    rotulo_form(chaves[indice], rotulos[indice], container),
-                    value=safe_float(linha_existente.get(chaves[indice], 0.0)),
-                    step=10.0,
-                    key=f"{form_key}_celula_{chaves[indice]}",
-                )
-            return grade_celulas(render)
+        # Só a pesagem 1 pode vir da Boeing (avião novo). A partir da
+        # pesagem 2 os dados são sempre das células de carga da GOL.
+        origem_boeing = False
+        if int(p_sugerida) == 1:
+            celulas_digitadas = any(
+                safe_float(linha_existente.get(chave)) for chave in chaves_celulas_ficha()
+            )
+            padrao_boeing = pesagem_boeing(linha_existente) or (
+                int(r_sugerida) == 0 and not celulas_digitadas
+            )
+            origem_celulas = st.radio(
+                "De onde vêm os dados da pesagem?",
+                [OPCAO_CELULAS_GOL, OPCAO_CELULAS_BOEING],
+                index=1 if padrao_boeing else 0,
+                horizontal=True,
+                key=f"{form_key}_origem_celulas",
+            )
+            origem_boeing = origem_celulas == OPCAO_CELULAS_BOEING
 
-        st.markdown("**Pesagem 01**")
-        chave_p1_nlh = get_real_col(['Peso nariz LH'])
-        chave_p1_nrh = get_real_col(['Peso Nariz RH'])
-        chave_p1_rhm = get_real_col(['Peso MLG RH 1 ', 'Peso MLG RH 1'])
-        chave_p1_lhm = get_real_col(['Peso MLG LH 1', 'Peso MLG LH 1 '])
-        chave_p1_rhm2 = get_real_col(['Peso MLG RH 2', 'Peso MLG RH 2 '])
-        chave_p1_lhm2 = get_real_col(['Peso MLG LH2', 'Peso MLG LH 2'])
-        p1_nlh, p1_nrh, p1_rhm, p1_rhm2, p1_lhm, p1_lhm2 = campos_formulario(
-            [chave_p1_nlh, chave_p1_nrh, chave_p1_rhm, chave_p1_rhm2, chave_p1_lhm, chave_p1_lhm2],
-            ["Nariz LH", "Nariz RH", "RH MLG 1", "RH MLG 2", "LH MLG 1", "LH MLG 2"],
-        )
+        valores_boeing_lb = {}
+        if origem_boeing:
+            valores_boeing_lb, kgf_boeing, dim_a = celulas_boeing(
+                form_key, linha_existente, info_aero, rotulo_form
+            )
+            # Os pesos em kgf vão para os campos de sempre (Pesagem 01 e 02
+            # iguais, 1 = OB e 2 = IB, nariz dividido em LH/RH), assim
+            # Consulta, gráficos e Excel fazem a mesma conta da pesagem GOL.
+            lh_ob, lh_ib, rh_ib, rh_ob, nariz = kgf_boeing
+            p1_lhm = p2_lhm = lh_ob
+            p1_lhm2 = p2_lhm2 = lh_ib
+            p1_rhm = p2_rhm = rh_ob
+            p1_rhm2 = p2_rhm2 = rh_ib
+            p1_nlh = p2_nlh = p1_nrh = p2_nrh = nariz / 2
+            canela_lh = canela_rh = dim_a
+            tail_val = 0.0
+        else:
+            def campos_formulario(chaves, rotulos):
+                def render(container, indice):
+                    return container.number_input(
+                        rotulo_form(chaves[indice], rotulos[indice], container),
+                        value=safe_float(linha_existente.get(chaves[indice], 0.0)),
+                        step=10.0,
+                        key=f"{form_key}_celula_{chaves[indice]}",
+                    )
+                return grade_celulas(render)
 
-        st.markdown("**Pesagem 02**")
-        chave_p2_nlh = get_real_col(['Peso nariz LH pesagem 2'])
-        chave_p2_nrh = get_real_col(['Peso Nariz RH pesagem 2'])
-        chave_p2_rhm = get_real_col(['Peso MLG RH 1  pesagem 2', 'Peso MLG RH 1 pesagem 2'])
-        chave_p2_lhm = get_real_col(['Peso MLG LH 1 pesagem 2'])
-        chave_p2_rhm2 = get_real_col(['Peso MLG RH 2 pesagem 2'])
-        chave_p2_lhm2 = get_real_col(['Peso MLG LH2 pesagem 2'])
-        p2_nlh, p2_nrh, p2_rhm, p2_rhm2, p2_lhm, p2_lhm2 = campos_formulario(
-            [chave_p2_nlh, chave_p2_nrh, chave_p2_rhm, chave_p2_rhm2, chave_p2_lhm, chave_p2_lhm2],
-            ["Nariz LH P2", "Nariz RH P2", "RH MLG 1 P2", "RH MLG 2 P2", "LH MLG 1 P2", "LH MLG 2 P2"],
-        )
+            st.markdown("**Pesagem 01**")
+            chave_p1_nlh = get_real_col(['Peso nariz LH'])
+            chave_p1_nrh = get_real_col(['Peso Nariz RH'])
+            chave_p1_rhm = get_real_col(['Peso MLG RH 1 ', 'Peso MLG RH 1'])
+            chave_p1_lhm = get_real_col(['Peso MLG LH 1', 'Peso MLG LH 1 '])
+            chave_p1_rhm2 = get_real_col(['Peso MLG RH 2', 'Peso MLG RH 2 '])
+            chave_p1_lhm2 = get_real_col(['Peso MLG LH2', 'Peso MLG LH 2'])
+            p1_nlh, p1_nrh, p1_rhm, p1_rhm2, p1_lhm, p1_lhm2 = campos_formulario(
+                [chave_p1_nlh, chave_p1_nrh, chave_p1_rhm, chave_p1_rhm2, chave_p1_lhm, chave_p1_lhm2],
+                ["Nariz LH", "Nariz RH", "RH MLG 1", "RH MLG 2", "LH MLG 1", "LH MLG 2"],
+            )
+
+            st.markdown("**Pesagem 02**")
+            chave_p2_nlh = get_real_col(['Peso nariz LH pesagem 2'])
+            chave_p2_nrh = get_real_col(['Peso Nariz RH pesagem 2'])
+            chave_p2_rhm = get_real_col(['Peso MLG RH 1  pesagem 2', 'Peso MLG RH 1 pesagem 2'])
+            chave_p2_lhm = get_real_col(['Peso MLG LH 1 pesagem 2'])
+            chave_p2_rhm2 = get_real_col(['Peso MLG RH 2 pesagem 2'])
+            chave_p2_lhm2 = get_real_col(['Peso MLG LH2 pesagem 2'])
+            p2_nlh, p2_nrh, p2_rhm, p2_rhm2, p2_lhm, p2_lhm2 = campos_formulario(
+                [chave_p2_nlh, chave_p2_nrh, chave_p2_rhm, chave_p2_rhm2, chave_p2_lhm, chave_p2_lhm2],
+                ["Nariz LH P2", "Nariz RH P2", "RH MLG 1 P2", "RH MLG 2 P2", "LH MLG 1 P2", "LH MLG 2 P2"],
+            )
         
-        st.markdown("**Canelas**")
-        unidade_canela_key = f"{form_key}_unidade_canela"
-        unidade_canela_anterior_key = f"{form_key}_unidade_canela_anterior"
-        chave_canela_lh = f"{form_key}_canela_lh"
-        chave_canela_rh = f"{form_key}_canela_rh"
-        st.session_state.setdefault(unidade_canela_key, "in")
-        st.session_state.setdefault(
-            unidade_canela_anterior_key, st.session_state[unidade_canela_key]
-        )
-        fator_unidade = 25.4 if st.session_state[unidade_canela_key] == "mm" else 1.0
-        st.session_state.setdefault(
-            chave_canela_lh,
-            safe_float(linha_existente.get(get_real_col(['Canela MLG LH']), 0.0)) * fator_unidade,
-        )
-        st.session_state.setdefault(
-            chave_canela_rh,
-            safe_float(linha_existente.get(get_real_col(['Canela MLG RH']), 0.0)) * fator_unidade,
-        )
-        unidade_canela = st.radio(
-            "Unidade da canela",
-            ["in", "mm"],
-            horizontal=True,
-            key=unidade_canela_key,
-            on_change=converter_unidade_canela,
-            args=(
-                unidade_canela_key,
-                unidade_canela_anterior_key,
-                (chave_canela_lh, chave_canela_rh),
-            ),
-        )
-        can_c1, can_c2 = st.columns(2)
-        canela_lh_input = can_c1.number_input(
-            rotulo_form("Canela MLG LH", f"Canela LH ({unidade_canela})", can_c1),
-            step=0.1 if unidade_canela == "in" else 1.0,
-            key=chave_canela_lh,
-        )
-        canela_rh_input = can_c2.number_input(
-            rotulo_form("Canela MLG RH", f"Canela RH ({unidade_canela})", can_c2),
-            step=0.1 if unidade_canela == "in" else 1.0,
-            key=chave_canela_rh,
-        )
-        canela_lh = valor_canela_em_polegadas(canela_lh_input, unidade_canela)
-        canela_rh = valor_canela_em_polegadas(canela_rh_input, unidade_canela)
-        tail_val = 0.0
+            st.markdown("**Canelas**")
+            unidade_canela_key = f"{form_key}_unidade_canela"
+            unidade_canela_anterior_key = f"{form_key}_unidade_canela_anterior"
+            chave_canela_lh = f"{form_key}_canela_lh"
+            chave_canela_rh = f"{form_key}_canela_rh"
+            st.session_state.setdefault(unidade_canela_key, "in")
+            st.session_state.setdefault(
+                unidade_canela_anterior_key, st.session_state[unidade_canela_key]
+            )
+            fator_unidade = 25.4 if st.session_state[unidade_canela_key] == "mm" else 1.0
+            st.session_state.setdefault(
+                chave_canela_lh,
+                safe_float(linha_existente.get(get_real_col(['Canela MLG LH']), 0.0)) * fator_unidade,
+            )
+            st.session_state.setdefault(
+                chave_canela_rh,
+                safe_float(linha_existente.get(get_real_col(['Canela MLG RH']), 0.0)) * fator_unidade,
+            )
+            unidade_canela = st.radio(
+                "Unidade da canela",
+                ["in", "mm"],
+                horizontal=True,
+                key=unidade_canela_key,
+                on_change=converter_unidade_canela,
+                args=(
+                    unidade_canela_key,
+                    unidade_canela_anterior_key,
+                    (chave_canela_lh, chave_canela_rh),
+                ),
+            )
+            can_c1, can_c2 = st.columns(2)
+            canela_lh_input = can_c1.number_input(
+                rotulo_form("Canela MLG LH", f"Canela LH ({unidade_canela})", can_c1),
+                step=0.1 if unidade_canela == "in" else 1.0,
+                key=chave_canela_lh,
+            )
+            canela_rh_input = can_c2.number_input(
+                rotulo_form("Canela MLG RH", f"Canela RH ({unidade_canela})", can_c2),
+                step=0.1 if unidade_canela == "in" else 1.0,
+                key=chave_canela_rh,
+            )
+            canela_lh = valor_canela_em_polegadas(canela_lh_input, unidade_canela)
+            canela_rh = valor_canela_em_polegadas(canela_rh_input, unidade_canela)
+            tail_val = 0.0
 
     with aba3:
         ded_ex = []
@@ -4027,8 +4219,8 @@ def formulario_pesagem(
         nose_val = ((p1_nlh + p2_nlh) / 2) + ((p1_nrh + p2_nrh) / 2)
         
         arm_a = info_aero.get('armnose', 93.0000)
-        arm_b_lh = (canela_lh * 0.1304) + 706.17
-        arm_b_rh = (canela_rh * 0.1304) + 706.17
+        arm_b_lh = braco_mlg(canela_lh, origem_boeing)
+        arm_b_rh = braco_mlg(canela_rh, origem_boeing)
         arm_c = 1298.9000
 
         m_lh = lh_val * arm_b_lh
@@ -4157,6 +4349,9 @@ def formulario_pesagem(
     )
     novo_registro[get_real_col(['Canela MLG LH'])] = canela_lh
     novo_registro[get_real_col(['Canela MLG RH'])] = canela_rh
+    novo_registro[CAMPO_ORIGEM_CELULAS] = ORIGEM_BOEING if origem_boeing else None
+    for campo, _ in CAMPOS_BOEING_LB:
+        novo_registro[campo] = valores_boeing_lb.get(campo) if origem_boeing else None
     novo_registro[get_real_col(['Tail'])] = tail_val
     novo_registro[get_real_col(['Adction LAP'])] = (
         momento_extra_flaps
