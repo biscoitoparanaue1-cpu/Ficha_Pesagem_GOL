@@ -6769,6 +6769,39 @@ def aba_configurar_plantao(escala, colaboradores):
                 st.session_state['plantao_config_ok'] = "E-mails salvos."
                 st.rerun()
     st.divider()
+
+    st.markdown("**Login de cada colaborador**")
+    st.caption(
+        "O site acha a pessoa da escala pelo nome do login (ex.: \"Davi Souza\" → Davi). "
+        "Ligue à mão só quem não foi achado ou foi achado errado."
+    )
+    ativos = [n for n, ativo in colaboradores.items() if ativo]
+    logins = carregar_logins_site()
+    opcoes = [LIGAR_AUTOMATICO] + list(logins)
+    manual = carregar_vinculos_plantao()
+    with st.form("plantao_logins", border=False):
+        escolhas = {}
+        for nome in ativos:
+            c_nome, c_login, c_achado = st.columns([1.2, 2.5, 2], vertical_alignment="center")
+            c_nome.markdown(f"**{nome}**")
+            atual = manual.get(nome)
+            escolhas[nome] = c_login.selectbox(
+                nome, opcoes, index=opcoes.index(atual) if atual in opcoes else 0,
+                format_func=lambda l: l if l == LIGAR_AUTOMATICO else f"{logins[l]} ({l})",
+                key=f"plantao_login_{nome}", label_visibility="collapsed",
+            )
+            achado = login_do_colaborador(nome, ativos)
+            c_achado.caption(
+                f"Agora: {logins.get(achado, achado)}" if achado else "Agora: nenhum login achado"
+            )
+        if st.form_submit_button("Salvar logins"):
+            salvar_logins_plantao({
+                nome: None if login == LIGAR_AUTOMATICO else login
+                for nome, login in escolhas.items()
+            })
+            st.session_state['plantao_config_ok'] = "Logins salvos."
+            st.rerun()
+    st.divider()
     secao_importar_plantao(escala)
 
 
@@ -6796,7 +6829,7 @@ def tela_plantao():
             secao_importar_plantao(escala)
         return
 
-    lembrete_ferias_plantao()
+    lembrete_cracha_plantao()
     st.markdown(faixa_hoje_plantao_html(escala), unsafe_allow_html=True)
 
     nomes_abas = (
@@ -6824,7 +6857,7 @@ def tela_plantao():
 # ---------------------------------------------------------------------------
 ANO_FERIAS_PEDIDAS = 2027
 AVISO_CRACHA_DIAS = 60
-NAO_FACO_PARTE_ESCALA = "Não faço parte da escala de plantão"
+LIGAR_AUTOMATICO = "Automático (pelo nome do login)"
 
 
 def sem_acento(texto):
@@ -6859,16 +6892,26 @@ def carregar_crachas_plantao():
 
 @st.cache_data
 def carregar_vinculos_plantao():
-    """Login → colaborador da escala (None quando disse que não faz parte)."""
+    """Colaborador → login, quando o usuário engenharia ligou à mão em Configurar."""
     with conectar_banco() as conn:
-        linhas = conn.execute("SELECT usuario, colaborador FROM plantao_usuarios").fetchall()
-    return {linha['usuario'].casefold(): linha['colaborador'] for linha in linhas}
+        linhas = conn.execute(
+            "SELECT usuario, colaborador FROM plantao_usuarios WHERE colaborador IS NOT NULL"
+        ).fetchall()
+    return {linha['colaborador']: linha['usuario'] for linha in linhas}
+
+
+@st.cache_data
+def carregar_logins_site():
+    with conectar_banco() as conn:
+        linhas = conn.execute("SELECT usuario, nome FROM usuarios ORDER BY lower(nome)").fetchall()
+    return {linha['usuario']: linha['nome'] for linha in linhas}
 
 
 def invalidar_cache_ferias():
     carregar_ferias_plantao.clear()
     carregar_crachas_plantao.clear()
     carregar_vinculos_plantao.clear()
+    carregar_logins_site.clear()
 
 
 def dias_de_ferias_plantao():
@@ -6882,25 +6925,47 @@ def dias_de_ferias_plantao():
     return dias
 
 
-def colaborador_do_usuario():
-    """(respondeu, colaborador) do login atual."""
-    vinculos = carregar_vinculos_plantao()
-    chave = safe_str(st.session_state.get('usuario_id')).casefold()
-    return (chave in vinculos), vinculos.get(chave)
-
-
-def sugerir_colaborador(colaboradores):
-    """Acha o colaborador pelo nome ou login de quem entrou, se só um bater."""
-    partes = set(sem_acento(st.session_state.get('nome_usuario')).split())
-    partes.add(sem_acento(st.session_state.get('usuario_id')))
-    achados = [nome for nome in colaboradores if sem_acento(nome) in partes]
+def colaborador_pelo_nome(usuario, nome, colaboradores):
+    """Acha o colaborador pelo nome ou login, se só um bater (ex.: "Davi Souza" → Davi)."""
+    partes = set(re.split(r"[\s._-]+", sem_acento(nome)))
+    partes |= set(re.split(r"[\s._-]+", sem_acento(usuario)))
+    achados = [c for c in colaboradores if sem_acento(c) in partes]
     return achados[0] if len(achados) == 1 else None
+
+
+def login_do_colaborador(colaborador, colaboradores):
+    """Login ligado ao colaborador: o definido em Configurar ou o achado pelo nome."""
+    manual = carregar_vinculos_plantao()
+    if colaborador in manual:
+        return manual[colaborador]
+    ligados = {login.casefold() for login in manual.values()}
+    for login, nome in carregar_logins_site().items():
+        if login.casefold() in ligados:
+            continue
+        if colaborador_pelo_nome(login, nome, colaboradores) == colaborador:
+            return login
+    return None
+
+
+def colaborador_do_usuario():
+    """Colaborador da escala de quem está logado, puxado pelo login (None se não está na escala)."""
+    colaboradores = [n for n, ativo in carregar_colaboradores_plantao().items() if ativo]
+    usuario = safe_str(st.session_state.get('usuario_id'))
+    manual = carregar_vinculos_plantao()
+    for colaborador, login in manual.items():
+        if login.casefold() == usuario.casefold():
+            return colaborador if colaborador in colaboradores else None
+    achado = colaborador_pelo_nome(usuario, st.session_state.get('nome_usuario'), colaboradores)
+    # Se esse colaborador foi ligado à mão a outro login, não é desta pessoa.
+    if achado and achado in manual:
+        return None
+    return achado
 
 
 def pode_mexer_ferias_de(colaborador):
     if pode_editar_plantao() or pode_configurar_plantao():
         return True
-    _, meu = colaborador_do_usuario()
+    meu = colaborador_do_usuario()
     return bool(meu) and meu == colaborador
 
 
@@ -6909,16 +6974,19 @@ def garantir_pode_mexer_ferias_de(colaborador):
         raise PermissionError("Você só pode alterar as suas férias e o seu crachá.")
 
 
-def salvar_vinculo_plantao(colaborador):
-    usuario = safe_str(st.session_state.get('usuario_id'))
+def salvar_logins_plantao(ligacoes):
+    """ligacoes: colaborador → login (None volta para o automático)."""
+    garantir_pode_configurar_plantao()
     with conectar_banco() as conn:
-        conn.execute(
-            '''INSERT INTO plantao_usuarios (usuario, colaborador, definido_em)
-               VALUES (?, ?, ?)
-               ON CONFLICT (usuario) DO UPDATE
-               SET colaborador = EXCLUDED.colaborador, definido_em = EXCLUDED.definido_em''',
-            (usuario, colaborador, agora_utc_iso()),
-        )
+        for colaborador, login in ligacoes.items():
+            conn.execute("DELETE FROM plantao_usuarios WHERE colaborador = ?", (colaborador,))
+            if login:
+                conn.execute(
+                    "INSERT INTO plantao_usuarios (usuario, colaborador, definido_em) "
+                    "VALUES (?, ?, ?) ON CONFLICT (usuario) DO UPDATE "
+                    "SET colaborador = EXCLUDED.colaborador, definido_em = EXCLUDED.definido_em",
+                    (login, colaborador, agora_utc_iso()),
+                )
     invalidar_cache_ferias()
 
 
@@ -7021,74 +7089,77 @@ def ler_periodo(valor):
     return tuple(valor)
 
 
-def precisa_preencher_ferias(colaborador):
+def cracha_pendente(colaborador):
     validade = carregar_crachas_plantao().get(colaborador)
-    if validade is None or validade < hoje_brasilia():
-        return True
+    return validade is None or validade < hoje_brasilia()
+
+
+def ferias_pendentes(colaborador):
     ferias = carregar_ferias_plantao()
     minhas = ferias[ferias["colaborador"] == colaborador]
     return not any(fim.year >= ANO_FERIAS_PEDIDAS for fim in minhas["fim"])
 
 
+def lembrete_cracha_plantao():
+    """Pop-up do crachá ao entrar na Escala de plantão, até a pessoa preencher."""
+    if st.session_state.get('cracha_lembrete_adiado'):
+        return
+    meu = colaborador_do_usuario()
+    if meu and cracha_pendente(meu):
+        dialogo_cracha_plantao(meu)
+
+
 def lembrete_ferias_plantao():
-    """Mostra o pop-up de crachá e férias ao entrar na escala, até a pessoa preencher."""
+    """Pop-up das férias ao entrar em Férias, até a pessoa marcar as de 2027."""
     if st.session_state.get('ferias_lembrete_adiado'):
         return
-    colaboradores = [n for n, ativo in carregar_colaboradores_plantao().items() if ativo]
-    if not colaboradores:
-        return
-    respondeu, meu = colaborador_do_usuario()
-    if respondeu and not meu:
-        return
-    if respondeu and not precisa_preencher_ferias(meu):
-        return
-    dialogo_ferias_plantao()
+    meu = colaborador_do_usuario()
+    if meu and ferias_pendentes(meu):
+        dialogo_ferias_plantao(meu)
 
 
-@st.dialog("Crachá e férias", width="medium")
-def dialogo_ferias_plantao():
-    colaboradores = [n for n, ativo in carregar_colaboradores_plantao().items() if ativo]
-    respondeu, meu = colaborador_do_usuario()
-    if not respondeu or meu not in colaboradores:
-        st.markdown("Para começar, **quem é você na escala de plantão?**")
-        opcoes = colaboradores + [NAO_FACO_PARTE_ESCALA]
-        sugerido = sugerir_colaborador(colaboradores)
-        meu = st.selectbox(
-            "Seu nome na escala", opcoes,
-            index=opcoes.index(sugerido) if sugerido else None,
-            placeholder="Escolha o seu nome", key="ferias_dialogo_quem",
+@st.dialog("Validade do crachá")
+def dialogo_cracha_plantao(meu):
+    validade_atual = carregar_crachas_plantao().get(meu)
+    if validade_atual:
+        st.markdown(
+            f"Olá, **{meu}**. O seu crachá venceu em **{formatar_data_br(validade_atual)}**. "
+            "Informe a nova data de validade."
         )
-        if meu == NAO_FACO_PARTE_ESCALA:
-            st.caption("Você não vai ver mais este aviso. Dá para mudar depois na aba Férias.")
-            c1, c2 = st.columns(2)
-            if c1.button("Confirmar", type="primary", use_container_width=True):
-                salvar_vinculo_plantao(None)
-                st.rerun()
-            if c2.button("Marcar depois", use_container_width=True):
-                st.session_state['ferias_lembrete_adiado'] = True
-                st.rerun()
-            return
     else:
-        st.markdown(f"Olá, **{meu}**. Mantenha a validade do seu crachá e as suas férias em dia.")
-
-    validade_atual = carregar_crachas_plantao().get(meu) if meu else None
+        st.markdown(f"Olá, **{meu}**. Informe a data de validade do seu crachá.")
     validade = st.date_input(
-        "Validade do crachá", value=validade_atual, format="DD/MM/YYYY",
+        "Validade do crachá", value=None, format="DD/MM/YYYY",
         min_value=datetime.date(2020, 1, 1), max_value=datetime.date(2040, 12, 31),
-        key=f"ferias_dialogo_cracha_{meu}",
+        key="cracha_dialogo_data",
     )
     if validade and validade < hoje_brasilia():
         st.warning("Essa data já passou: o crachá está vencido.")
+    st.write("")
+    b1, b2 = st.columns(2)
+    if b1.button("Salvar", type="primary", use_container_width=True, disabled=validade is None):
+        salvar_cracha_plantao(meu, validade)
+        st.session_state['ferias_ok'] = "Validade do crachá salva."
+        st.rerun()
+    if b2.button("Marcar depois", use_container_width=True):
+        st.session_state['cracha_lembrete_adiado'] = True
+        st.rerun()
 
+
+@st.dialog("Férias", width="medium")
+def dialogo_ferias_plantao(meu):
+    st.markdown(
+        f"Olá, **{meu}**. Marque as suas férias do fim de 2026 e de {ANO_FERIAS_PEDIDAS} "
+        "(escolha o primeiro e o último dia de cada período)."
+    )
     ferias = carregar_ferias_plantao()
-    ja_marcadas = ferias[(ferias["colaborador"] == meu) & (ferias["fim"] >= hoje_brasilia())] if meu else ferias.iloc[0:0]
+    ja_marcadas = ferias[(ferias["colaborador"] == meu) & (ferias["fim"] >= hoje_brasilia())]
     if not ja_marcadas.empty:
-        st.markdown("**Férias já marcadas**")
+        st.markdown("**Já marcadas**")
         for linha in ja_marcadas.itertuples(index=False):
             st.markdown(f"- {formatar_periodo_ferias(linha.inicio, linha.fim)}")
 
     hoje = hoje_brasilia()
-    st.markdown("**Marque as suas férias** (escolha o primeiro e o último dia)")
     campos = []
     c1, c2 = st.columns(2)
     campos.append(c1.date_input(
@@ -7112,7 +7183,7 @@ def dialogo_ferias_plantao():
 
     st.write("")
     b1, b2 = st.columns(2)
-    salvar = b1.button("Salvar", type="primary", use_container_width=True, disabled=not meu)
+    salvar = b1.button("Salvar", type="primary", use_container_width=True)
     if b2.button("Marcar depois", use_container_width=True):
         st.session_state['ferias_lembrete_adiado'] = True
         st.rerun()
@@ -7124,25 +7195,19 @@ def dialogo_ferias_plantao():
         st.error("Em um dos períodos falta o último dia das férias.")
         return
     periodos = [p for p in periodos if p]
+    if not periodos:
+        st.error("Escolha pelo menos um período.")
+        return
     erros = validar_periodos_ferias(meu, periodos)
     if erros:
         for erro in erros:
             st.error(erro)
         return
-    if not respondeu or carregar_vinculos_plantao().get(
-        safe_str(st.session_state.get('usuario_id')).casefold()
-    ) != meu:
-        salvar_vinculo_plantao(meu)
-    if validade:
-        salvar_cracha_plantao(meu, validade)
-    if periodos:
-        adicionar_ferias_plantao(meu, periodos)
-    if not precisa_preencher_ferias(meu):
-        st.session_state['ferias_ok'] = "Crachá e férias salvos. Obrigado!"
-    else:
-        # Salvou só parte: não insiste de novo nesta sessão.
+    adicionar_ferias_plantao(meu, periodos)
+    if ferias_pendentes(meu):
+        # Marcou só o fim de 2026: não insiste de novo nesta sessão.
         st.session_state['ferias_lembrete_adiado'] = True
-        st.session_state['ferias_ok'] = "Salvo. Falta completar o crachá ou as férias na aba Férias."
+    st.session_state['ferias_ok'] = "Férias marcadas. Obrigado!"
     st.rerun()
 
 
@@ -7277,7 +7342,7 @@ def crachas_html(crachas, nomes, cores_nomes):
 
 
 def aba_minhas_ferias(colaboradores):
-    respondeu, meu = colaborador_do_usuario()
+    meu = colaborador_do_usuario()
     gestor = pode_editar_plantao() or pode_configurar_plantao()
 
     if gestor:
@@ -7288,25 +7353,14 @@ def aba_minhas_ferias(colaboradores):
             help="O seu perfil pode marcar férias e crachá de qualquer colaborador.",
         )
     else:
-        pessoa = meu if meu in colaboradores else None
-
-    with st.expander("Quem é você na escala?", expanded=not respondeu and not gestor):
-        opcoes = colaboradores + [NAO_FACO_PARTE_ESCALA]
-        atual = meu if meu in colaboradores else (NAO_FACO_PARTE_ESCALA if respondeu else None)
-        if atual is None:
-            atual = sugerir_colaborador(colaboradores)
-        escolha = st.selectbox(
-            "Seu nome na escala", opcoes, index=opcoes.index(atual) if atual else None,
-            placeholder="Escolha o seu nome", key="ferias_vinculo",
-        )
-        if st.button("Salvar", key="ferias_vinculo_salvar", disabled=escolha is None):
-            salvar_vinculo_plantao(None if escolha == NAO_FACO_PARTE_ESCALA else escolha)
-            st.session_state['ferias_ok'] = "Pronto, salvo."
-            st.rerun()
-
-    if not pessoa:
-        st.info("Diga acima quem é você na escala para marcar as suas férias e o seu crachá.")
-        return
+        pessoa = meu
+        if not pessoa:
+            st.info(
+                "Seu login não foi reconhecido como alguém da escala de plantão. "
+                "Se você faz parte da escala, peça ao usuário engenharia para ligar o seu login "
+                "em Escala de plantão → Configurar."
+            )
+            return
 
     st.markdown(f"##### Crachá de {pessoa}")
     validade_atual = carregar_crachas_plantao().get(pessoa)
