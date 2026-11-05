@@ -45,10 +45,9 @@ st.markdown(
     /* Mesmo visual da tela de escolha: fundo neutro e superfícies de vidro. */
     [data-testid="stApp"] {
         background:
-            radial-gradient(40rem 28rem at 10% 15%, rgba(255, 106, 19, .07), transparent 70%),
-            radial-gradient(36rem 26rem at 90% 85%, rgba(160, 170, 185, .22), transparent 70%),
-            radial-gradient(30rem 22rem at 75% 10%, rgba(200, 206, 216, .25), transparent 70%),
-            linear-gradient(160deg, #FAFAFB 0%, #EEF0F3 100%);
+            radial-gradient(40rem 28rem at 10% 15%, rgba(255, 106, 19, .05), transparent 70%),
+            radial-gradient(36rem 26rem at 90% 85%, rgba(170, 178, 192, .10), transparent 70%),
+            linear-gradient(160deg, #FDFDFE 0%, #F7F8FA 100%);
         background-attachment: fixed;
     }
     .block-container { padding-top: 2.2rem; max-width: 1280px; }
