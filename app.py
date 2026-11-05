@@ -9097,26 +9097,41 @@ if st.session_state['usuario_logado'] and st.session_state.get('boas_vindas'):
 [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] {{ display: none; }}
 @keyframes gol-girar {{ to {{ transform: rotate(360deg); }} }}
 @keyframes gol-surgir {{ from {{ opacity: 0; transform: translateY(6px); }} to {{ opacity: 1; transform: none; }} }}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&display=swap');
 .boas-vindas {{ height: 70vh; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 18px; animation: gol-surgir .5s ease-out; }}
-.boas-vindas h2 {{ margin: 0; font-weight: 600; color: #1F2430; }}
-.boas-vindas p {{ margin: 0; color: #6B7280; font-size: .95rem; }}
+  justify-content: center; gap: 14px; animation: gol-surgir .5s ease-out; text-align: center; }}
+.boas-vindas img {{ height: 40px !important; }}
+.boas-vindas-marca {{ font-family: 'Inter', sans-serif; font-weight: 600; font-size: .8rem;
+  letter-spacing: .14em; text-transform: uppercase; color: #FF6A13; margin-top: .4rem; }}
+.boas-vindas-titulo {{ font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.75rem;
+  letter-spacing: -.02em; color: #1F2430; }}
+.boas-vindas p {{ margin: .2rem 0 0; color: #6B7280; font-size: .95rem; }}
 .gol-loader {{ width: 28px; height: 28px; border-radius: 50%; border: 3px solid #FFE1CC;
   border-top-color: #FF6A13; animation: gol-girar .8s linear infinite; }}
 </style>
 <div class="boas-vindas">
-  {MARCA_HTML}
-  <h2>Bem-vindo, {primeiro_nome}</h2>
+  {logo_html()}
+  <div class="boas-vindas-marca">Central de Engenharia</div>
+  <div class="boas-vindas-titulo">Bem-vindo, {primeiro_nome}</div>
   <div class="gol-loader"></div>
-  <p>Carregando as fichas…</p>
+  <p>Carregando o site…</p>
 </div>
 """,
         unsafe_allow_html=True,
     )
     inicio = time.monotonic()
-    listar_fichas_pendentes()
-    carregar_prefixos_fichas()
-    restante = 1.2 - (time.monotonic() - inicio)
+    # Deixa prontos os dados das três partes do site; uma falha aqui não impede a entrada.
+    for carregar in (
+        listar_fichas_pendentes, carregar_prefixos_fichas,
+        carregar_escala_plantao, carregar_colaboradores_plantao,
+        carregar_ferias_plantao, carregar_crachas_plantao,
+        carregar_projetos_atividades, carregar_tarefas_atividades,
+    ):
+        try:
+            carregar()
+        except Exception:
+            pass
+    restante = 2.5 - (time.monotonic() - inicio)
     if restante > 0:
         time.sleep(restante)
     st.session_state.pop('boas_vindas', None)
