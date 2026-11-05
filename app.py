@@ -6857,6 +6857,8 @@ def tela_escolha_area(nivel):
 }}
 .escolha-topo {{ display: flex; flex-direction: column; align-items: center; gap: .9rem;
   margin: 9vh 0 2.4rem; text-align: center; }}
+.escolha-marca {{ font-family: 'Inter', sans-serif; font-weight: 600; font-size: .8rem;
+  letter-spacing: .14em; text-transform: uppercase; color: #FF6A13; }}
 .escolha-titulo {{ margin: 0; padding: 0; font-weight: 600; color: #1F2430; font-size: 1.75rem;
   font-family: 'Inter', sans-serif; letter-spacing: -.02em; }}
 .escolha-topo p {{ margin: 0; color: #5F6672; }}
@@ -6879,7 +6881,7 @@ def tela_escolha_area(nivel):
 {regras_cartoes}
 </style>
 <div class="escolha-topo">
-  {MARCA_HTML}
+  <div class="escolha-marca">Central de Engenharia</div>
   <div class="escolha-titulo">Olá, {primeiro_nome}</div>
   <p>Para onde você quer seguir?</p>
 </div>
