@@ -8077,10 +8077,29 @@ if st.session_state['usuario_logado'] and st.session_state.get('boas_vindas'):
 elif not st.session_state['usuario_logado']:
     _, centro, _ = st.columns([1, 1.2, 1])
     with centro:
-        st.markdown("<div style='height:12vh'></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&display=swap');
+.st-key-login_caixa {{ border-radius: 20px; padding: 2.2rem 2rem 1.6rem; }}
+.login-topo {{ display: flex; flex-direction: column; align-items: center; gap: .55rem;
+  text-align: center; margin-bottom: .6rem; }}
+.login-topo img {{ height: 40px !important; }}
+.login-titulo {{ font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.35rem;
+  letter-spacing: -.02em; color: #1F2430; margin-top: .35rem; }}
+.login-sub {{ color: #5F6672; font-size: .92rem; }}
+</style>
+<div style='height:14vh'></div>
+""",
+            unsafe_allow_html=True,
+        )
         with st.container(key="login_caixa"):
-            st.markdown(MARCA_HTML, unsafe_allow_html=True)
-            st.caption("Entre com seu usuário para acessar as fichas.")
+            st.markdown(
+                f'<div class="login-topo">{logo_html()}'
+                '<div class="login-titulo">Núcleo de Inovação Engenharia</div>'
+                '<div class="login-sub">Entre com seu usuário para continuar.</div></div>',
+                unsafe_allow_html=True,
+            )
             with st.form("login_form", border=False):
                 usuario = st.text_input("Usuário")
                 senha = st.text_input("Senha", type="password")
