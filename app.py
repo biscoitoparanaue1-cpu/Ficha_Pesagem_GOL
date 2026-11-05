@@ -28,6 +28,9 @@ if 'usuario_logado' not in st.session_state:
     st.session_state['nome_usuario'] = ""
 if 'pagina_atual' not in st.session_state:
     st.session_state['pagina_atual'] = 'consulta'
+# Parte do site escolhida depois do login ('ficha' ou 'plantao'); None mostra a escolha.
+if 'area' not in st.session_state:
+    st.session_state['area'] = None
 
 st.markdown(
     """
@@ -92,6 +95,7 @@ st.markdown(
     section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"]:has(> .grupo-menu, > .usuario) {
         margin-bottom: 0;
     }
+    .st-key-menu_inicio { margin-top: .5rem; }
     .cabecalho h1 { font-size: 1.75rem; font-weight: 700; margin: 0; padding: 0; }
     .cabecalho p { color: #6B7280; margin: .25rem 0 1.2rem; }
     div[data-testid="stMetric"] {
@@ -172,7 +176,7 @@ ICONES_LUCIDE = {
     'menu_cadastrar_aeronave': 'plane', 'menu_criar_login': 'users',
     'menu_assinaturas': 'signature', 'menu_excluir': 'trash-2',
     'menu_gerou_aprovou': 'user-check',
-    'menu_plantao': 'calendar-days',
+    'menu_plantao': 'calendar-days', 'menu_inicio': 'layout-grid',
     'menu_sair': 'log-out', 'atualizar_fichas': 'refresh-cw',
     'atualizar_graficos': 'refresh-cw',
 }
@@ -6734,12 +6738,31 @@ PAGINAS = {
     # Além do perfil, só aparece para o usuário Engenharia (pode_preencher_gerou_aprovou).
     'gerou_aprovou': ("Gerou e aprovou", ":material/how_to_reg:", tela_gerou_aprovou, {1, 2, 3, 4, 5}),
 }
-GRUPOS_MENU = [
-    ("Consulta", ['consulta', 'graficos']),
-    ("Plantão", ['plantao']),
-    ("Emissão", ['nova_ficha', 'edicao', 'aprovar', 'excluir']),
-    ("Administração", ['cadastrar_aeronave', 'criar_login', 'assinaturas', 'gerou_aprovou']),
-]
+GRUPOS_MENU = {
+    'ficha': [
+        ("Consulta", ['consulta', 'graficos']),
+        ("Emissão", ['nova_ficha', 'edicao', 'aprovar', 'excluir']),
+        ("Administração", ['cadastrar_aeronave', 'criar_login', 'assinaturas', 'gerou_aprovou']),
+    ],
+    'plantao': [
+        ("Plantão", ['plantao']),
+    ],
+}
+# Partes do site oferecidas na tela de escolha depois do login.
+AREAS = {
+    'ficha': {
+        'titulo': "Ficha de pesagem",
+        'descricao': "Consultar, gerar, editar e aprovar as fichas de peso e balanceamento da frota.",
+        'icone': 'scale',
+        'menu': "Pesagem e Balanceamento",
+    },
+    'plantao': {
+        'titulo': "Escala de plantão",
+        'descricao': "Ver quem está de plantão, trocar plantões e acompanhar os totais da Engenharia.",
+        'icone': 'calendar-days',
+        'menu': "Escala de plantão",
+    },
+}
 
 
 def pagina_permitida(pagina, nivel):
@@ -6750,6 +6773,145 @@ def pagina_permitida(pagina, nivel):
 
 def ir_para(pagina):
     st.session_state['pagina_atual'] = pagina
+
+
+def paginas_da_area(area, nivel):
+    return [
+        pagina
+        for _, paginas in GRUPOS_MENU.get(area, [])
+        for pagina in paginas
+        if pagina_permitida(pagina, nivel)
+    ]
+
+
+def entrar_na_area(area):
+    st.session_state['area'] = area
+    paginas = paginas_da_area(area, st.session_state['nivel_acesso'])
+    if st.session_state['pagina_atual'] not in paginas and paginas:
+        st.session_state['pagina_atual'] = paginas[0]
+
+
+def voltar_para_escolha():
+    st.session_state['area'] = None
+
+
+ICONES_AREA = {
+    'scale': (
+        '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/>'
+        '<path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/>'
+        '<path d="M7 21h10"/><path d="M12 3v18"/>'
+        '<path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>'
+    ),
+    'calendar-days': (
+        '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/>'
+        '<path d="M3 10h18"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/>'
+        '<path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/>'
+    ),
+}
+
+
+def svg_icone_area(nome):
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" '
+        f'stroke-linejoin="round">{ICONES_AREA[nome]}</svg>'
+    )
+
+
+def tela_escolha_area(nivel):
+    """Depois do login: dois cartões de vidro para escolher a parte do site."""
+    areas = [area for area in AREAS if paginas_da_area(area, nivel)]
+    if len(areas) == 1:
+        entrar_na_area(areas[0])
+        st.rerun()
+    primeiro_nome = safe_str(st.session_state.get('nome_usuario')).split(" ")[0]
+    regras_cartoes = "\n".join(
+        f"""
+.st-key-area_{area} {{ position: relative; }}
+.st-key-area_{area} .st-key-entrar_{area} {{
+  position: absolute; inset: 0; z-index: 2; margin: 0;
+  width: 100% !important; height: 100% !important; }}
+.st-key-entrar_{area} .stButton, .st-key-entrar_{area} button {{
+  width: 100%; height: 100%; opacity: 0; cursor: pointer; }}
+.st-key-area_{area}:hover .cartao-area {{
+  transform: translateY(-3px); background: rgba(255, 255, 255, .62);
+  border-color: rgba(255, 106, 19, .45);
+  box-shadow: 0 18px 40px -18px rgba(150, 60, 0, .35); }}
+.st-key-area_{area}:hover .cartao-area-seta {{ color: #FF6A13; transform: translateX(4px); }}
+"""
+        for area in areas
+    )
+    st.markdown(
+        f"""
+<style>
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"],
+[data-testid="stExpandSidebarButton"] {{ display: none !important; }}
+[data-testid="stApp"] {{
+  background:
+    radial-gradient(42rem 30rem at 12% 18%, rgba(255, 106, 19, .30), transparent 70%),
+    radial-gradient(36rem 28rem at 88% 82%, rgba(255, 150, 70, .28), transparent 70%),
+    radial-gradient(30rem 22rem at 70% 10%, rgba(255, 196, 150, .35), transparent 70%),
+    linear-gradient(160deg, #FFF8F3 0%, #FDEBDD 100%);
+  background-attachment: fixed;
+}}
+.escolha-topo {{ display: flex; flex-direction: column; align-items: center; gap: .9rem;
+  margin: 9vh 0 2.4rem; text-align: center; }}
+.escolha-titulo {{ margin: 0; padding: 0; font-weight: 600; color: #1F2430; font-size: 1.6rem; }}
+.escolha-topo p {{ margin: 0; color: #5F6672; }}
+.cartao-area {{
+  height: 15.5rem; padding: 1.7rem 1.8rem; border-radius: 20px;
+  background: rgba(255, 255, 255, .34);
+  border: 1px solid rgba(255, 255, 255, .75);
+  backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: 0 10px 30px -16px rgba(150, 60, 0, .25), inset 0 1px 0 rgba(255, 255, 255, .6);
+  display: flex; flex-direction: column; gap: .7rem;
+  transition: transform .18s ease, background .18s ease, box-shadow .18s ease, border-color .18s ease;
+}}
+.cartao-area-icone {{ width: 46px; height: 46px; border-radius: 12px; color: #FF6A13;
+  background: rgba(255, 106, 19, .12); display: flex; align-items: center; justify-content: center; }}
+.cartao-area-icone svg {{ width: 26px; height: 26px; }}
+.cartao-area-titulo {{ margin: .3rem 0 0; font-size: 1.3rem; font-weight: 600; color: #1F2430; }}
+.cartao-area p {{ margin: 0; color: #5F6672; font-size: .93rem; line-height: 1.45; }}
+.cartao-area-seta {{ margin-top: auto; color: #9AA1AD; font-size: .9rem; font-weight: 500;
+  transition: color .18s ease, transform .18s ease; }}
+{regras_cartoes}
+</style>
+<div class="escolha-topo">
+  {MARCA_HTML}
+  <div class="escolha-titulo">Olá, {primeiro_nome}</div>
+  <p>Para onde você quer seguir?</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    _, *colunas, _ = st.columns([0.6] + [1] * len(areas) + [0.6], gap="large")
+    for coluna, area in zip(colunas, areas):
+        dados = AREAS[area]
+        with coluna, st.container(key=f"area_{area}"):
+            st.markdown(
+                f'<div class="cartao-area"><div class="cartao-area-icone">'
+                f'{svg_icone_area(dados["icone"])}</div><div class="cartao-area-titulo">{dados["titulo"]}</div>'
+                f'<p>{dados["descricao"]}</p><div class="cartao-area-seta">Entrar →</div></div>',
+                unsafe_allow_html=True,
+            )
+            st.button(
+                dados["titulo"], key=f"entrar_{area}", on_click=entrar_na_area, args=(area,),
+            )
+    _, centro, _ = st.columns([1, 0.5, 1])
+    with centro:
+        st.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)
+        if st.button("Sair", key="escolha_sair", use_container_width=True):
+            sair()
+
+
+def sair():
+    st.session_state['usuario_logado'] = False
+    st.session_state['nivel_acesso'] = 0
+    st.session_state['usuario_id'] = ""
+    st.session_state['nome_usuario'] = ""
+    st.session_state['pagina_atual'] = 'consulta'
+    st.session_state['area'] = None
+    st.rerun()
 
 
 if st.session_state['usuario_logado'] and st.session_state.get('boas_vindas'):
@@ -6804,6 +6966,7 @@ elif not st.session_state['usuario_logado']:
                     st.session_state['nivel_acesso'] = registro_usuario['nivel_acesso']
                     st.session_state['nome_usuario'] = registro_usuario['nome']
                     st.session_state['pagina_atual'] = 'consulta'
+                    st.session_state['area'] = None
                     st.session_state['boas_vindas'] = True
                     st.rerun()
                 else:
@@ -6811,14 +6974,30 @@ elif not st.session_state['usuario_logado']:
     # Enquanto a pessoa digita a senha, deixa os dados das telas prontos.
     listar_fichas_pendentes()
     carregar_prefixos_fichas()
+elif st.session_state.get('area') not in AREAS:
+    tela_escolha_area(st.session_state['nivel_acesso'])
 else:
     nivel = st.session_state['nivel_acesso']
-    if not pagina_permitida(st.session_state['pagina_atual'], nivel):
-        st.session_state['pagina_atual'] = 'consulta'
+    area = st.session_state['area']
+    paginas_area = paginas_da_area(area, nivel)
+    if st.session_state['pagina_atual'] not in paginas_area:
+        st.session_state['pagina_atual'] = paginas_area[0] if paginas_area else 'consulta'
 
     with st.sidebar:
-        st.markdown(MARCA_HTML, unsafe_allow_html=True)
-        for grupo, paginas in GRUPOS_MENU:
+        st.markdown(
+            MARCA_HTML.replace("Pesagem e Balanceamento", AREAS[area]['menu']),
+            unsafe_allow_html=True,
+        )
+        outras = [a for a in AREAS if a != area and paginas_da_area(a, nivel)]
+        if outras:
+            st.button(
+                "Início", key="menu_inicio", use_container_width=True,
+                on_click=voltar_para_escolha,
+                help="Voltar para a escolha entre " + " e ".join(
+                    AREAS[a]['titulo'].lower() for a in AREAS
+                ),
+            )
+        for grupo, paginas in GRUPOS_MENU[area]:
             visiveis = [p for p in paginas if pagina_permitida(p, nivel)]
             if not visiveis:
                 continue
@@ -6842,11 +7021,6 @@ else:
             unsafe_allow_html=True,
         )
         if st.button("Sair", key="menu_sair", use_container_width=True):
-            st.session_state['usuario_logado'] = False
-            st.session_state['nivel_acesso'] = 0
-            st.session_state['usuario_id'] = ""
-            st.session_state['nome_usuario'] = ""
-            st.session_state['pagina_atual'] = 'consulta'
-            st.rerun()
+            sair()
 
     PAGINAS[st.session_state['pagina_atual']][2]()
