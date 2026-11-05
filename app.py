@@ -115,7 +115,26 @@ st.markdown(
     section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"]:has(> .grupo-menu, > .usuario) {
         margin-bottom: 0;
     }
-    .st-key-menu_inicio { margin-top: .5rem; }
+    /* Menu lateral: marca compacta no topo, usuário e Sair presos no rodapé. */
+    .menu-marca { display: flex; align-items: center; gap: .7rem; padding: .1rem .75rem 0; }
+    .menu-marca img { height: 20px !important; width: auto; }
+    .menu-marca-sep { width: 1px; height: 20px; background: #D9DDE3; }
+    .menu-marca-nome { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1rem;
+        letter-spacing: -.01em; color: #1F2430; white-space: nowrap; overflow: hidden;
+        text-overflow: ellipsis; }
+    .st-key-menu_inicio { margin-top: 1.1rem; }
+    section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+        display: flex; flex-direction: column; min-height: calc(100vh - 3.5rem);
+        padding-top: .25rem; padding-bottom: 1.2rem;
+    }
+    section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div { flex: 1; display: flex; flex-direction: column; }
+    section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"] { flex: 1; }
+    section[data-testid="stSidebar"] [data-testid="stLayoutWrapper"]:has(> .st-key-menu_rodape),
+    section[data-testid="stSidebar"] .st-key-menu_rodape { margin-top: auto; }
+    .st-key-menu_rodape { border-top: 1px solid rgba(29, 36, 51, .08); padding-top: .9rem; gap: .2rem; }
+    .st-key-menu_rodape .usuario { margin-bottom: .1rem; }
+    .st-key-menu_sair button { min-height: 2rem !important; color: #6B7280 !important; font-size: .9rem; }
+    .st-key-menu_sair button:hover { color: #C2410C !important; background: rgba(255, 106, 19, .06) !important; }
     .cabecalho h1 { font-family: 'Inter', sans-serif; font-size: 1.75rem; font-weight: 600;
         letter-spacing: -.02em; margin: 0; padding: 0; }
     .cabecalho p { color: #6B7280; margin: .25rem 0 1.2rem; }
@@ -8646,7 +8665,7 @@ AREAS = {
         'titulo': "Ficha de pesagem",
         'descricao': "Consultar, gerar, editar e aprovar as fichas de peso e balanceamento da frota.",
         'icone': 'scale',
-        'menu': "Pesagem e Balanceamento",
+        'menu': "Ficha de pesagem",
     },
     'plantao': {
         'titulo': "Agenda",
@@ -8911,7 +8930,8 @@ else:
 
     with st.sidebar:
         st.markdown(
-            MARCA_HTML.replace("Pesagem e Balanceamento", AREAS[area]['menu']),
+            f'<div class="menu-marca">{logo_html()}<div class="menu-marca-sep"></div>'
+            f'<div class="menu-marca-nome">{AREAS[area]["menu"]}</div></div>',
             unsafe_allow_html=True,
         )
         outras = [a for a in AREAS if a != area and paginas_da_area(a, nivel)]
@@ -8936,15 +8956,15 @@ else:
                     on_click=ir_para,
                     args=(pagina,),
                 )
-        st.divider()
-        nome = safe_str(st.session_state["nome_usuario"])
-        iniciais = "".join(parte[0] for parte in nome.split()[:2]).upper() or "?"
-        st.markdown(
-            f'<div class="usuario"><div class="usuario-avatar">{iniciais}</div>'
-            f'<div><b>{nome}</b><br><span>{PERFIS.get(nivel, "—")}</span></div></div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("Sair", key="menu_sair", use_container_width=True):
-            sair()
+        with st.container(key="menu_rodape"):
+            nome = safe_str(st.session_state["nome_usuario"])
+            iniciais = "".join(parte[0] for parte in nome.split()[:2]).upper() or "?"
+            st.markdown(
+                f'<div class="usuario"><div class="usuario-avatar">{iniciais}</div>'
+                f'<div><b>{nome}</b><br><span>{PERFIS.get(nivel, "—")}</span></div></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("Sair", key="menu_sair", use_container_width=True):
+                sair()
 
     PAGINAS[st.session_state['pagina_atual']][2]()
