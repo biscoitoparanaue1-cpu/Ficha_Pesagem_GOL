@@ -8096,7 +8096,7 @@ elif not st.session_state['usuario_logado']:
         with st.container(key="login_caixa"):
             st.markdown(
                 f'<div class="login-topo">{logo_html()}'
-                '<div class="login-titulo">Núcleo de Inovação Engenharia</div>'
+                '<div class="login-titulo">Central de Engenharia</div>'
                 '<div class="login-sub">Entre com seu usuário para continuar.</div></div>',
                 unsafe_allow_html=True,
             )
