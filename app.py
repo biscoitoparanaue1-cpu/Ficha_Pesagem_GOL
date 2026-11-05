@@ -1202,6 +1202,9 @@ def inicializar_controle_acesso():
                 criado_em TEXT NOT NULL
             )
         ''')
+        # Líder, etapa (Ideia, Em andamento, Pausado, Concluído) e entrega final do projeto.
+        for coluna in ("lider TEXT", "etapa TEXT", "prazo DATE"):
+            conn.execute(f"ALTER TABLE atividades_projetos ADD COLUMN IF NOT EXISTS {coluna}")
         conn.execute('''
             CREATE TABLE IF NOT EXISTS atividades_participantes (
                 projeto_id BIGINT NOT NULL,
@@ -6776,6 +6779,8 @@ def tela_plantao():
 # atividades com responsável e prazo, e uma conversa por projeto.
 # ---------------------------------------------------------------------------
 STATUS_ATIVIDADE = ["A fazer", "Em andamento", "Concluída"]
+# Etapas de um projeto da célula: da ideia à entrega.
+ETAPAS_PROJETO = ["Ideia", "Em andamento", "Pausado", "Concluído"]
 NIVEIS_ATIVIDADES = {NIVEL_OPERACAO, NIVEL_CONSULTA, NIVEL_ADMIN, NIVEL_ESPECIALISTA}
 MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun",
                 "jul", "ago", "set", "out", "nov", "dez"]
@@ -6811,7 +6816,7 @@ def garantir_pode_usar_atividades():
 def carregar_projetos_atividades():
     with conectar_banco() as conn:
         linhas = conn.execute(
-            '''SELECT id, nome, descricao, criado_por, criado_em
+            '''SELECT id, nome, descricao, lider, etapa, prazo, criado_por, criado_em
                FROM atividades_projetos ORDER BY lower(nome)'''
         ).fetchall()
     return [dict(zip(linha.keys(), linha)) for linha in linhas]
@@ -6873,14 +6878,15 @@ def registrar_evento_atividade(conn, projeto_id, texto):
     )
 
 
-def criar_projeto_atividades(nome, descricao, participantes):
+def criar_projeto_atividades(nome, descricao, participantes, lider, etapa, prazo):
     garantir_pode_usar_atividades()
-    usuario, nome_usuario = usuario_logado_atividades()
+    usuario, _ = usuario_logado_atividades()
     with conectar_banco() as conn:
         projeto_id = conn.execute(
-            '''INSERT INTO atividades_projetos (nome, descricao, criado_por, criado_em)
-               VALUES (?, ?, ?, ?) RETURNING id''',
-            (nome, descricao, usuario, agora_utc_iso()),
+            '''INSERT INTO atividades_projetos
+               (nome, descricao, lider, etapa, prazo, criado_por, criado_em)
+               VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id''',
+            (nome, descricao, lider, etapa, prazo, usuario, agora_utc_iso()),
         ).fetchone()[0]
         salvar_participantes_conn(conn, projeto_id, participantes)
         registrar_evento_atividade(conn, projeto_id, f"criou o projeto {nome}")
@@ -6898,14 +6904,17 @@ def salvar_participantes_conn(conn, projeto_id, participantes):
         )
 
 
-def atualizar_projeto_atividades(projeto_id, nome, descricao, participantes):
+def atualizar_projeto_atividades(projeto, nome, descricao, participantes, lider, etapa, prazo):
     garantir_pode_usar_atividades()
     with conectar_banco() as conn:
         conn.execute(
-            'UPDATE atividades_projetos SET nome = ?, descricao = ? WHERE id = ?',
-            (nome, descricao, projeto_id),
+            '''UPDATE atividades_projetos
+               SET nome = ?, descricao = ?, lider = ?, etapa = ?, prazo = ? WHERE id = ?''',
+            (nome, descricao, lider, etapa, prazo, projeto['id']),
         )
-        salvar_participantes_conn(conn, projeto_id, participantes)
+        salvar_participantes_conn(conn, projeto['id'], participantes)
+        if etapa != etapa_projeto(projeto):
+            registrar_evento_atividade(conn, projeto['id'], f"mudou a etapa do projeto para {etapa}")
     invalidar_cache_atividades()
 
 
@@ -7003,7 +7012,7 @@ def tarefa_e_minha(tarefa, participantes):
     return bool(login) and login.casefold() == usuario.casefold()
 
 
-def prazo_html(tarefa):
+def prazo_html(tarefa, curto=False):
     prazo = tarefa['prazo']
     if not prazo:
         return '<span class="ativ-prazo">Sem prazo</span>'
@@ -7015,6 +7024,8 @@ def prazo_html(tarefa):
     if tarefa['status'] == "Concluída":
         return f'<span class="ativ-prazo">{texto}</span>'
     dias = (prazo - hoje_brasilia()).days
+    if dias < 0 and curto:
+        return f'<span class="ativ-prazo atrasada">{texto}</span>'
     if dias < 0:
         return (f'<span class="ativ-prazo atrasada">{texto} · '
                 f'{-dias} dia{"s" if dias < -1 else ""} de atraso</span>')
@@ -7076,7 +7087,7 @@ CSS_ATIVIDADES = """
 .ativ-linha .titulo.feita { color: #9AA1AD; text-decoration: line-through; }
 .ativ-linha .sub { color: #8A919C; font-size: .8rem; margin-top: .1rem; }
 .ativ-linha .texto { flex: 1; min-width: 0; }
-.ativ-pessoa { display: flex; align-items: center; gap: .45rem; color: #3B4352;
+.ativ-pessoa { display: flex; align-items: center; gap: .45rem; color: #3B4352; white-space: nowrap;
   font-size: .85rem; min-height: 2.4rem; }
 .ativ-pessoa .vazio { color: #9AA1AD; }
 .ativ-prazo { display: inline-block; font-size: .78rem; font-weight: 500; color: #5F6672;
@@ -7111,71 +7122,148 @@ CSS_ATIVIDADES = """
 .ativ-dia { display: flex; align-items: center; gap: .7rem; color: #9AA1AD; font-size: .74rem;
   font-weight: 600; margin: .8rem 0 .2rem; }
 .ativ-dia::before, .ativ-dia::after { content: ""; flex: 1; height: 1px; background: #E6E8EC; }
+.ativ-bolinha { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: .4rem; vertical-align: .05rem; background: #B4BAC4; }
+.ativ-bolinha.verde { background: #12B76A; }
+.ativ-bolinha.laranja { background: #FF8A3D; }
+.ativ-bolinha.vermelha { background: #D92D20; }
+.ativ-progresso { display: flex; align-items: center; gap: .5rem; font-size: .78rem; color: #6B7280; }
+.ativ-progresso .trilho, .ativ-carga .trilho { flex: 1; height: 6px; border-radius: 99px;
+  background: rgba(31, 36, 48, .08); overflow: hidden; min-width: 50px; }
+.ativ-progresso .trilho div, .ativ-carga .trilho div { height: 100%; background: #FF6A13;
+  border-radius: 99px; }
+.ativ-faixa { display: flex; flex-wrap: wrap; gap: 1rem 1.5rem; margin: .9rem 0 .4rem;
+  padding: .8rem 1.1rem; border-radius: 14px; background: rgba(255, 255, 255, .6);
+  border: 1px solid rgba(227, 230, 235, .8); }
+.ativ-faixa > div { display: flex; flex-direction: column; gap: .2rem; }
+.ativ-faixa > div:nth-child(6) { min-width: 90px; flex: 1; }
+.ativ-faixa .det { white-space: nowrap; }
+.ativ-faixa .rot { font-size: .68rem; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: #9AA1AD; }
+.ativ-faixa .val { font-size: .9rem; color: #1F2430; font-weight: 500; }
+.ativ-faixa .det { font-size: .75rem; color: #8A919C; }
+.ativ-cab-tabela { display: grid; grid-template-columns: 2.4fr 1.6fr 1.4fr 2fr 1.7fr; gap: 1rem;
+  font-size: .68rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: #9AA1AD; padding: 0 1rem .1rem; }
+[class*="st-key-ativ_painel_"] {
+  background: rgba(255, 255, 255, .6); border: 1px solid rgba(227, 230, 235, .8);
+  border-radius: 12px; padding: .55rem 1rem; gap: 0; }
+[class*="st-key-ativ_painel_"] [data-testid="stMarkdownContainer"] { margin-bottom: 0; }
+[class*="st-key-ativ_painel_"] [data-testid="stColumn"] > div { gap: 0; }
+[class*="st-key-ativ_abrir_"] button { border: none; background: transparent; box-shadow: none;
+  padding: 0; min-height: 0; font-weight: 600; color: #1F2430; }
+[class*="st-key-ativ_abrir_"] button:hover { color: #FF6A13; background: transparent; }
+[class*="st-key-ativ_abrir_"] button p { font-weight: 600; font-size: .95rem; }
+.ativ-celula-txt .forte { font-size: .88rem; color: #1F2430; font-weight: 500; }
+.sub, .ativ-celula-txt .sub { color: #8A919C; font-size: .78rem; line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ativ-carga { display: flex; align-items: center; gap: .7rem; padding: .45rem 0; }
+.ativ-carga .info { flex: 1; min-width: 0; }
+.ativ-carga .linha1 { display: flex; justify-content: space-between; gap: .5rem;
+  font-size: .87rem; color: #1F2430; margin-bottom: .3rem; }
+.ativ-carga .det { color: #8A919C; font-size: .78rem; }
+.ativ-carga .det .atraso { color: #B42318; font-weight: 600; }
+.ativ-carga .trilho { display: block; }
+.ativ-avatar.vazio { background: rgba(31, 36, 48, .06); color: #9AA1AD; }
+.ativ-entrega { display: flex; gap: .8rem; align-items: flex-start; padding: .45rem 0;
+  border-bottom: 1px solid #EEF0F3; }
+.ativ-entrega .quando { width: 4.6rem; flex-shrink: 0; }
+.ativ-entrega .info { min-width: 0; }
+.ativ-entrega .titulo { font-size: .88rem; color: #1F2430; font-weight: 500; }
 </style>
 """
 
 
-@st.dialog("Novo projeto")
-def dialogo_novo_projeto():
+def etapa_projeto(projeto):
+    return safe_str(projeto.get('etapa')) or "Em andamento"
+
+
+def como_data(valor):
+    if isinstance(valor, str) and valor:
+        return datetime.date.fromisoformat(valor[:10])
+    return valor or None
+
+
+def formulario_projeto(projeto=None):
+    """Campos do projeto; devolve None ou os dados prontos para gravar."""
     pessoas = carregar_pessoas_atividades()
     _, meu_nome = usuario_logado_atividades()
-    with st.form("ativ_form_novo_projeto", border=False):
-        nome = st.text_input("Nome do projeto", placeholder="ex.: Pesagem PR-GXX")
-        descricao = st.text_area("Descrição (opcional)", height=80)
+    atuais = participantes_do_projeto(projeto['id']) if projeto else {}
+    if projeto:
+        padrao = [nome for nome in atuais if nome in pessoas]
+        sem_login = [nome for nome, login in atuais.items() if not login and nome not in pessoas]
+    else:
+        padrao = [meu_nome] if meu_nome in pessoas else []
+        sem_login = []
+    lider_atual = safe_str(projeto.get('lider')) if projeto else meu_nome
+    opcoes_lider = ["— Sem líder —"] + sorted(set(pessoas) | set(atuais) | ({lider_atual} - {""}))
+    with st.form(f"ativ_form_projeto_{projeto['id'] if projeto else 'novo'}", border=False):
+        nome = st.text_input(
+            "Nome do projeto", value=projeto['nome'] if projeto else "",
+            placeholder="ex.: Pesagem PR-GXX",
+        )
+        descricao = st.text_area(
+            "Objetivo (opcional)", value=safe_str(projeto['descricao']) if projeto else "",
+            height=80, placeholder="O que o projeto quer entregar e por quê",
+        )
+        c1, c2 = st.columns(2)
+        lider = c1.selectbox(
+            "Líder do projeto", opcoes_lider,
+            index=opcoes_lider.index(lider_atual) if lider_atual in opcoes_lider else 0,
+        )
+        prazo = c2.date_input(
+            "Entrega final (opcional)", value=como_data(projeto.get('prazo')) if projeto else None,
+            format="DD/MM/YYYY",
+        )
+        etapa = st.segmented_control(
+            "Etapa", ETAPAS_PROJETO,
+            default=etapa_projeto(projeto) if projeto else "Em andamento",
+        )
         escolhidos = st.multiselect(
-            "Participantes", list(pessoas),
-            default=[meu_nome] if meu_nome in pessoas else [],
-            placeholder="Escolha as pessoas",
+            "Participantes", list(pessoas), default=padrao, placeholder="Escolha as pessoas",
         )
         outros = st.text_input(
-            "Pessoas sem login no site (opcional)", placeholder="Nomes separados por vírgula",
+            "Pessoas sem login no site (opcional)", value=", ".join(sem_login),
+            placeholder="Nomes separados por vírgula",
         )
-        criar = st.form_submit_button("Criar projeto", type="primary", use_container_width=True)
-    if criar:
-        nome = nome.strip()
-        if not nome:
-            st.error("Dê um nome ao projeto.")
-            return
-        if any(p['nome'].casefold() == nome.casefold() for p in carregar_projetos_atividades()):
-            st.error("Já existe um projeto com esse nome.")
-            return
-        participantes = {pessoa: pessoas[pessoa] for pessoa in escolhidos}
-        participantes.update({n.strip(): None for n in outros.split(",") if n.strip()})
-        st.session_state['ativ_selecao'] = criar_projeto_atividades(
-            nome, descricao.strip(), participantes,
+        enviar = st.form_submit_button(
+            "Salvar" if projeto else "Criar projeto", type="primary", use_container_width=True,
         )
+    if not enviar:
+        return None
+    nome = nome.strip()
+    if not nome:
+        st.error("Dê um nome ao projeto.")
+        return None
+    if any(p['nome'].casefold() == nome.casefold() and (not projeto or p['id'] != projeto['id'])
+           for p in carregar_projetos_atividades()):
+        st.error("Já existe um projeto com esse nome.")
+        return None
+    participantes = {pessoa: pessoas[pessoa] for pessoa in escolhidos}
+    participantes.update({n.strip(): None for n in outros.split(",") if n.strip()})
+    lider = None if lider == opcoes_lider[0] else lider
+    # O líder sempre faz parte do projeto.
+    if lider and lider not in participantes:
+        participantes[lider] = pessoas.get(lider) or atuais.get(lider)
+    return dict(
+        nome=nome, descricao=descricao.strip(), participantes=participantes,
+        lider=lider, etapa=etapa or "Em andamento", prazo=prazo,
+    )
+
+
+@st.dialog("Novo projeto")
+def dialogo_novo_projeto():
+    dados = formulario_projeto()
+    if dados:
+        st.session_state['ativ_selecao'] = criar_projeto_atividades(**dados)
         st.rerun()
 
 
 @st.dialog("Editar projeto")
 def dialogo_editar_projeto(projeto):
-    pessoas = carregar_pessoas_atividades()
-    atuais = participantes_do_projeto(projeto['id'])
-    sem_login = [nome for nome, login in atuais.items() if not login and nome not in pessoas]
-    with st.form("ativ_form_editar_projeto", border=False):
-        nome = st.text_input("Nome do projeto", value=projeto['nome'])
-        descricao = st.text_area("Descrição", value=safe_str(projeto['descricao']), height=80)
-        escolhidos = st.multiselect(
-            "Participantes", list(pessoas),
-            default=[nome_p for nome_p in atuais if nome_p in pessoas],
-        )
-        outros = st.text_input(
-            "Pessoas sem login no site", value=", ".join(sem_login),
-            placeholder="Nomes separados por vírgula",
-        )
-        salvar = st.form_submit_button("Salvar", type="primary", use_container_width=True)
-    if salvar:
-        nome = nome.strip()
-        if not nome:
-            st.error("Dê um nome ao projeto.")
-            return
-        if any(p['nome'].casefold() == nome.casefold() and p['id'] != projeto['id']
-               for p in carregar_projetos_atividades()):
-            st.error("Já existe um projeto com esse nome.")
-            return
-        participantes = {pessoa: pessoas[pessoa] for pessoa in escolhidos}
-        participantes.update({n.strip(): None for n in outros.split(",") if n.strip()})
-        atualizar_projeto_atividades(projeto['id'], nome, descricao.strip(), participantes)
+    dados = formulario_projeto(projeto)
+    if dados:
+        atualizar_projeto_atividades(projeto, **dados)
         st.rerun()
 
     usuario, _ = usuario_logado_atividades()
@@ -7184,7 +7272,7 @@ def dialogo_editar_projeto(projeto):
         confirmar = st.checkbox("Quero excluir este projeto e todas as atividades dele")
         if st.button("Excluir projeto", disabled=not confirmar, use_container_width=True):
             excluir_projeto_atividades(projeto['id'])
-            st.session_state['ativ_selecao'] = 'minhas'
+            st.session_state['ativ_selecao'] = 'geral'
             st.rerun()
 
 
@@ -7421,29 +7509,197 @@ def aba_conversa_projeto(projeto):
         st.rerun()
 
 
+def saude_projeto(projeto, tarefas):
+    """Situação do projeto para o painel: (texto, classe da bolinha, motivo)."""
+    etapa = etapa_projeto(projeto)
+    if etapa in ("Concluído", "Pausado", "Ideia"):
+        return etapa, "neutra", ""
+    hoje = hoje_brasilia()
+    abertas = [t for t in tarefas if t['status'] != "Concluída"]
+    atrasadas = [t for t in abertas if data_tarefa(t) and data_tarefa(t) < hoje]
+    prazo = como_data(projeto.get('prazo'))
+    if prazo and prazo < hoje and abertas:
+        return "Atrasado", "vermelha", "Passou da entrega final"
+    if atrasadas:
+        return "Atrasado", "vermelha", f"{len(atrasadas)} atividade{'s' if len(atrasadas) > 1 else ''} atrasada{'s' if len(atrasadas) > 1 else ''}"
+    sem_dono = [t for t in abertas if not safe_str(t['responsavel'])]
+    perto = [t for t in abertas if data_tarefa(t) and (data_tarefa(t) - hoje).days <= 3]
+    if prazo and (prazo - hoje).days <= 7 and abertas:
+        return "Atenção", "laranja", "Entrega final em até 7 dias"
+    if perto:
+        return "Atenção", "laranja", f"{len(perto)} entrega{'s' if len(perto) > 1 else ''} em até 3 dias"
+    if sem_dono:
+        return "Atenção", "laranja", f"{len(sem_dono)} sem responsável"
+    if not tarefas:
+        return "Atenção", "laranja", "Ainda sem atividades"
+    return "Em dia", "verde", ""
+
+
+def barra_progresso_html(feitas, total):
+    pct = round(100 * feitas / total) if total else 0
+    return (
+        f'<div class="ativ-progresso"><div class="trilho"><div style="width:{pct}%"></div></div>'
+        f'<span>{feitas}/{total}</span></div>'
+    )
+
+
+def data_curta(data):
+    texto = f"{data.day:02d} {MESES_CURTOS[data.month - 1]}"
+    if data.year != hoje_brasilia().year:
+        texto += f" {data.year}"
+    return texto
+
+
+def visao_geral_atividades(projetos, tarefas):
+    st.markdown(
+        '<div class="ativ-titulo">Visão geral</div>'
+        '<p class="ativ-desc">Como estão os projetos e o time hoje.</p>',
+        unsafe_allow_html=True,
+    )
+    hoje = hoje_brasilia()
+    ativos = [p for p in projetos if etapa_projeto(p) not in ("Concluído",)]
+    ids_ativos = {p['id'] for p in ativos if etapa_projeto(p) != "Pausado"}
+    abertas = [t for t in tarefas if t['status'] != "Concluída" and t['projeto_id'] in ids_ativos]
+    atrasadas = [t for t in abertas if data_tarefa(t) and data_tarefa(t) < hoje]
+    proximas = [t for t in abertas if data_tarefa(t) and 0 <= (data_tarefa(t) - hoje).days <= 14]
+    concluidas_mes = [
+        t for t in tarefas if t['status'] == "Concluída" and safe_str(t['concluido_em'])
+        and datetime.datetime.fromisoformat(safe_str(t['concluido_em'])).astimezone(FUSO_BRASILIA).date()
+        >= hoje - datetime.timedelta(days=30)
+    ]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Projetos ativos", len([p for p in projetos if etapa_projeto(p) == "Em andamento"]))
+    c2.metric("Atividades em aberto", len(abertas))
+    c3.metric("Atrasadas", len(atrasadas))
+    c4.metric("Concluídas em 30 dias", len(concluidas_mes))
+
+    if not projetos:
+        st.markdown(
+            '<div class="ativ-vazio">Nenhum projeto ainda.<br>'
+            'Use <b>Novo projeto</b> para começar.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    # Projetos: o que precisa de atenção aparece primeiro.
+    ordem = {"Atrasado": 0, "Atenção": 1, "Em dia": 2, "Ideia": 3, "Pausado": 4, "Concluído": 5}
+    linhas = []
+    for projeto in projetos:
+        do_projeto = [t for t in tarefas if t['projeto_id'] == projeto['id']]
+        saude = saude_projeto(projeto, do_projeto)
+        linhas.append((ordem[saude[0]], projeto['nome'].casefold(), projeto, do_projeto, saude))
+    linhas.sort(key=lambda item: item[:2])
+
+    st.markdown('<div class="ativ-secao">Projetos</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="ativ-cab-tabela"><span>Projeto</span><span>Líder</span>'
+        '<span>Progresso</span><span>Próxima entrega</span><span>Situação</span></div>',
+        unsafe_allow_html=True,
+    )
+    for _, _, projeto, do_projeto, (situacao, cor, motivo) in linhas:
+        feitas = sum(1 for t in do_projeto if t['status'] == "Concluída")
+        pendentes = ordenar_por_prazo([t for t in do_projeto if t['status'] != "Concluída" and t['prazo']])
+        if pendentes:
+            proxima = (f'<div class="forte">{data_curta(data_tarefa(pendentes[0]))}</div>'
+                       f'<div class="sub">{esc(pendentes[0]["titulo"])}</div>')
+        else:
+            proxima = '<div class="sub">—</div>'
+        prazo_final = como_data(projeto.get('prazo'))
+        sub_projeto = etapa_projeto(projeto)
+        if prazo_final:
+            sub_projeto += f" · entrega final {data_curta(prazo_final)}"
+        lider = safe_str(projeto.get('lider'))
+        with st.container(key=f"ativ_painel_{projeto['id']}"):
+            c_nome, c_lider, c_prog, c_prox, c_sit = st.columns(
+                [2.4, 1.6, 1.4, 2, 1.7], vertical_alignment="center",
+            )
+            c_nome.button(
+                f"\\# {projeto['nome']}", key=f"ativ_abrir_{projeto['id']}",
+                on_click=selecionar_canal_atividades, args=(projeto['id'],),
+            )
+            c_nome.markdown(f'<div class="sub ativ-sub-projeto">{esc(sub_projeto)}</div>',
+                            unsafe_allow_html=True)
+            c_lider.markdown(
+                f'<div class="ativ-pessoa">{avatar_html(lider)}{esc(lider)}</div>' if lider
+                else '<div class="ativ-pessoa"><span class="vazio">Sem líder</span></div>',
+                unsafe_allow_html=True,
+            )
+            c_prog.markdown(barra_progresso_html(feitas, len(do_projeto)), unsafe_allow_html=True)
+            c_prox.markdown(f'<div class="ativ-celula-txt">{proxima}</div>', unsafe_allow_html=True)
+            c_sit.markdown(
+                f'<div class="ativ-celula-txt"><div class="forte"><span class="ativ-bolinha {cor}"></span>'
+                f'{situacao}</div>' + (f'<div class="sub">{esc(motivo)}</div>' if motivo else "")
+                + '</div>',
+                unsafe_allow_html=True,
+            )
+
+    c_carga, c_entregas = st.columns([1, 1], gap="large")
+    with c_carga:
+        st.markdown('<div class="ativ-secao">Carga do time</div>', unsafe_allow_html=True)
+        carga = {}
+        for tarefa in abertas:
+            pessoa = safe_str(tarefa['responsavel']) or "Sem responsável"
+            dados = carga.setdefault(pessoa, {"abertas": 0, "atrasadas": 0, "semana": 0})
+            dados["abertas"] += 1
+            prazo = data_tarefa(tarefa)
+            if prazo and prazo < hoje:
+                dados["atrasadas"] += 1
+            elif prazo and (prazo - hoje).days <= 7:
+                dados["semana"] += 1
+        if not carga:
+            st.markdown('<div class="ativ-vazio">Nenhuma atividade em aberto.</div>', unsafe_allow_html=True)
+        else:
+            maximo = max(d["abertas"] for d in carga.values())
+            partes = []
+            for pessoa, dados in sorted(carga.items(), key=lambda item: (item[0] == "Sem responsável", -item[1]["abertas"], item[0])):
+                detalhes = [f'{dados["abertas"]} em aberto']
+                if dados["semana"]:
+                    detalhes.append(f'{dados["semana"]} em 7 dias')
+                if dados["atrasadas"]:
+                    detalhes.append(f'<b class="atraso">{dados["atrasadas"]} atrasada{"s" if dados["atrasadas"] > 1 else ""}</b>')
+                avatar = (avatar_html(pessoa) if pessoa != "Sem responsável"
+                          else '<span class="ativ-avatar vazio">?</span>')
+                partes.append(
+                    f'<div class="ativ-carga">{avatar}<div class="info"><div class="linha1">'
+                    f'<span>{esc(pessoa)}</span><span class="det">{" · ".join(detalhes)}</span></div>'
+                    f'<div class="trilho"><div style="width:{100 * dados["abertas"] / maximo:.0f}%"></div></div>'
+                    f'</div></div>'
+                )
+            st.markdown("".join(partes), unsafe_allow_html=True)
+    with c_entregas:
+        st.markdown('<div class="ativ-secao">Próximas entregas · 14 dias</div>', unsafe_allow_html=True)
+        nomes_projetos = {p['id']: p['nome'] for p in projetos}
+        lista = ordenar_por_prazo(atrasadas) + ordenar_por_prazo(proximas)
+        if not lista:
+            st.markdown('<div class="ativ-vazio">Nada previsto para os próximos 14 dias.</div>',
+                        unsafe_allow_html=True)
+        else:
+            partes = []
+            for tarefa in lista[:12]:
+                responsavel = safe_str(tarefa['responsavel']) or "Sem responsável"
+                partes.append(
+                    f'<div class="ativ-entrega"><div class="quando">{prazo_html(tarefa, curto=True)}</div>'
+                    f'<div class="info"><div class="titulo">{esc(tarefa["titulo"])}</div>'
+                    f'<div class="sub">{esc(responsavel)} · # {esc(nomes_projetos.get(tarefa["projeto_id"], ""))}</div>'
+                    f'</div></div>'
+                )
+            if len(lista) > 12:
+                partes.append(f'<div class="sub" style="padding:.4rem .2rem">e mais {len(lista) - 12}…</div>')
+            st.markdown("".join(partes), unsafe_allow_html=True)
+
+
 def visao_projeto(projeto, tarefas):
     participantes = participantes_do_projeto(projeto['id'])
     tarefas = [t for t in tarefas if t['projeto_id'] == projeto['id']]
     abertas = [t for t in tarefas if t['status'] != "Concluída"]
-    hoje = hoje_brasilia()
-    atrasadas = [t for t in abertas if data_tarefa(t) and data_tarefa(t) < hoje]
+    situacao, cor, motivo = saude_projeto(projeto, tarefas)
 
     c_titulo, c_botoes = st.columns([3, 1.4], vertical_alignment="top")
     with c_titulo:
-        pilha = "".join(avatar_html(nome) for nome in list(participantes)[:6])
-        if len(participantes) > 6:
-            pilha += f'<span class="mais">+{len(participantes) - 6}</span>'
-        pessoas = (f"{len(participantes)} participante{'s' if len(participantes) != 1 else ''}"
-                   if participantes else "Sem participantes")
-        resumo = (f'<b>{len(abertas)}</b> em aberto · <b>{len(tarefas) - len(abertas)}</b> concluída'
-                  f'{"s" if len(tarefas) - len(abertas) != 1 else ""}')
-        if atrasadas:
-            resumo += f' · <b style="color:#B42318">{len(atrasadas)}</b> atrasada{"s" if len(atrasadas) != 1 else ""}'
         st.markdown(
             f'<div class="ativ-titulo"><span class="cerquilha">#</span>{esc(projeto["nome"])}</div>'
-            + (f'<p class="ativ-desc">{esc(projeto["descricao"])}</p>' if safe_str(projeto["descricao"]) else "")
-            + f'<div class="ativ-resumo" style="display:flex;align-items:center;gap:.7rem;">'
-            f'<span class="ativ-pilha">{pilha}</span><span>{pessoas} · {resumo}</span></div>',
+            + (f'<p class="ativ-desc">{esc(projeto["descricao"])}</p>' if safe_str(projeto["descricao"]) else ""),
             unsafe_allow_html=True,
         )
     with c_botoes:
@@ -7452,8 +7708,28 @@ def visao_projeto(projeto, tarefas):
                      icon=":material/add:", use_container_width=True):
             dialogo_tarefa(projeto['id'])
         if b2.button("", key="ativ_editar_projeto", icon=":material/settings:",
-                     help="Participantes, nome e descrição", use_container_width=True):
+                     help="Líder, etapa, entrega final e participantes", use_container_width=True):
             dialogo_editar_projeto(projeto)
+
+    lider = safe_str(projeto.get('lider'))
+    prazo_final = como_data(projeto.get('prazo'))
+    pilha = "".join(avatar_html(nome) for nome in list(participantes)[:6])
+    if len(participantes) > 6:
+        pilha += f'<span class="mais">+{len(participantes) - 6}</span>'
+    feitas = len(tarefas) - len(abertas)
+    st.markdown(
+        '<div class="ativ-faixa">'
+        f'<div><span class="rot">Situação</span><span class="val"><span class="ativ-bolinha {cor}"></span>'
+        f'{situacao}</span>' + (f'<span class="det">{esc(motivo)}</span>' if motivo else "") + '</div>'
+        f'<div><span class="rot">Etapa</span><span class="val">{esc(etapa_projeto(projeto))}</span></div>'
+        f'<div><span class="rot">Líder</span><span class="val">{esc(lider) or "—"}</span></div>'
+        f'<div><span class="rot">Entrega final</span><span class="val">'
+        f'{data_curta(prazo_final) if prazo_final else "—"}</span></div>'
+        f'<div><span class="rot">Participantes</span><span class="ativ-pilha">{pilha or "—"}</span></div>'
+        f'<div><span class="rot">Progresso</span>{barra_progresso_html(feitas, len(tarefas))}</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     aba_tarefas, aba_conversa = st.tabs(["Atividades", "Conversa"])
     with aba_tarefas:
@@ -7466,6 +7742,16 @@ def selecionar_canal_atividades(selecao):
     st.session_state['ativ_selecao'] = selecao
 
 
+def botao_canal_projeto(projeto, tarefas, selecao):
+    abertas = sum(1 for t in tarefas if t['projeto_id'] == projeto['id'] and t['status'] != "Concluída")
+    st.button(
+        f"\\# {projeto['nome']}" + (f"  ·  {abertas}" if abertas else ""),
+        key=f"ativ_canal_{projeto['id']}", use_container_width=True,
+        type="primary" if selecao == projeto['id'] else "secondary",
+        on_click=selecionar_canal_atividades, args=(projeto['id'],),
+    )
+
+
 def tela_atividades():
     if not exigir_nivel(*NIVEIS_ATIVIDADES):
         return
@@ -7474,9 +7760,9 @@ def tela_atividades():
     tarefas = carregar_tarefas_atividades()
     participantes = carregar_participantes_atividades()
     ids = {p['id'] for p in projetos}
-    selecao = st.session_state.get('ativ_selecao', 'minhas')
-    if selecao != 'minhas' and selecao not in ids:
-        selecao = 'minhas'
+    selecao = st.session_state.get('ativ_selecao', 'geral')
+    if selecao not in ('geral', 'minhas') and selecao not in ids:
+        selecao = 'geral'
 
     mapa_logins = {(p['projeto_id'], p['nome']): p['usuario'] for p in participantes}
     minhas_abertas = sum(
@@ -7486,26 +7772,40 @@ def tela_atividades():
     c_canais, c_conteudo = st.columns([1, 3.3], gap="medium")
     with c_canais, st.container(key="ativ_canais"):
         st.button(
+            "Visão geral", key="ativ_canal_geral", icon=":material/space_dashboard:",
+            use_container_width=True, type="primary" if selecao == 'geral' else "secondary",
+            on_click=selecionar_canal_atividades, args=('geral',),
+        )
+        st.button(
             "Minhas atividades" + (f"  ·  {minhas_abertas}" if minhas_abertas else ""),
             key="ativ_canal_minhas", icon=":material/inbox:", use_container_width=True,
             type="primary" if selecao == 'minhas' else "secondary",
             on_click=selecionar_canal_atividades, args=('minhas',),
         )
-        st.markdown('<div class="ativ-rotulo">Projetos</div>', unsafe_allow_html=True)
-        for projeto in projetos:
-            abertas = sum(1 for t in tarefas if t['projeto_id'] == projeto['id'] and t['status'] != "Concluída")
-            st.button(
-                f"\\# {projeto['nome']}" + (f"  ·  {abertas}" if abertas else ""),
-                key=f"ativ_canal_{projeto['id']}", use_container_width=True,
-                type="primary" if selecao == projeto['id'] else "secondary",
-                on_click=selecionar_canal_atividades, args=(projeto['id'],),
-            )
+        grupos = [
+            ("Projetos", [p for p in projetos if etapa_projeto(p) == "Em andamento"]),
+            ("Ideias", [p for p in projetos if etapa_projeto(p) == "Ideia"]),
+            ("Pausados", [p for p in projetos if etapa_projeto(p) == "Pausado"]),
+        ]
+        for rotulo, lista in grupos:
+            if lista or rotulo == "Projetos":
+                st.markdown(f'<div class="ativ-rotulo">{rotulo}</div>', unsafe_allow_html=True)
+            for projeto in lista:
+                botao_canal_projeto(projeto, tarefas, selecao)
         if st.button("Novo projeto", key="ativ_novo_projeto", icon=":material/add:",
                      use_container_width=True):
             dialogo_novo_projeto()
+        concluidos = [p for p in projetos if etapa_projeto(p) == "Concluído"]
+        if concluidos:
+            with st.expander(f"Concluídos ({len(concluidos)})",
+                             expanded=selecao in {p['id'] for p in concluidos}):
+                for projeto in concluidos:
+                    botao_canal_projeto(projeto, tarefas, selecao)
 
     with c_conteudo:
-        if selecao == 'minhas':
+        if selecao == 'geral':
+            visao_geral_atividades(projetos, tarefas)
+        elif selecao == 'minhas':
             visao_minhas_atividades(projetos, tarefas, participantes)
         else:
             visao_projeto(next(p for p in projetos if p['id'] == selecao), tarefas)
