@@ -7009,6 +7009,38 @@ def pode_mexer_ferias_de(pessoa):
     return bool(minha) and minha == pessoa
 
 
+def pode_excluir_ferias_de(pessoa):
+    # Além da própria pessoa, o usuário engenharia pode excluir férias de qualquer um.
+    return pode_configurar_plantao() or pode_mexer_ferias_de(pessoa)
+
+
+def secao_excluir_ferias(ferias):
+    """Lista as férias que quem está logado pode excluir, com botão Excluir."""
+    hoje = hoje_brasilia()
+    visiveis = [
+        l for l in ferias.itertuples(index=False)
+        if l.fim >= hoje and pode_excluir_ferias_de(l.colaborador)
+    ]
+    todas = pode_configurar_plantao()
+    titulo = "Excluir férias do time" if todas else "Excluir suas férias"
+    with st.expander(f"{titulo} ({len(visiveis)})", icon=":material/delete:"):
+        if not visiveis:
+            st.caption("Nenhuma férias marcada daqui para frente.")
+        for linha in visiveis:
+            c_txt, c_exc = st.columns([5, 1], vertical_alignment="center")
+            c_txt.markdown(
+                (f"**{linha.colaborador}** · " if todas else "")
+                + formatar_periodo_ferias(linha.inicio, linha.fim)
+            )
+            if c_exc.button("Excluir", key=f"ferias_time_excluir_{linha.id}", use_container_width=True):
+                excluir_ferias_plantao(int(linha.id))
+                st.session_state['ferias_ok'] = (
+                    f"Férias de {linha.colaborador} excluídas: "
+                    f"{formatar_periodo_ferias(linha.inicio, linha.fim)}."
+                )
+                st.rerun()
+
+
 def garantir_pode_mexer_ferias_de(colaborador):
     if not pode_mexer_ferias_de(colaborador):
         raise PermissionError("Você só pode alterar as suas férias e o seu crachá.")
@@ -7127,7 +7159,8 @@ def excluir_ferias_plantao(ferias_id):
         ).fetchone()
         if linha is None:
             return
-        garantir_pode_mexer_ferias_de(linha['colaborador'])
+        if not pode_excluir_ferias_de(linha['colaborador']):
+            raise PermissionError("Você só pode excluir as suas férias.")
         conn.execute("DELETE FROM plantao_ferias WHERE id = ?", (ferias_id,))
         registrar_historico_plantao(
             conn, linha['inicio'], "Férias desmarcadas",
@@ -7576,6 +7609,8 @@ def tela_ferias():
             unsafe_allow_html=True,
         )
         st.caption("A linha laranja marca o dia de hoje. Passe o mouse no bloco para ver o período.")
+        if pessoa_do_usuario() or pode_configurar_plantao():
+            secao_excluir_ferias(ferias)
         st.markdown("##### Validade dos crachás")
         st.markdown(
             crachas_html(crachas, pessoas, cores_nomes),
