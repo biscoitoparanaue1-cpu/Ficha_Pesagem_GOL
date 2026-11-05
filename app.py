@@ -6834,9 +6834,9 @@ def tela_escolha_area(nivel):
 .st-key-entrar_{area} .stButton, .st-key-entrar_{area} button {{
   width: 100%; height: 100%; opacity: 0; cursor: pointer; }}
 .st-key-area_{area}:hover .cartao-area {{
-  transform: translateY(-3px); background: rgba(255, 255, 255, .62);
+  transform: translateY(-3px); background: rgba(255, 255, 255, .8);
   border-color: rgba(255, 106, 19, .45);
-  box-shadow: 0 18px 40px -18px rgba(150, 60, 0, .35); }}
+  box-shadow: 0 18px 40px -18px rgba(30, 36, 48, .3); }}
 .st-key-area_{area}:hover .cartao-area-seta {{ color: #FF6A13; transform: translateX(4px); }}
 """
         for area in areas
@@ -6844,26 +6844,28 @@ def tela_escolha_area(nivel):
     st.markdown(
         f"""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&display=swap');
 [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"],
 [data-testid="stExpandSidebarButton"] {{ display: none !important; }}
 [data-testid="stApp"] {{
   background:
-    radial-gradient(42rem 30rem at 12% 18%, rgba(255, 106, 19, .30), transparent 70%),
-    radial-gradient(36rem 28rem at 88% 82%, rgba(255, 150, 70, .28), transparent 70%),
-    radial-gradient(30rem 22rem at 70% 10%, rgba(255, 196, 150, .35), transparent 70%),
-    linear-gradient(160deg, #FFF8F3 0%, #FDEBDD 100%);
+    radial-gradient(40rem 28rem at 10% 15%, rgba(255, 106, 19, .07), transparent 70%),
+    radial-gradient(36rem 26rem at 90% 85%, rgba(160, 170, 185, .22), transparent 70%),
+    radial-gradient(30rem 22rem at 75% 10%, rgba(200, 206, 216, .25), transparent 70%),
+    linear-gradient(160deg, #FAFAFB 0%, #EEF0F3 100%);
   background-attachment: fixed;
 }}
 .escolha-topo {{ display: flex; flex-direction: column; align-items: center; gap: .9rem;
   margin: 9vh 0 2.4rem; text-align: center; }}
-.escolha-titulo {{ margin: 0; padding: 0; font-weight: 600; color: #1F2430; font-size: 1.6rem; }}
+.escolha-titulo {{ margin: 0; padding: 0; font-weight: 600; color: #1F2430; font-size: 1.75rem;
+  font-family: 'Inter', sans-serif; letter-spacing: -.02em; }}
 .escolha-topo p {{ margin: 0; color: #5F6672; }}
 .cartao-area {{
   height: 15.5rem; padding: 1.7rem 1.8rem; border-radius: 20px;
-  background: rgba(255, 255, 255, .34);
+  background: rgba(255, 255, 255, .55);
   border: 1px solid rgba(255, 255, 255, .75);
   backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%);
-  box-shadow: 0 10px 30px -16px rgba(150, 60, 0, .25), inset 0 1px 0 rgba(255, 255, 255, .6);
+  box-shadow: 0 10px 30px -16px rgba(30, 36, 48, .22), inset 0 1px 0 rgba(255, 255, 255, .6);
   display: flex; flex-direction: column; gap: .7rem;
   transition: transform .18s ease, background .18s ease, box-shadow .18s ease, border-color .18s ease;
 }}
