@@ -35,15 +35,28 @@ if 'area' not in st.session_state:
 st.markdown(
     """
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&display=swap');
     [data-testid="stDecoration"], [data-testid="stAppDeployButton"],
     [data-testid="stMainMenu"] { display: none !important; }
     [data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"] {
         display: flex !important; visibility: visible !important;
     }
     header[data-testid="stHeader"] { background: transparent; }
+    /* Mesmo visual da tela de escolha: fundo neutro e superfícies de vidro. */
+    [data-testid="stApp"] {
+        background:
+            radial-gradient(40rem 28rem at 10% 15%, rgba(255, 106, 19, .07), transparent 70%),
+            radial-gradient(36rem 26rem at 90% 85%, rgba(160, 170, 185, .22), transparent 70%),
+            radial-gradient(30rem 22rem at 75% 10%, rgba(200, 206, 216, .25), transparent 70%),
+            linear-gradient(160deg, #FAFAFB 0%, #EEF0F3 100%);
+        background-attachment: fixed;
+    }
     .block-container { padding-top: 2.2rem; max-width: 1280px; }
     section[data-testid="stSidebar"] {
-        background: #FFFFFF; border-right: 1px solid #E6E8EC;
+        background: rgba(255, 255, 255, .55);
+        backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%);
+        border-right: 1px solid rgba(255, 255, 255, .8);
+        box-shadow: 8px 0 30px -22px rgba(30, 36, 48, .25);
     }
     section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .35rem; }
     section[data-testid="stSidebar"] hr { margin: .9rem 0; }
@@ -66,7 +79,13 @@ st.markdown(
         background: transparent; color: #3B4352;
     }
     section[data-testid="stSidebar"] .stButton button[kind="secondary"]:hover {
-        background: #FFF1E8; color: #FF6A13;
+        background: rgba(255, 255, 255, .8); color: #FF6A13;
+    }
+    section[data-testid="stSidebar"] .stButton button[kind="primary"] {
+        background: rgba(255, 106, 19, .10); color: #E85A05; font-weight: 600;
+    }
+    section[data-testid="stSidebar"] .stButton button[kind="primary"]:hover {
+        background: rgba(255, 106, 19, .16); color: #E85A05;
     }
     .marca { display: flex; align-items: center; gap: .6rem; margin-bottom: .4rem; }
     .marca-logo {
@@ -74,7 +93,8 @@ st.markdown(
         color: #fff; display: flex; align-items: center; justify-content: center;
         font-weight: 700; font-size: .8rem; flex-shrink: 0;
     }
-    .marca-nome { font-weight: 700; font-size: 1.02rem; line-height: 1.1; }
+    .marca-nome { font-family: 'Inter', sans-serif; font-weight: 600; font-size: .98rem;
+        line-height: 1.15; letter-spacing: -.01em; }
     .marca-sub { color: #6B7280; font-size: .78rem; }
     .usuario {
         display: flex; align-items: center; gap: .65rem; padding: .2rem .4rem;
@@ -87,7 +107,8 @@ st.markdown(
         display: flex; align-items: center; justify-content: center;
     }
     .grupo-menu {
-        color: #9AA1AD; font-size: .7rem; font-weight: 600; letter-spacing: .06em;
+        font-family: 'Inter', sans-serif;
+        color: #9AA1AD; font-size: .66rem; font-weight: 600; letter-spacing: .12em;
         text-transform: uppercase; margin: 1.1rem 0 .1rem .75rem;
     }
     /* O Streamlit puxa o texto seguinte 1rem para cima; nos rótulos do menu isso
@@ -96,12 +117,17 @@ st.markdown(
         margin-bottom: 0;
     }
     .st-key-menu_inicio { margin-top: .5rem; }
-    .cabecalho h1 { font-size: 1.75rem; font-weight: 700; margin: 0; padding: 0; }
+    .cabecalho h1 { font-family: 'Inter', sans-serif; font-size: 1.75rem; font-weight: 600;
+        letter-spacing: -.02em; margin: 0; padding: 0; }
     .cabecalho p { color: #6B7280; margin: .25rem 0 1.2rem; }
-    div[data-testid="stMetric"] {
-        background: #FFFFFF; border: 1px solid #E6E8EC; border-radius: 12px;
-        padding: .85rem 1rem;
+    div[data-testid="stMetric"], [data-testid="stExpander"] details, .st-key-login_caixa {
+        background: rgba(255, 255, 255, .55);
+        backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        border: 1px solid rgba(255, 255, 255, .8); border-radius: 16px;
+        box-shadow: 0 10px 30px -18px rgba(30, 36, 48, .22);
     }
+    div[data-testid="stMetric"] { padding: .85rem 1rem; }
+    .st-key-login_caixa { padding: 1.6rem 1.6rem 1.2rem; }
     div[data-testid="stMetricLabel"] { color: #6B7280; }
     .stTabs [data-baseweb="tab-list"] { gap: .25rem; }
     .stTabs [data-baseweb="tab"] { padding: .4rem .9rem; }
@@ -6955,7 +6981,7 @@ elif not st.session_state['usuario_logado']:
     _, centro, _ = st.columns([1, 1.2, 1])
     with centro:
         st.markdown("<div style='height:12vh'></div>", unsafe_allow_html=True)
-        with st.container(border=True):
+        with st.container(key="login_caixa"):
             st.markdown(MARCA_HTML, unsafe_allow_html=True)
             st.caption("Entre com seu usuário para acessar as fichas.")
             with st.form("login_form", border=False):
