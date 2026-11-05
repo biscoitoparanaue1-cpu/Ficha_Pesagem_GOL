@@ -7149,8 +7149,8 @@ def dialogo_cracha_plantao(meu):
 @st.dialog("Férias", width="medium")
 def dialogo_ferias_plantao(meu):
     st.markdown(
-        f"Olá, **{meu}**. Marque as suas férias do fim de 2026 e de {ANO_FERIAS_PEDIDAS} "
-        "(escolha o primeiro e o último dia de cada período)."
+        f"Olá, **{meu}**. Marque as férias que você já tem programadas até o fim de "
+        f"{ANO_FERIAS_PEDIDAS}. Para cada período, escolha o primeiro e o último dia."
     )
     ferias = carregar_ferias_plantao()
     ja_marcadas = ferias[(ferias["colaborador"] == meu) & (ferias["fim"] >= hoje_brasilia())]
@@ -7159,27 +7159,21 @@ def dialogo_ferias_plantao(meu):
         for linha in ja_marcadas.itertuples(index=False):
             st.markdown(f"- {formatar_periodo_ferias(linha.inicio, linha.fim)}")
 
-    hoje = hoje_brasilia()
-    campos = []
-    c1, c2 = st.columns(2)
-    campos.append(c1.date_input(
-        "Fim de 2026", value=(), format="DD/MM/YYYY",
-        min_value=max(hoje, datetime.date(2026, 1, 1)), max_value=datetime.date(2027, 1, 31),
-        key="ferias_dialogo_2026",
-    ))
-    campos.append(c2.date_input(
-        f"{ANO_FERIAS_PEDIDAS} · 1º período", value=(), format="DD/MM/YYYY",
-        min_value=datetime.date(ANO_FERIAS_PEDIDAS, 1, 1),
-        max_value=datetime.date(ANO_FERIAS_PEDIDAS, 12, 31), key="ferias_dialogo_2027_1",
-    ))
-    c3, c4 = st.columns(2)
-    for coluna, numero in ((c3, 2), (c4, 3)):
-        campos.append(coluna.date_input(
-            f"{ANO_FERIAS_PEDIDAS} · {numero}º período (se dividir)", value=(), format="DD/MM/YYYY",
-            min_value=datetime.date(ANO_FERIAS_PEDIDAS, 1, 1),
-            max_value=datetime.date(ANO_FERIAS_PEDIDAS, 12, 31),
-            key=f"ferias_dialogo_2027_{numero}",
-        ))
+    quantos = st.session_state.setdefault('ferias_dialogo_linhas', 1)
+    campos = [
+        st.date_input(
+            "Período de férias" if i == 0 else f"{i + 1}º período",
+            value=(), format="DD/MM/YYYY",
+            min_value=hoje_brasilia(), max_value=datetime.date(ANO_FERIAS_PEDIDAS, 12, 31),
+            key=f"ferias_dialogo_periodo_{i}",
+        )
+        for i in range(quantos)
+    ]
+    if quantos < 4 and st.button(
+        "+ Adicionar outro período", type="tertiary", key="ferias_dialogo_mais",
+    ):
+        st.session_state['ferias_dialogo_linhas'] = quantos + 1
+        st.rerun(scope="fragment")
 
     st.write("")
     b1, b2 = st.columns(2)
@@ -7204,8 +7198,9 @@ def dialogo_ferias_plantao(meu):
             st.error(erro)
         return
     adicionar_ferias_plantao(meu, periodos)
+    st.session_state.pop('ferias_dialogo_linhas', None)
     if ferias_pendentes(meu):
-        # Marcou só o fim de 2026: não insiste de novo nesta sessão.
+        # Marcou só férias deste ano: não insiste de novo nesta sessão.
         st.session_state['ferias_lembrete_adiado'] = True
     st.session_state['ferias_ok'] = "Férias marcadas. Obrigado!"
     st.rerun()
