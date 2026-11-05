@@ -9503,6 +9503,14 @@ elif not st.session_state['usuario_logado']:
             f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&display=swap');
+[data-testid="stApp"] {{
+  background:
+    radial-gradient(40rem 28rem at 10% 15%, rgba(255, 106, 19, .07), transparent 70%),
+    radial-gradient(36rem 26rem at 90% 85%, rgba(160, 170, 185, .22), transparent 70%),
+    radial-gradient(30rem 22rem at 75% 10%, rgba(200, 206, 216, .25), transparent 70%),
+    linear-gradient(160deg, #FAFAFB 0%, #EEF0F3 100%);
+  background-attachment: fixed;
+}}
 .st-key-login_caixa {{ border-radius: 20px; padding: 2.2rem 2rem 1.6rem; }}
 .login-topo {{ display: flex; flex-direction: column; align-items: center; gap: .55rem;
   text-align: center; margin-bottom: .6rem; }}
