@@ -6161,25 +6161,21 @@ def calendario_plantao_html(escala, ano, mes, destaque=None, ferias=None):
                     quote=True,
                 )
                 destacado = destaque and linha.colaborador == destaque
+                em_ferias = linha.colaborador in (ferias or {}).get(dia, [])
+                if em_ferias:
+                    titulo += html.escape(" · está de férias neste dia", quote=True)
                 evento = (
                     f'<div class="evento{" apagado" if apagado else ""}{" destacado" if destacado else ""}" '
                     f'style="{estilo_bloco_plantao(linha.colaborador, nomes)}" title="{titulo}">'
                     f'{html.escape(linha.colaborador)}{" ⇄" if detalhe else ""}</div>'
                 )
+                if em_ferias and not apagado:
+                    evento += '<div class="conflito">de férias</div>'
+
                 if categoria == 3:
                     evento += '<div class="feriado">Feriado</div>'
                 if detalhe and not apagado:
                     evento += f'<div class="ajuste">{html.escape(detalhe[0])}</div>'
-            de_ferias = (ferias or {}).get(dia, [])
-            if destaque:
-                de_ferias = [nome for nome in de_ferias if nome == destaque]
-            if de_ferias:
-                conflito = linha is not None and linha.colaborador in de_ferias
-                evento += (
-                    f'<div class="ferias{" conflito" if conflito else ""}" '
-                    f'title="{html.escape("De férias: " + ", ".join(de_ferias), quote=True)}">'
-                    f'Férias: {html.escape(", ".join(de_ferias))}</div>'
-                )
             celulas.append(
                 f'<div class="{" ".join(classes)}"><div class="topo">{numero}{rotulo}</div>{evento}</div>'
             )
@@ -6210,16 +6206,13 @@ def calendario_plantao_html(escala, ano, mes, destaque=None, ferias=None):
   cursor: default; }}
 .cal-plantao .evento.apagado {{ background: #F5F6F7 !important; border-left-color: #E3E5E8 !important;
   color: #C4C7CC; }}
-.cal-plantao .ferias {{ color: #70757A; font-size: .66rem; margin-top: 3px; padding: 1px 4px;
-  border-radius: 4px; background: repeating-linear-gradient(135deg, #F1F3F4 0 4px, #FFFFFF 4px 8px);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-.cal-plantao .ferias.conflito {{ color: #C5221F; font-weight: 600; background: #FCE8E6; }}
+.cal-plantao .conflito {{ color: #C5221F; font-size: .66rem; font-weight: 600; margin-top: 2px; padding: 0 2px; }}
 .cal-plantao .ajuste {{ color: #70757A; font-size: .66rem; margin-top: 2px; padding: 0 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 @media (max-width: 700px) {{
   .cal-plantao .dia {{ min-height: 64px; padding: .15rem; }}
   .cal-plantao .evento {{ font-size: .62rem; padding: 2px 4px; }}
-  .cal-plantao .ajuste, .cal-plantao .feriado, .cal-plantao .ferias {{ display: none; }}
+  .cal-plantao .ajuste, .cal-plantao .feriado, .cal-plantao .conflito {{ display: none; }}
 }}
 </style>
 <div class="cal-plantao">{cabecalho_dias}{"".join(celulas)}</div>
@@ -6401,6 +6394,37 @@ def plantao_ir_para_hoje(meses):
         st.session_state['plantao_mes'] = (hoje.year, hoje.month)
 
 
+def ferias_do_mes_html(ano, mes, nomes):
+    """Uma linha acima do calendário com quem tem férias no mês e o período."""
+    import calendar
+    import html
+
+    inicio = datetime.date(ano, mes, 1)
+    fim = datetime.date(ano, mes, calendar.monthrange(ano, mes)[1])
+    ferias = carregar_ferias_plantao()
+    do_mes = ferias[(ferias["inicio"] <= fim) & (ferias["fim"] >= inicio)].sort_values("inicio")
+    if do_mes.empty:
+        return ""
+    chips = "".join(
+        f'<span class="chip" title="{html.escape(formatar_periodo_ferias(l.inicio, l.fim), quote=True)}">'
+        f'{bolinha_plantao(l.colaborador, nomes)}<b>{html.escape(l.colaborador)}</b>'
+        f'<span class="per">{l.inicio:%d/%m} – {l.fim:%d/%m}</span></span>'
+        for l in do_mes.itertuples(index=False)
+    )
+    return f"""
+<style>
+.ferias-mes {{ display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin: 0 0 .7rem; }}
+.ferias-mes .rot {{ color: #70757A; font-size: .72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .04em; margin-right: .2rem; }}
+.ferias-mes .chip {{ display: inline-flex; align-items: center; gap: .4rem; background: #FFFFFF;
+  border: 1px solid #DADCE0; border-radius: 14px; padding: .2rem .65rem; font-size: .8rem; color: #1F2430; }}
+.ferias-mes .bola {{ width: 8px; height: 8px; border-radius: 50%; }}
+.ferias-mes .per {{ color: #5F6368; }}
+</style>
+<div class="ferias-mes"><span class="rot">De férias no mês</span>{chips}</div>
+"""
+
+
 def aba_calendario_plantao(escala):
     hoje = hoje_brasilia()
     meses = sorted({(d.year, d.month) for d in escala["data"]})
@@ -6454,13 +6478,14 @@ def aba_calendario_plantao(escala):
     if visao == "Agenda":
         st.markdown(agenda_plantao_html(escala, ano, mes, destaque), unsafe_allow_html=True)
     else:
+        st.markdown(ferias_do_mes_html(ano, mes, set(escala["colaborador"])), unsafe_allow_html=True)
         st.markdown(
             calendario_plantao_html(escala, ano, mes, destaque, dias_de_ferias_plantao()),
             unsafe_allow_html=True,
         )
         st.caption(
             "⇄ dia trocado em relação à escala original. Passe o mouse no nome para ver o motivo. "
-            "Em vermelho: a pessoa escalada está de férias nesse dia."
+            "\"de férias\" em vermelho: a pessoa escalada está de férias nesse dia."
         )
 
     st.download_button(
@@ -7372,6 +7397,201 @@ def conflitos_ferias_plantao(escala, ferias):
     return conflitos
 
 
+def calendario_ferias_html(ferias, ano, mes, cores_nomes):
+    """Mês no estilo Google Agenda: cada férias é uma barra contínua na semana."""
+    import calendar
+    import html
+
+    hoje = hoje_brasilia()
+    semanas = calendar.Calendar(firstweekday=0).monthdatescalendar(ano, mes)
+    cabecalho_dias = "".join(f'<div class="dsem">{d}</div>' for d in DIAS_SEMANA_CURTO)
+    blocos_semana = []
+    for semana in semanas:
+        inicio_sem, fim_sem = semana[0], semana[-1]
+        trechos = []
+        for linha in ferias.itertuples(index=False):
+            if linha.fim < inicio_sem or linha.inicio > fim_sem:
+                continue
+            ini = max(linha.inicio, inicio_sem)
+            fim = min(linha.fim, fim_sem)
+            trechos.append((ini, fim, linha))
+        trechos.sort(key=lambda t: (t[0], -(t[1] - t[0]).days, t[2].colaborador.lower()))
+        faixas = []  # último dia ocupado em cada faixa
+        itens = []
+        for ini, fim, linha in trechos:
+            faixa = next((i for i, ultimo in enumerate(faixas) if ultimo < ini), None)
+            if faixa is None:
+                faixas.append(fim)
+                faixa = len(faixas) - 1
+            else:
+                faixas[faixa] = fim
+            col = semana.index(ini) + 1
+            span = (fim - ini).days + 1
+            cor = cor_colaborador_plantao(linha.colaborador, cores_nomes)
+            comeca = ini == linha.inicio
+            termina = fim == linha.fim
+            raio = f"{'6px' if comeca else '0'} {'6px' if termina else '0'} {'6px' if termina else '0'} {'6px' if comeca else '0'}"
+            titulo = html.escape(
+                f"{linha.colaborador} · {formatar_periodo_ferias(linha.inicio, linha.fim)}", quote=True
+            )
+            texto = html.escape(linha.colaborador)
+            if comeca and span >= 2:
+                texto += f' <span class="per">até {linha.fim:%d/%m}</span>'
+            itens.append(
+                f'<div class="ev" title="{titulo}" style="grid-column:{col} / span {span};'
+                f'grid-row:{faixa + 2};background:{cor}2E;'
+                f'border-left:{"3px solid " + cor if comeca else "none"};border-radius:{raio}">'
+                f'{texto}</div>'
+            )
+        fundo = "".join(
+            f'<div class="cel{" fora" if d.month != mes else ""}{" fds" if d.weekday() >= 5 else ""}" '
+            f'style="grid-column:{i + 1};grid-row:1 / -1"></div>'
+            for i, d in enumerate(semana)
+        )
+        numeros = "".join(
+            f'<div class="num{" hoje" if d == hoje else ""}{" fora" if d.month != mes else ""}" '
+            f'style="grid-column:{i + 1};grid-row:1">{d.day}</div>'
+            for i, d in enumerate(semana)
+        )
+        linhas = max(len(faixas), 2)
+        blocos_semana.append(
+            f'<div class="sem" style="grid-template-rows:30px repeat({linhas}, 26px) 8px">'
+            f'{fundo}{numeros}{"".join(itens)}</div>'
+        )
+    return f"""
+<style>
+.cal-ferias {{ background: #FFFFFF; border: 1px solid #DADCE0; border-radius: 8px; overflow: hidden; }}
+.cal-ferias .cab {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }}
+.cal-ferias .dsem {{ color: #70757A; font-size: .7rem; font-weight: 500; text-align: center;
+  text-transform: uppercase; padding: .45rem 0 .25rem; border-left: 1px solid #DADCE0; }}
+.cal-ferias .dsem:first-child {{ border-left: none; }}
+.cal-ferias .sem {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); row-gap: 3px;
+  border-top: 1px solid #DADCE0; min-height: 96px; }}
+.cal-ferias .cel {{ border-left: 1px solid #DADCE0; }}
+.cal-ferias .cel:first-child {{ border-left: none; }}
+.cal-ferias .cel.fds {{ background: #FAFAFB; }}
+.cal-ferias .num {{ justify-self: center; align-self: center; color: #3C4043; font-size: .78rem;
+  font-weight: 500; width: 24px; height: 24px; line-height: 24px; text-align: center; border-radius: 50%; }}
+.cal-ferias .num.fora {{ color: #B0B4BA; }}
+.cal-ferias .num.hoje {{ background: #FF6A13; color: #FFFFFF; font-weight: 700; }}
+.cal-ferias .ev {{ margin: 0 4px; padding: 0 8px; color: #1F2430; font-size: .78rem; font-weight: 600;
+  line-height: 26px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 1; }}
+.cal-ferias .ev .per {{ color: #5F6368; font-weight: 500; font-size: .72rem; }}
+@media (max-width: 700px) {{
+  .cal-ferias .ev {{ font-size: .62rem; padding: 0 4px; margin: 0 1px; }}
+  .cal-ferias .ev .per {{ display: none; }}
+}}
+</style>
+<div class="cal-ferias"><div class="cab">{cabecalho_dias}</div>{"".join(blocos_semana)}</div>
+"""
+
+
+def lista_ferias_html(ferias, cores_nomes):
+    """Próximas férias em ordem de início, agrupadas por mês, com a data de volta."""
+    import html
+
+    hoje = hoje_brasilia()
+    proximas = ferias[ferias["fim"] >= hoje].sort_values(["inicio", "colaborador"])
+    if proximas.empty:
+        return '<div class="lista-ferias vazia">Nenhuma férias marcada daqui para frente.</div>'
+    linhas = []
+    mes_atual = None
+    for linha in proximas.itertuples(index=False):
+        mes = (linha.inicio.year, linha.inicio.month) if linha.inicio >= hoje else (hoje.year, hoje.month)
+        if mes != mes_atual:
+            mes_atual = mes
+            linhas.append(f'<div class="mes">{MESES_PLANTAO[mes[1] - 1]} de {mes[0]}</div>')
+        dias = (linha.fim - linha.inicio).days + 1
+        volta = linha.fim + datetime.timedelta(days=1)
+        agora = linha.inicio <= hoje <= linha.fim
+        tag = '<span class="tag">De férias agora</span>' if agora else ""
+        linhas.append(
+            f'<div class="linha{" agora" if agora else ""}">'
+            f'<div class="quem">{bolinha_plantao(linha.colaborador, cores_nomes)}'
+            f'<b>{html.escape(linha.colaborador)}</b>{tag}</div>'
+            f'<div class="per">{formatar_dia_plantao(linha.inicio)} a {formatar_dia_plantao(linha.fim, com_ano=True)}</div>'
+            f'<div class="dias">{dias} dia{"s" if dias > 1 else ""}</div>'
+            f'<div class="volta">volta {formatar_dia_plantao(volta)}</div></div>'
+        )
+    return f"""
+<style>
+.lista-ferias {{ background: #FFFFFF; border: 1px solid #DADCE0; border-radius: 8px; padding: .2rem 0 .4rem; }}
+.lista-ferias.vazia {{ color: #70757A; padding: 1rem; font-size: .9rem; }}
+.lista-ferias .mes {{ color: #70757A; font-size: .72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .04em; padding: .8rem 1rem .3rem; }}
+.lista-ferias .linha {{ display: flex; align-items: center; gap: 1rem; padding: .5rem 1rem;
+  border-top: 1px solid #F1F3F4; font-size: .88rem; color: #3C4043; }}
+.lista-ferias .linha.agora {{ background: #FFF7F2; box-shadow: inset 3px 0 0 #FF6A13; }}
+.lista-ferias .quem {{ flex: 1; display: flex; align-items: center; gap: .55rem; color: #1F2430; }}
+.lista-ferias .bola {{ width: 9px; height: 9px; border-radius: 50%; }}
+.lista-ferias .tag {{ color: #FF6A13; font-size: .68rem; font-weight: 700; text-transform: uppercase; }}
+.lista-ferias .per {{ width: 240px; }}
+.lista-ferias .dias {{ width: 70px; color: #70757A; }}
+.lista-ferias .volta {{ width: 130px; color: #70757A; }}
+@media (max-width: 700px) {{
+  .lista-ferias .linha {{ flex-wrap: wrap; gap: .2rem .8rem; }}
+  .lista-ferias .quem {{ flex-basis: 100%; }}
+  .lista-ferias .per, .lista-ferias .dias, .lista-ferias .volta {{ width: auto; font-size: .8rem; }}
+}}
+</style>
+<div class="lista-ferias">{"".join(linhas)}</div>
+"""
+
+
+def ferias_mudar_mes(passo):
+    ano, mes = st.session_state['ferias_mes']
+    mes += passo
+    ano += (mes - 1) // 12
+    mes = (mes - 1) % 12 + 1
+    st.session_state['ferias_mes'] = (ano, mes)
+
+
+def ferias_ir_para_hoje():
+    hoje = hoje_brasilia()
+    st.session_state['ferias_mes'] = (hoje.year, hoje.month)
+
+
+def aba_ferias_do_time(ferias, pessoas, cores_nomes):
+    hoje = hoje_brasilia()
+    st.session_state.setdefault('ferias_mes', (hoje.year, hoje.month))
+    ano, mes = st.session_state['ferias_mes']
+    with st.container(key="ferias_barra"):
+        c_hoje, c_ant, c_prox, c_titulo, c_visao = st.columns(
+            [0.8, 0.45, 0.45, 3.3, 2.2], vertical_alignment="center"
+        )
+        visao = c_visao.segmented_control(
+            "Visão", ["Mês", "Lista", "Ano"], default="Mês", key="ferias_visao",
+            label_visibility="collapsed",
+        ) or "Mês"
+        if visao == "Mês":
+            c_hoje.button("Hoje", key="ferias_hoje", use_container_width=True, on_click=ferias_ir_para_hoje)
+            c_ant.button("‹", key="ferias_mes_anterior", use_container_width=True,
+                         on_click=ferias_mudar_mes, args=(-1,))
+            c_prox.button("›", key="ferias_mes_seguinte", use_container_width=True,
+                          on_click=ferias_mudar_mes, args=(1,))
+            c_titulo.markdown(
+                f'<div class="titulo-mes">{MESES_PLANTAO[mes - 1]} de {ano}</div>',
+                unsafe_allow_html=True,
+            )
+        elif visao == "Ano":
+            anos = sorted({2026, 2027, hoje.year} | {d.year for d in ferias["inicio"]})
+            ano_tl = c_titulo.segmented_control(
+                "Ano", anos, default=hoje.year if hoje.year in anos else anos[0],
+                key="ferias_ano", label_visibility="collapsed",
+            ) or hoje.year
+        else:
+            c_titulo.markdown('<div class="titulo-mes">Próximas férias</div>', unsafe_allow_html=True)
+
+    if visao == "Mês":
+        st.markdown(calendario_ferias_html(ferias, ano, mes, cores_nomes), unsafe_allow_html=True)
+        st.caption("Passe o mouse na barra para ver o período completo.")
+    elif visao == "Lista":
+        st.markdown(lista_ferias_html(ferias, cores_nomes), unsafe_allow_html=True)
+    else:
+        st.markdown(linha_do_tempo_ferias_html(ferias, pessoas, cores_nomes, ano_tl), unsafe_allow_html=True)
+        st.caption("A linha laranja marca o dia de hoje. Passe o mouse no bloco para ver o período.")
+
+
 def linha_do_tempo_ferias_html(ferias, nomes, cores_nomes, ano):
     import html
 
@@ -7565,6 +7785,13 @@ def aba_minhas_ferias():
 
 def tela_ferias():
     cabecalho("Férias e crachás", "Calendário de férias e validade dos crachás do time")
+    st.markdown(
+        """<style>
+        .st-key-ferias_barra .titulo-mes { font-size: 1.35rem; font-weight: 500; color: #3C4043; }
+        .st-key-ferias_barra button { border-radius: 18px; min-height: 2.2rem; }
+        </style>""",
+        unsafe_allow_html=True,
+    )
     if st.session_state.get('ferias_ok'):
         st.success(st.session_state.pop('ferias_ok'))
     colaboradores_todos = carregar_colaboradores_plantao()
@@ -7599,16 +7826,7 @@ def tela_ferias():
 
     aba_time, aba_minhas = st.tabs(["Férias do time", "Minhas férias e crachás"])
     with aba_time:
-        anos = sorted({2026, 2027, hoje_brasilia().year} | {d.year for d in ferias["inicio"]})
-        ano = st.segmented_control(
-            "Ano", anos, default=hoje_brasilia().year if hoje_brasilia().year in anos else anos[0],
-            key="ferias_ano", label_visibility="collapsed",
-        ) or hoje_brasilia().year
-        st.markdown(
-            linha_do_tempo_ferias_html(ferias, pessoas, cores_nomes, ano),
-            unsafe_allow_html=True,
-        )
-        st.caption("A linha laranja marca o dia de hoje. Passe o mouse no bloco para ver o período.")
+        aba_ferias_do_time(ferias, pessoas, cores_nomes)
         if pessoa_do_usuario() or pode_configurar_plantao():
             secao_excluir_ferias(ferias)
         st.markdown("##### Validade dos crachás")
