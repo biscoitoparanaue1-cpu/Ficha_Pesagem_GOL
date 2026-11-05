@@ -8996,6 +8996,11 @@ def salvar_funcoes_time(tabela):
                  linha.pessoa, linha.papel, ordem),
             )
     carregar_funcoes_time.clear()
+    # Os campos do Configurar voltam a ler o banco na próxima tela.
+    prefixos = ("time_nome_", "time_grupo_", "time_desc_", "time_focais_", "time_backups_",
+                "time_pnome_", "time_pfocal_", "time_pbackup_")
+    for chave in [c for c in st.session_state if str(c).startswith(prefixos)]:
+        del st.session_state[chave]
 
 
 def pessoa_do_usuario_no_time(pessoas):
@@ -9112,65 +9117,237 @@ def visao_time_por_frente(tabela, eu):
     st.markdown("".join(partes), unsafe_allow_html=True)
 
 
+NOVA_FRENTE_TIME = "+ Nova frente"
+
+
+def opcoes_ordenadas(valores):
+    return sorted({v for v in valores if v}, key=sem_acento)
+
+
+def salvar_frente_time(tabela, original, nome, grupo, descricao, focais, backups):
+    """Troca as linhas da frente (ou cria a frente) mantendo o lugar dela na lista."""
+    novas = [
+        {"grupo": grupo, "frente": nome, "descricao": descricao, "pessoa": p, "papel": papel}
+        for papel, pessoas in (("Focal", focais), ("Backup", backups))
+        for p in pessoas
+    ]
+    alvo = original or nome
+    linhas, inserida = [], False
+    for linha in tabela.to_dict("records"):
+        if linha["frente"] in (alvo, nome):
+            if not inserida:
+                linhas += novas
+                inserida = True
+            continue
+        linhas.append(linha)
+    if not inserida:
+        linhas += novas
+    limpa, _ = limpar_funcoes_time(pd.DataFrame(linhas, columns=COLUNAS_TIME, dtype=object))
+    salvar_funcoes_time(limpa)
+
+
+def salvar_pessoa_time(tabela, pessoa, original, focal_em, backup_em):
+    """Refaz as frentes da pessoa: cada uma entra no fim do bloco da sua frente."""
+    dados_frente = {}
+    for linha in tabela.to_dict("records"):
+        dados_frente.setdefault(linha["frente"], (linha["grupo"], linha["descricao"]))
+    blocos = {}
+    for linha in tabela.to_dict("records"):
+        if linha["pessoa"] in (original, pessoa):
+            continue
+        blocos.setdefault(linha["frente"], []).append(linha)
+    for frente in dados_frente:
+        blocos.setdefault(frente, [])
+        grupo, descricao = dados_frente[frente]
+        for papel, frentes in (("Focal", focal_em), ("Backup", backup_em)):
+            if frente in frentes:
+                blocos[frente].append({
+                    "grupo": grupo, "frente": frente, "descricao": descricao,
+                    "pessoa": pessoa, "papel": papel,
+                })
+    linhas = [linha for frente in dados_frente for linha in blocos[frente]]
+    limpa, _ = limpar_funcoes_time(pd.DataFrame(linhas, columns=COLUNAS_TIME, dtype=object))
+    salvar_funcoes_time(limpa)
+
+
+def atribuir_por_frente(tabela):
+    frentes = list(dict.fromkeys(tabela["frente"]))
+    pessoas = opcoes_ordenadas(tabela["pessoa"])
+    grupos = list(dict.fromkeys(g for g in tabela["grupo"] if g)) or ["Projetos by owners"]
+    if 'time_cfg_frente_proxima' in st.session_state:
+        proxima = st.session_state.pop('time_cfg_frente_proxima')
+        if proxima in frentes:
+            st.session_state['time_cfg_frente'] = proxima
+        else:
+            st.session_state.pop('time_cfg_frente', None)
+    escolha = st.selectbox(
+        "Frente", [NOVA_FRENTE_TIME] + frentes, index=1 if frentes else 0, key="time_cfg_frente",
+    )
+    nova = escolha == NOVA_FRENTE_TIME
+    linhas = tabela[tabela["frente"] == escolha]
+    chave = "nova" if nova else hashlib.md5(escolha.encode()).hexdigest()[:10]
+    with st.container(border=True, key="time_cfg_frente_caixa"):
+        c1, c2 = st.columns([1.2, 1])
+        nome = c1.text_input("Nome da frente", value="" if nova else escolha, key=f"time_nome_{chave}")
+        grupo_atual = grupos[-1] if nova else (linhas["grupo"].iloc[0] or grupos[-1])
+        grupo = c2.selectbox(
+            "Grupo", opcoes_ordenadas(grupos + [grupo_atual]),
+            index=opcoes_ordenadas(grupos + [grupo_atual]).index(grupo_atual),
+            accept_new_options=True, key=f"time_grupo_{chave}",
+        )
+        descricao = st.text_input(
+            "O que a frente faz", value="" if nova else linhas["descricao"].iloc[0],
+            key=f"time_desc_{chave}",
+        )
+        focais = st.multiselect(
+            "Focal", pessoas,
+            default=[] if nova else list(linhas.loc[linhas["papel"] == "Focal", "pessoa"]),
+            accept_new_options=True, key=f"time_focais_{chave}",
+            placeholder="Escolha a pessoa (ou digite um nome novo)",
+        )
+        backups = st.multiselect(
+            "Backups (na ordem: 1º backup, 2º backup…)", pessoas,
+            default=[] if nova else list(linhas.loc[linhas["papel"] == "Backup", "pessoa"]),
+            accept_new_options=True, key=f"time_backups_{chave}",
+            placeholder="Escolha as pessoas (ou digite um nome novo)",
+        )
+        repetidos = [p for p in focais if p in backups]
+        nome = re.sub(r"\s+", " ", nome).strip()
+        if repetidos:
+            st.warning(f"{', '.join(repetidos)} está como focal e backup ao mesmo tempo.")
+        b1, b2, _ = st.columns([1, 1, 2])
+        if b1.button("Salvar frente", type="primary", key=f"time_salvar_frente_{chave}",
+                     use_container_width=True, disabled=bool(repetidos)):
+            if not nome:
+                st.error("Dê um nome para a frente.")
+            elif not focais and not backups:
+                st.error("Escolha pelo menos uma pessoa.")
+            elif nome != escolha and nome in frentes:
+                st.error(f"Já existe a frente {nome}.")
+            else:
+                salvar_frente_time(
+                    tabela, None if nova else escolha, nome, safe_str(grupo).strip(),
+                    re.sub(r"\s+", " ", descricao).strip(), focais, backups,
+                )
+                st.session_state['time_config_ok'] = f"Frente {nome} salva."
+                st.session_state['time_cfg_frente_proxima'] = nome
+                st.rerun()
+        if not nova and b2.button("Excluir frente", key=f"time_excluir_frente_{chave}",
+                                  use_container_width=True):
+            salvar_funcoes_time(tabela[tabela["frente"] != escolha].reset_index(drop=True))
+            st.session_state['time_config_ok'] = f"Frente {escolha} excluída."
+            st.session_state['time_cfg_frente_proxima'] = None
+            st.rerun()
+
+
+def atribuir_por_pessoa(tabela):
+    frentes = list(dict.fromkeys(tabela["frente"]))
+    pessoas = opcoes_ordenadas(tabela["pessoa"])
+    if not frentes:
+        st.info("Cadastre primeiro as frentes (em Editar uma frente ou importando a planilha).")
+        return
+    if 'time_cfg_pessoa_proxima' in st.session_state:
+        proxima = st.session_state.pop('time_cfg_pessoa_proxima')
+        if proxima in pessoas:
+            st.session_state['time_cfg_pessoa'] = proxima
+    pessoa = st.selectbox(
+        "Pessoa", pessoas, index=0 if pessoas else None, accept_new_options=True,
+        key="time_cfg_pessoa", placeholder="Escolha ou digite um nome novo",
+    )
+    if not pessoa:
+        return
+    pessoa = re.sub(r"\s+", " ", pessoa).strip()
+    chave = hashlib.md5(pessoa.encode()).hexdigest()[:10]
+    linhas = tabela[tabela["pessoa"] == pessoa]
+    with st.container(border=True, key="time_cfg_pessoa_caixa"):
+        nome = st.text_input("Nome", value=pessoa, key=f"time_pnome_{chave}",
+                             help="Mude aqui para corrigir o nome em todas as frentes.")
+        focal_em = st.multiselect(
+            "É focal de", frentes, key=f"time_pfocal_{chave}",
+            default=[f for f in dict.fromkeys(linhas.loc[linhas["papel"] == "Focal", "frente"])],
+            placeholder="Escolha as frentes",
+        )
+        backup_em = st.multiselect(
+            "É backup de", frentes, key=f"time_pbackup_{chave}",
+            default=[f for f in dict.fromkeys(linhas.loc[linhas["papel"] == "Backup", "frente"])],
+            placeholder="Escolha as frentes",
+        )
+        repetidas = [f for f in focal_em if f in backup_em]
+        if repetidas:
+            st.warning(f"Focal e backup ao mesmo tempo em: {', '.join(repetidas)}.")
+        nome = re.sub(r"\s+", " ", nome).strip()
+        outras = tabela[tabela["pessoa"] != pessoa]
+        vazias = [
+            f for f in frentes
+            if f not in focal_em + backup_em and f not in set(outras["frente"])
+        ]
+        if vazias:
+            st.warning(
+                "Ficariam sem ninguém e sairiam da lista: " + ", ".join(vazias)
+                + ". Para manter, escolha outra pessoa nelas antes."
+            )
+        b1, _ = st.columns([1, 3])
+        if b1.button("Salvar pessoa", type="primary", key=f"time_salvar_pessoa_{chave}",
+                     use_container_width=True, disabled=bool(repetidas) or not nome):
+            if nome != pessoa and nome in pessoas:
+                st.error(f"{nome} já está no time. Escolha essa pessoa na lista.")
+            else:
+                salvar_pessoa_time(tabela, nome, pessoa, focal_em, backup_em)
+                st.session_state['time_config_ok'] = f"Funções de {nome} salvas."
+                st.session_state['time_cfg_pessoa_proxima'] = nome
+                st.rerun()
+
+
 def aba_configurar_time(tabela):
     if st.session_state.get('time_config_ok'):
         st.success(st.session_state.pop('time_config_ok'))
-    st.markdown("**Importar planilha**")
+    modo = st.segmented_control(
+        "Atribuir", ["Editar uma frente", "Editar uma pessoa"], default="Editar uma frente",
+        key="time_cfg_modo", label_visibility="collapsed",
+    ) or "Editar uma frente"
     st.caption(
-        "CSV ou Excel com as colunas Grupo, Frente, Descrição, Pessoa e Papel (Focal ou Backup), "
-        "uma linha por pessoa em cada frente. A planilha substitui tudo o que está na aba Time."
+        "Escolha a frente e marque o focal e os backups."
+        if modo == "Editar uma frente" else
+        "Escolha a pessoa e marque as frentes em que ela é focal e em que é backup."
     )
-    arquivo = st.file_uploader(
-        "Planilha", type=["csv", "xlsx", "xlsm"], key="time_importar_arquivo",
-        label_visibility="collapsed",
-    )
-    if arquivo is not None:
-        try:
-            nova, erros = ler_planilha_time(arquivo)
-        except Exception as erro:
-            st.error(f"Não consegui ler a planilha: {erro}")
-        else:
-            for erro in erros:
-                st.warning(erro)
-            st.caption(
-                f"{nova['frente'].nunique()} frentes, {nova['pessoa'].nunique()} pessoas, "
-                f"{len(nova)} linhas."
-            )
-            if st.button("Importar e substituir", type="primary", key="time_importar_ok",
-                         disabled=bool(erros)):
-                salvar_funcoes_time(nova)
-                st.session_state['time_config_ok'] = f"Funções importadas: {nova['frente'].nunique()} frentes."
-                st.session_state.pop('time_importar_arquivo', None)
-                st.rerun()
+    if modo == "Editar uma frente":
+        atribuir_por_frente(tabela)
+    else:
+        atribuir_por_pessoa(tabela)
 
-    st.markdown("**Editar**")
-    st.caption("Uma linha por pessoa em cada frente. Para tirar alguém, apague a linha.")
-    editada = st.data_editor(
-        tabela.rename(columns=ROTULOS_TIME), key="time_editor", num_rows="dynamic",
-        hide_index=True, use_container_width=True,
-        column_config={
-            "Papel": st.column_config.SelectboxColumn(options=PAPEIS_TIME, required=True),
-            "Descrição": st.column_config.TextColumn(width="large"),
-        },
-    )
-    c1, c2, _ = st.columns([1, 1, 2])
-    if c1.button("Salvar alterações", type="primary", key="time_salvar", use_container_width=True):
-        limpa, erros = limpar_funcoes_time(
-            editada.rename(columns={v: k for k, v in ROTULOS_TIME.items()})
+    with st.expander("Importar planilha"):
+        st.caption(
+            "CSV ou Excel com as colunas Grupo, Frente, Descrição, Pessoa e Papel (Focal ou Backup), "
+            "uma linha por pessoa em cada frente. A planilha substitui tudo o que está na aba Time."
         )
-        if erros:
-            for erro in erros:
-                st.error(erro)
-        else:
-            salvar_funcoes_time(limpa)
-            st.session_state['time_config_ok'] = "Alterações salvas."
-            st.session_state.pop('time_editor', None)
-            st.rerun()
-    c2.download_button(
-        "Baixar planilha", key="time_baixar", use_container_width=True,
-        data=tabela.rename(columns=ROTULOS_TIME).to_csv(sep=";", index=False).encode("utf-8-sig"),
-        file_name="funcoes_time.csv", mime="text/csv",
-    )
+        arquivo = st.file_uploader(
+            "Planilha", type=["csv", "xlsx", "xlsm"], key="time_importar_arquivo",
+            label_visibility="collapsed",
+        )
+        if arquivo is not None:
+            try:
+                nova, erros = ler_planilha_time(arquivo)
+            except Exception as erro:
+                st.error(f"Não consegui ler a planilha: {erro}")
+            else:
+                for erro in erros:
+                    st.warning(erro)
+                st.caption(
+                    f"{nova['frente'].nunique()} frentes, {nova['pessoa'].nunique()} pessoas, "
+                    f"{len(nova)} linhas."
+                )
+                if st.button("Importar e substituir", type="primary", key="time_importar_ok",
+                             disabled=bool(erros)):
+                    salvar_funcoes_time(nova)
+                    st.session_state['time_config_ok'] = (
+                        f"Funções importadas: {nova['frente'].nunique()} frentes."
+                    )
+                    st.rerun()
+        st.download_button(
+            "Baixar planilha atual", key="time_baixar",
+            data=tabela.rename(columns=ROTULOS_TIME).to_csv(sep=";", index=False).encode("utf-8-sig"),
+            file_name="funcoes_time.csv", mime="text/csv",
+        )
 
 
 def tela_time():
