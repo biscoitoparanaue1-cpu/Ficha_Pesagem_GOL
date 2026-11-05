@@ -6128,6 +6128,25 @@ def estilo_bloco_plantao(nome, nomes):
     return f"background:{cor}2E;border-left:3px solid {cor}"
 
 
+def ferias_do_dia_html(dia, de_ferias, nomes, destaque=None):
+    """Pílulas tracejadas com quem está de férias no dia (até 2 nomes e "+N")."""
+    import html
+
+    if not de_ferias:
+        return ""
+    de_ferias = sorted(de_ferias, key=str.lower)
+    titulo = html.escape("De férias: " + ", ".join(de_ferias), quote=True)
+    mostrar = de_ferias if len(de_ferias) <= 3 else de_ferias[:2]
+    pilulas = "".join(
+        f'<span class="p{" apagado" if destaque and nome != destaque else ""}">'
+        f'{bolinha_plantao(nome, nomes)}{html.escape(nome.split()[0])}</span>'
+        for nome in mostrar
+    )
+    if len(mostrar) < len(de_ferias):
+        pilulas += f'<span class="p">+{len(de_ferias) - len(mostrar)}</span>'
+    return f'<div class="fer" title="{titulo}">{pilulas}</div>'
+
+
 def calendario_plantao_html(escala, ano, mes, destaque=None, ferias=None):
     import calendar
     import html
@@ -6176,6 +6195,7 @@ def calendario_plantao_html(escala, ano, mes, destaque=None, ferias=None):
                     evento += '<div class="feriado">Feriado</div>'
                 if detalhe and not apagado:
                     evento += f'<div class="ajuste">{html.escape(detalhe[0])}</div>'
+            evento += ferias_do_dia_html(dia, (ferias or {}).get(dia, []), nomes, destaque)
             celulas.append(
                 f'<div class="{" ".join(classes)}"><div class="topo">{numero}{rotulo}</div>{evento}</div>'
             )
@@ -6207,12 +6227,20 @@ def calendario_plantao_html(escala, ano, mes, destaque=None, ferias=None):
 .cal-plantao .evento.apagado {{ background: #F5F6F7 !important; border-left-color: #E3E5E8 !important;
   color: #C4C7CC; }}
 .cal-plantao .conflito {{ color: #C5221F; font-size: .66rem; font-weight: 600; margin-top: 2px; padding: 0 2px; }}
+.cal-plantao .fer {{ display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }}
+.cal-plantao .fer .p {{ display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  border: 1px dashed #C4C7CC; border-radius: 10px; padding: 0 6px; font-size: .66rem;
+  color: #5F6368; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.cal-plantao .fer .bola {{ flex: none; width: 6px; height: 6px; border-radius: 50%; }}
+.cal-plantao .fer .p.apagado {{ opacity: .35; }}
+.cal-plantao .dia.fora .fer {{ opacity: .45; }}
 .cal-plantao .ajuste {{ color: #70757A; font-size: .66rem; margin-top: 2px; padding: 0 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 @media (max-width: 700px) {{
   .cal-plantao .dia {{ min-height: 64px; padding: .15rem; }}
   .cal-plantao .evento {{ font-size: .62rem; padding: 2px 4px; }}
   .cal-plantao .ajuste, .cal-plantao .feriado, .cal-plantao .conflito {{ display: none; }}
+  .cal-plantao .fer .p {{ font-size: .56rem; padding: 0 3px; gap: 2px; }}
 }}
 </style>
 <div class="cal-plantao">{cabecalho_dias}{"".join(celulas)}</div>
@@ -6485,6 +6513,7 @@ def aba_calendario_plantao(escala):
         )
         st.caption(
             "⇄ dia trocado em relação à escala original. Passe o mouse no nome para ver o motivo. "
+            "Nomes com borda tracejada: quem está de férias no dia. "
             "\"de férias\" em vermelho: a pessoa escalada está de férias nesse dia."
         )
 
