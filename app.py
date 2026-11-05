@@ -6844,17 +6844,6 @@ def carregar_tarefas_atividades():
 
 
 @st.cache_data
-def carregar_mensagens_atividades(projeto_id):
-    with conectar_banco() as conn:
-        linhas = conn.execute(
-            '''SELECT id, nome, texto, tipo, enviado_em FROM atividades_mensagens
-               WHERE projeto_id = ? ORDER BY id DESC LIMIT 200''',
-            (projeto_id,),
-        ).fetchall()
-    return [dict(zip(linha.keys(), linha)) for linha in reversed(linhas)]
-
-
-@st.cache_data
 def carregar_pessoas_atividades():
     """Usuários do site, oferecidos como participantes dos projetos."""
     with conectar_banco() as conn:
@@ -6866,7 +6855,6 @@ def invalidar_cache_atividades():
     carregar_projetos_atividades.clear()
     carregar_participantes_atividades.clear()
     carregar_tarefas_atividades.clear()
-    carregar_mensagens_atividades.clear()
 
 
 def registrar_evento_atividade(conn, projeto_id, texto):
@@ -6982,18 +6970,6 @@ def excluir_tarefa_atividades(tarefa_id):
     invalidar_cache_atividades()
 
 
-def enviar_mensagem_atividades(projeto_id, texto):
-    garantir_pode_usar_atividades()
-    usuario, nome = usuario_logado_atividades()
-    with conectar_banco() as conn:
-        conn.execute(
-            '''INSERT INTO atividades_mensagens (projeto_id, usuario, nome, texto, tipo, enviado_em)
-               VALUES (?, ?, ?, ?, 'mensagem', ?)''',
-            (projeto_id, usuario, nome, texto, agora_utc_iso()),
-        )
-    carregar_mensagens_atividades.clear()
-
-
 def participantes_do_projeto(projeto_id):
     return {
         p['nome']: p['usuario']
@@ -7036,6 +7012,13 @@ def prazo_html(tarefa, curto=False):
     if dias <= 3:
         return f'<span class="ativ-prazo perto">{texto}</span>'
     return f'<span class="ativ-prazo">{texto}</span>'
+
+
+def nome_curto_html(nome):
+    """Primeiro e último nome; o nome completo aparece ao passar o mouse."""
+    partes = safe_str(nome).split()
+    curto = " ".join([partes[0], partes[-1]]) if len(partes) > 2 else safe_str(nome)
+    return f'<span class="nome" title="{esc(nome)}">{esc(curto)}</span>'
 
 
 def avatar_html(nome, classe="ativ-avatar"):
@@ -7087,9 +7070,10 @@ CSS_ATIVIDADES = """
 .ativ-linha .titulo.feita { color: #9AA1AD; text-decoration: line-through; }
 .ativ-linha .sub { color: #8A919C; font-size: .8rem; margin-top: .1rem; }
 .ativ-linha .texto { flex: 1; min-width: 0; }
-.ativ-pessoa { display: flex; align-items: center; gap: .45rem; color: #3B4352; white-space: nowrap;
+.ativ-pessoa { display: flex; align-items: center; gap: .45rem; color: #3B4352; min-width: 0;
   font-size: .85rem; min-height: 2.4rem; }
 .ativ-pessoa .vazio { color: #9AA1AD; }
+.ativ-pessoa .nome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .ativ-prazo { display: inline-block; font-size: .78rem; font-weight: 500; color: #5F6672;
   background: rgba(31, 36, 48, .05); border-radius: 6px; padding: .18rem .5rem; white-space: nowrap; }
 .ativ-prazo.perto { color: #C2540A; background: rgba(255, 106, 19, .10); }
@@ -7110,18 +7094,11 @@ CSS_ATIVIDADES = """
 [class*="st-key-ativ_tarefa_"] [data-testid="stPopover"] button {
   border: none; background: transparent; box-shadow: none; color: #9AA1AD; }
 [class*="st-key-ativ_tarefa_"] [data-testid="stPopover"] button:hover { color: #FF6A13; }
+/* Só os três pontinhos: a setinha do popover encavalava com eles. */
+[class*="st-key-ativ_tarefa_"] [data-testid="stPopoverButton"] > div > div[aria-hidden="true"] { display: none; }
+[class*="st-key-ativ_tarefa_"] [data-testid="stPopoverButton"] { padding: .2rem .4rem; min-height: 2rem; }
 .ativ-vazio { text-align: center; color: #8A919C; padding: 2.2rem 1rem; font-size: .92rem;
   border: 1px dashed #DADEE4; border-radius: 14px; margin-top: .8rem; }
-.ativ-msg { display: flex; gap: .7rem; padding: .45rem .3rem; }
-.ativ-msg .cab { font-size: .88rem; color: #1F2430; }
-.ativ-msg .cab b { font-weight: 600; }
-.ativ-msg .cab span { color: #9AA1AD; font-size: .75rem; margin-left: .4rem; }
-.ativ-msg .corpo { color: #2F3542; font-size: .92rem; line-height: 1.45; white-space: pre-wrap; }
-.ativ-evento { color: #8A919C; font-size: .82rem; padding: .3rem .3rem .3rem 3.05rem; }
-.ativ-evento b { color: #5F6672; font-weight: 600; }
-.ativ-dia { display: flex; align-items: center; gap: .7rem; color: #9AA1AD; font-size: .74rem;
-  font-weight: 600; margin: .8rem 0 .2rem; }
-.ativ-dia::before, .ativ-dia::after { content: ""; flex: 1; height: 1px; background: #E6E8EC; }
 .ativ-bolinha { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
   margin-right: .4rem; vertical-align: .05rem; background: #B4BAC4; }
 .ativ-bolinha.verde { background: #12B76A; }
@@ -7348,7 +7325,7 @@ def linha_tarefa(tarefa, nome_projeto=None):
         )
         responsavel = safe_str(tarefa['responsavel'])
         c_pessoa.markdown(
-            f'<div class="ativ-pessoa">{avatar_html(responsavel)}{esc(responsavel)}</div>'
+            f'<div class="ativ-pessoa">{avatar_html(responsavel)}{nome_curto_html(responsavel)}</div>'
             if responsavel else '<div class="ativ-pessoa"><span class="vazio">Sem responsável</span></div>',
             unsafe_allow_html=True,
         )
@@ -7469,46 +7446,6 @@ def aba_tarefas_projeto(projeto, tarefas, participantes):
                         unsafe_allow_html=True)
 
 
-def aba_conversa_projeto(projeto):
-    mensagens = carregar_mensagens_atividades(projeto['id'])
-    with st.container(height=430, border=False):
-        if not mensagens:
-            st.markdown(
-                f'<div class="ativ-vazio">Este é o começo de <b># {esc(projeto["nome"])}</b>.<br>'
-                'Mande um recado para o time ou acompanhe aqui o que muda nas atividades.</div>',
-                unsafe_allow_html=True,
-            )
-        partes, dia_anterior = [], None
-        for msg in mensagens:
-            momento = datetime.datetime.fromisoformat(safe_str(msg['enviado_em']))
-            if momento.tzinfo is None:
-                momento = momento.replace(tzinfo=datetime.timezone.utc)
-            momento = momento.astimezone(FUSO_BRASILIA)
-            if momento.date() != dia_anterior:
-                dia_anterior = momento.date()
-                rotulo = ("Hoje" if dia_anterior == hoje_brasilia()
-                          else f"{DIAS_SEMANA_CURTO[dia_anterior.weekday()]}, "
-                               f"{dia_anterior.day:02d} {MESES_CURTOS[dia_anterior.month - 1]}")
-                partes.append(f'<div class="ativ-dia">{rotulo}</div>')
-            if msg['tipo'] == 'evento':
-                partes.append(
-                    f'<div class="ativ-evento"><b>{esc(msg["nome"])}</b> {esc(msg["texto"])}'
-                    f' · {momento:%H:%M}</div>'
-                )
-            else:
-                partes.append(
-                    f'<div class="ativ-msg">{avatar_html(msg["nome"], "ativ-avatar grande")}<div>'
-                    f'<div class="cab"><b>{esc(msg["nome"])}</b><span>{momento:%H:%M}</span></div>'
-                    f'<div class="corpo">{esc(msg["texto"])}</div></div></div>'
-                )
-        if partes:
-            st.markdown("".join(partes), unsafe_allow_html=True)
-    texto = st.chat_input(f"Mensagem para # {projeto['nome']}", key=f"ativ_chat_{projeto['id']}")
-    if texto and texto.strip():
-        enviar_mensagem_atividades(projeto['id'], texto.strip())
-        st.rerun()
-
-
 def saude_projeto(projeto, tarefas):
     """Situação do projeto para o painel: (texto, classe da bolinha, motivo)."""
     etapa = etapa_projeto(projeto)
@@ -7621,7 +7558,7 @@ def visao_geral_atividades(projetos, tarefas):
             c_nome.markdown(f'<div class="sub ativ-sub-projeto">{esc(sub_projeto)}</div>',
                             unsafe_allow_html=True)
             c_lider.markdown(
-                f'<div class="ativ-pessoa">{avatar_html(lider)}{esc(lider)}</div>' if lider
+                f'<div class="ativ-pessoa">{avatar_html(lider)}{nome_curto_html(lider)}</div>' if lider
                 else '<div class="ativ-pessoa"><span class="vazio">Sem líder</span></div>',
                 unsafe_allow_html=True,
             )
@@ -7731,11 +7668,7 @@ def visao_projeto(projeto, tarefas):
         unsafe_allow_html=True,
     )
 
-    aba_tarefas, aba_conversa = st.tabs(["Atividades", "Conversa"])
-    with aba_tarefas:
-        aba_tarefas_projeto(projeto, tarefas, participantes)
-    with aba_conversa:
-        aba_conversa_projeto(projeto)
+    aba_tarefas_projeto(projeto, tarefas, participantes)
 
 
 def selecionar_canal_atividades(selecao):
