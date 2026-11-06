@@ -221,7 +221,8 @@ ICONES_LUCIDE = {
     'menu_cadastrar_aeronave': 'plane', 'menu_criar_login': 'users',
     'menu_assinaturas': 'signature', 'menu_excluir': 'trash-2',
     'menu_gerou_aprovou': 'user-check',
-    'menu_plantao': 'calendar-days', 'menu_ferias': 'palmtree', 'menu_atividades': 'list-checks', 'menu_inicio': 'layout-grid',
+    'menu_plantao': 'calendar-days', 'menu_ferias': 'palmtree', 'menu_atividades': 'list-checks', 'menu_time': 'users',
+    'menu_inicio': 'layout-grid',
     'menu_sair': 'log-out', 'atualizar_fichas': 'refresh-cw',
     'atualizar_graficos': 'refresh-cw',
 }
@@ -9435,11 +9436,9 @@ GRUPOS_MENU = {
     'plantao': [
         ("Agenda", ['plantao', 'ferias']),
     ],
-    'atividades': [
-        ("Time", ['atividades']),
-    ],
+    # Atividades do time ficam dentro da área Time (antes era um cartão separado).
     'time': [
-        ("Time", ['time']),
+        ("Time", ['time', 'atividades']),
     ],
 }
 # Partes do site oferecidas na tela de escolha depois do login.
@@ -9456,15 +9455,9 @@ AREAS = {
         'icone': 'calendar-days',
         'menu': "Agenda",
     },
-    'atividades': {
-        'titulo': "Atividades do time",
-        'descricao': "Projetos com participantes, atividades, responsáveis e datas de entrega.",
-        'icone': 'list-checks',
-        'menu': "Atividades do time",
-    },
     'time': {
         'titulo': "Time",
-        'descricao': "O que cada colaborador faz: frentes em que é focal e em que é backup.",
+        'descricao': "Quem é focal e backup de cada frente, projetos, atividades e prazos do time.",
         'icone': 'users',
         'menu': "Time",
     },
