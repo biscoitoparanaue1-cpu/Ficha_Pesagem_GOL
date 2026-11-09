@@ -1,14 +1,18 @@
 name: Publicar escala da semana (RSS)
 
-# Toda segunda às 6h de Brasília (9h UTC) publica a escala da semana como feed
-# RSS no GitHub Pages, em https://<dono>.github.io/<repo>/<RSS_TOKEN>/escala.xml.
-# Um fluxo padrão do Power Automate (Recorrência + conector RSS, sem Premium)
-# lê esse feed às 7h e manda o e-mail pela conta da GOL.
+# Publica a escala como feed RSS no GitHub Pages, em
+# https://<dono>.github.io/<repo>/<RSS_TOKEN>/escala.xml. Um fluxo padrão do
+# Power Automate (Recorrência + conector RSS, sem Premium) lê esse feed toda
+# segunda às 7h30 e manda o e-mail pela conta da GOL.
+# Roda 4 vezes por dia, todo dia: o agendamento do GitHub pode atrasar horas ou
+# ser pulado (em 09/11/2026 não rodou e o e-mail saiu com a semana anterior).
+# De sexta a domingo o feed já mostra a semana seguinte, então na segunda de
+# manhã ele está pronto há dias e trocas feitas no fim de semana entram.
 # Precisa: Pages com origem "GitHub Actions" e os secrets SUPABASE_DB_URL e
 # RSS_TOKEN (código aleatório longo; é o que mantém o endereço secreto).
 on:
   schedule:
-    - cron: "0 9 * * 1"
+    - cron: "17 2,8,14,20 * * *"
   workflow_dispatch:
 
 permissions:

@@ -48,6 +48,18 @@ def semana_atual():
     return inicio, inicio + datetime.timedelta(days=6)
 
 
+def semana_do_email():
+    """Semana que o e-mail de segunda deve mostrar.
+
+    De sexta a domingo já é a semana seguinte; de segunda a quinta, a semana
+    atual. Assim o feed fica pronto dias antes do Power Automate ler na segunda,
+    mesmo que o GitHub atrase ou pule alguma execução agendada.
+    """
+    alvo = datetime.datetime.now(FUSO_BRASILIA).date() + datetime.timedelta(days=3)
+    inicio = alvo - datetime.timedelta(days=alvo.weekday())
+    return inicio, inicio + datetime.timedelta(days=6)
+
+
 def carregar_semana(inicio, fim):
     url = os.environ["SUPABASE_DB_URL"].replace("postgresql+psycopg://", "postgresql://")
     with psycopg.connect(url, prepare_threshold=None, connect_timeout=30) as conn:
@@ -183,7 +195,7 @@ def enviar(assunto, conteudo_html):
 
 
 def gravar_rss(pasta, assunto, conteudo_html, inicio):
-    publicado = datetime.datetime.combine(inicio, datetime.time(6), FUSO_BRASILIA)
+    publicado = datetime.datetime.now(FUSO_BRASILIA).replace(microsecond=0)
     # O HTML vai num CDATA; "]]>" fecharia o bloco antes da hora.
     descricao = conteudo_html.replace("]]>", "]]]]><![CDATA[>")
     feed = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -205,7 +217,7 @@ def gravar_rss(pasta, assunto, conteudo_html, inicio):
 
 
 def main():
-    inicio, fim = semana_atual()
+    inicio, fim = semana_do_email() if "--rss" in sys.argv else semana_atual()
     linhas, nomes, emails = carregar_semana(inicio, fim)
     conteudo = montar_html(inicio, fim, linhas, nomes, emails)
     assunto = f"Escala de plantão Estruturas: {inicio:%d/%m} a {fim:%d/%m}"
