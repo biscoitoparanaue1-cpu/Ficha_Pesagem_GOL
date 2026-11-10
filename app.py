@@ -9462,6 +9462,8 @@ def criar_tabelas_pintura():
                 UNIQUE (aeronave_id, vista)
             )
         ''')
+        # Notas com seta (texto ligado a um ponto da vista), também em coordenadas 0-1.
+        conn.execute("ALTER TABLE pintura_vistas ADD COLUMN IF NOT EXISTS notas TEXT NOT NULL DEFAULT '[]'")
         # Legendas das áreas (ex.: Composto), as mesmas para todas as aeronaves.
         conn.execute('''
             CREATE TABLE IF NOT EXISTS pintura_legendas (
@@ -10306,7 +10308,7 @@ def carregar_vistas_pintura(aeronave_id):
     garantir_tabelas_pintura()
     with conectar_banco() as conn:
         linhas = conn.execute(
-            '''SELECT vista, imagem, largura, altura, areas, atualizado_por, atualizado_em
+            '''SELECT vista, imagem, largura, altura, areas, notas, atualizado_por, atualizado_em
                FROM pintura_vistas WHERE aeronave_id = ?''',
             (aeronave_id,),
         ).fetchall()
@@ -10316,9 +10318,13 @@ def carregar_vistas_pintura(aeronave_id):
             areas = json.loads(l["areas"] or "[]")
         except ValueError:
             areas = []
+        try:
+            notas = json.loads(l["notas"] or "[]")
+        except ValueError:
+            notas = []
         vistas[safe_str(l["vista"])] = {
             "imagem": bytes(l["imagem"]) if l["imagem"] is not None else None,
-            "largura": int(l["largura"] or 0), "altura": int(l["altura"] or 0), "areas": areas,
+            "largura": int(l["largura"] or 0), "altura": int(l["altura"] or 0), "areas": areas, "notas": notas,
             "atualizado_por": safe_str(l["atualizado_por"]), "atualizado_em": safe_str(l["atualizado_em"]),
         }
     return vistas
@@ -10385,8 +10391,25 @@ def limpar_areas_recebidas(areas, legendas_validas):
     return limpas
 
 
-def salvar_areas_vista_pintura(aeronave_id, vista, areas, legendas_novas):
-    """Grava as áreas desenhadas e as legendas criadas no desenho (que ainda não têm id)."""
+def limpar_notas_recebidas(notas):
+    """Notas com seta: ponto indicado (alvo), posição da caixa e texto. Nota sem texto é descartada."""
+    limpas = []
+    for nota in notas if isinstance(notas, list) else []:
+        try:
+            alvo, caixa = (
+                [min(1.0, max(0.0, round(float(v), 4))) for v in nota.get(chave)][:2]
+                for chave in ("alvo", "caixa")
+            )
+        except (TypeError, ValueError, AttributeError):
+            continue
+        texto = safe_str(nota.get("texto")).strip()[:300]
+        if texto and len(alvo) == 2 and len(caixa) == 2:
+            limpas.append({"alvo": alvo, "caixa": caixa, "texto": texto})
+    return limpas
+
+
+def salvar_areas_vista_pintura(aeronave_id, vista, areas, legendas_novas, notas=None):
+    """Grava as áreas desenhadas, as notas e as legendas criadas no desenho (que ainda não têm id)."""
     garantir_pode_editar_pintura()
     usuario = safe_str(st.session_state.get('nome_usuario'))
     existentes = {l["nome"].casefold(): l["id"] for l in carregar_legendas_pintura()}
@@ -10408,14 +10431,16 @@ def salvar_areas_vista_pintura(aeronave_id, vista, areas, legendas_novas):
             if isinstance(area, dict) and safe_str(area.get("legenda")) in trocar:
                 area["legenda"] = trocar[safe_str(area.get("legenda"))]
         areas = limpar_areas_recebidas(areas, set(existentes.values()))
+        notas = limpar_notas_recebidas(notas)
         conn.execute(
-            '''UPDATE pintura_vistas SET areas = ?, atualizado_por = ?, atualizado_em = ?
+            '''UPDATE pintura_vistas SET areas = ?, notas = ?, atualizado_por = ?, atualizado_em = ?
                WHERE aeronave_id = ? AND vista = ?''',
-            (json.dumps(areas, ensure_ascii=False), usuario, agora_iso(), aeronave_id, vista),
+            (json.dumps(areas, ensure_ascii=False), json.dumps(notas, ensure_ascii=False),
+             usuario, agora_iso(), aeronave_id, vista),
         )
         marcar_aeronave_alterada(conn, aeronave_id)
     limpar_caches_pintura()
-    return len(areas)
+    return len(areas), len(notas)
 
 
 def copiar_vistas_pintura(origem_id, destino_id):
@@ -10424,8 +10449,9 @@ def copiar_vistas_pintura(origem_id, destino_id):
     with conectar_banco() as conn:
         conn.execute('DELETE FROM pintura_vistas WHERE aeronave_id = ?', (destino_id,))
         conn.execute(
-            '''INSERT INTO pintura_vistas (aeronave_id, vista, imagem, largura, altura, areas, atualizado_por, atualizado_em)
-               SELECT ?, vista, imagem, largura, altura, areas, ?, ? FROM pintura_vistas WHERE aeronave_id = ?''',
+            '''INSERT INTO pintura_vistas (aeronave_id, vista, imagem, largura, altura, areas, notas,
+                                          atualizado_por, atualizado_em)
+               SELECT ?, vista, imagem, largura, altura, areas, notas, ?, ? FROM pintura_vistas WHERE aeronave_id = ?''',
             (destino_id, usuario, agora_iso(), origem_id),
         )
         marcar_aeronave_alterada(conn, destino_id)
@@ -10481,21 +10507,25 @@ def aba_vistas_pintura(modelo, aeronave):
     ) or "lateral"
     vista = vistas.get(escolha)
     if vista and vista["imagem"]:
-        if not vista["areas"] and not editar:
+        if not vista["areas"] and not vista["notas"] and not editar:
             st.caption("Nenhuma área marcada nesta vista.")
         resposta = COMPONENTE_AREAS_AERONAVE(
             imagem=imagem_data_uri(vista["imagem"]), largura=vista["largura"], altura=vista["altura"],
-            areas=vista["areas"], legendas=legendas, editar=editar,
+            areas=vista["areas"], notas=vista["notas"], legendas=legendas, editar=editar,
             versao=f'{vista["atualizado_em"]}|{len(legendas)}',
             key=f"pint_areas_{aeronave['id']}_{escolha}", default=None,
         )
         feitos = st.session_state.setdefault('pint_pedidos_feitos', set())
         if editar and isinstance(resposta, dict) and resposta.get("pedido") not in feitos:
             feitos.add(resposta.get("pedido"))
-            total = salvar_areas_vista_pintura(
+            total, total_notas = salvar_areas_vista_pintura(
                 aeronave["id"], escolha, resposta.get("areas"), resposta.get("legendas_novas"),
+                resposta.get("notas"),
             )
-            st.toast(f"Vista {VISTAS_PINTURA[escolha].lower()} salva ({total} área{'s' if total != 1 else ''}).")
+            st.toast(
+                f"Vista {VISTAS_PINTURA[escolha].lower()} salva ({total} área{'s' if total != 1 else ''}"
+                + (f", {total_notas} nota{'s' if total_notas != 1 else ''}" if total_notas else "") + ")."
+            )
             st.rerun()
     else:
         st.markdown(
@@ -10542,7 +10572,7 @@ def aba_vistas_pintura(modelo, aeronave):
         if not outros:
             st.caption(f"Nenhum outro prefixo de {modelo['nome']} tem vistas cadastradas.")
         else:
-            st.caption("Copia as três vistas, com as áreas desenhadas, e substitui as deste prefixo.")
+            st.caption("Copia as três vistas, com as áreas e as notas, e substitui as deste prefixo.")
             origem = st.selectbox("Copiar de", outros, format_func=lambda a: a["prefixo"], key="pint_copiar_de")
             if st.button("Copiar vistas", key="pint_copiar_vistas"):
                 copiar_vistas_pintura(origem["id"], aeronave["id"])

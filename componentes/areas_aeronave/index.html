@@ -87,6 +87,25 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
   border-radius: 9px; outline: none; }
 .detalhe input:focus { border-color: #FF6A13; box-shadow: 0 0 0 3px rgba(255,106,19,.15); }
 .ajuda { font-size: 12.5px; color: #8A919C; margin-top: .45rem; min-height: 1.1em; }
+/* Notas com seta: a caixa fica do mesmo tamanho na tela em qualquer zoom. */
+.notas { position: absolute; inset: 0; pointer-events: none; }
+.nota { position: absolute; width: max-content; max-width: 230px; padding: 5px 10px; border-radius: 9px;
+  background: #fff; color: #1F2430; border: 1px solid #C9CED6; font-size: 12.5px; line-height: 1.35;
+  white-space: pre-wrap; overflow-wrap: anywhere; box-shadow: 0 6px 16px -8px rgba(30, 36, 48, .45);
+  transform: translate(-50%, -50%) scale(calc(1 / var(--z, 1))); pointer-events: none; }
+.nota.vazia { color: #9AA1AD; font-style: italic; }
+.nota.sel { border-color: #FF6A13; box-shadow: 0 0 0 2px rgba(255, 106, 19, .22), 0 6px 16px -8px rgba(30, 36, 48, .45); }
+.quadro.editando:not(.desenhando) .nota, .quadro.editando.modo-nota .nota { pointer-events: auto; cursor: move; }
+.quadro.sem-notas .notas, .quadro.sem-notas g.seta { display: none; }
+g.seta line, g.seta polygon, g.seta circle { pointer-events: none; vector-effect: non-scaling-stroke; }
+g.seta line.halo { stroke: #fff; stroke-opacity: .85; stroke-width: calc(4px / var(--z, 1)); stroke-linecap: round; }
+g.seta line.traco { stroke: #1F2430; stroke-width: calc(1.6px / var(--z, 1)); stroke-linecap: round; }
+g.seta polygon { fill: #1F2430; stroke: #fff; stroke-width: calc(1px / var(--z, 1)); stroke-linejoin: round; }
+g.seta circle { fill: #FF6A13; stroke: #fff; stroke-width: calc(1.5px / var(--z, 1)); }
+g.seta.rascunho line.traco { stroke-dasharray: 5 4; }
+.botao-notas { position: absolute; left: 10px; bottom: 10px; z-index: 6; display: none;
+  background: rgba(255, 255, 255, .92); box-shadow: 0 6px 18px -10px rgba(30, 36, 48, .35); }
+.botao-notas.on { display: inline-flex; }
 </style>
 </head>
 <body>
@@ -100,6 +119,8 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/></svg>Mão livre</button>
       <button data-modo="pontos" title="Clique ponto a ponto; clique no primeiro ponto para fechar">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20 8 5l8 4 5 11z"/><circle cx="8" cy="5" r="1.5"/><circle cx="16" cy="9" r="1.5"/></svg>Pontos</button>
+      <button data-modo="nota" title="Clique no ponto que a seta vai indicar e arraste até onde a nota deve ficar">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/></svg>Nota</button>
     </div>
     <button id="desfazer" title="Desfazer a última alteração">
       <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>Desfazer</button>
@@ -118,8 +139,10 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
   <div class="palco" id="palco">
     <img id="imagem" alt="">
     <svg class="camada" id="camada" preserveAspectRatio="none"></svg>
+    <div class="notas" id="notas"></div>
   </div>
   <div class="dica" id="dica"></div>
+  <button class="botao-notas" id="botao-notas"></button>
   <div class="aviso-zoom" id="aviso-zoom">Use Ctrl + roda do mouse para dar zoom</div>
   <div class="zoom" title="Zoom (também com Ctrl + roda do mouse)">
     <button id="zoom-menos" title="Diminuir zoom">−</button>
@@ -133,10 +156,17 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
   <input id="descricao" placeholder="Descrição (opcional), ex.: radome, carenagem da asa, flap">
   <button id="excluir">Excluir área</button>
 </div>
+<div class="detalhe" id="detalhe-nota">
+  <label for="texto-nota">Nota selecionada:</label>
+  <input id="texto-nota" maxlength="300" placeholder="Texto da nota, ex.: lixa 320 no composto do radome">
+  <button id="excluir-nota">Excluir nota</button>
+</div>
 <div class="ajuda" id="ajuda"></div>
 <script>
 (function () {
   const NS = 'http://www.w3.org/2000/svg';
+  const ICONE_OLHO = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>';
+  const ICONE_OLHO_FECHADO = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>';
   const $ = (id) => document.getElementById(id);
   const enviar = (tipo, dados) => window.parent.postMessage(
     Object.assign({ isStreamlitMessage: true, type: tipo }, dados), '*');
@@ -146,12 +176,15 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
   let modo = 'ver', selecionada = null, rascunho = null, arrastando = false, ultimoClique = null;
   // Zoom: a imagem e o desenho ficam num "palco" ampliado e deslocado dentro do quadro.
   let zoom = 1, tx = 0, ty = 0, pan = null, espaco = false, avisoTempo = null;
+  // Notas: seta de um ponto da vista (alvo) até a caixa de texto (caixa), em coordenadas 0-1.
+  let notas = [], notaSel = null, arrasteNota = null, rascunhoNota = null, notasOcultas = false;
+  try { notasOcultas = localStorage.getItem('pint_notas_ocultas') === '1'; } catch (e) { /* sem storage */ }
 
   function legendaDe(id) {
     return legendas.find((l) => String(l.id) === String(id)) || { id: id, nome: 'Sem legenda', cor: '#98A2B3' };
   }
   function copia(lista) { return JSON.parse(JSON.stringify(lista)); }
-  function guardar() { historico.push(copia(areas)); if (historico.length > 50) historico.shift(); }
+  function guardar() { historico.push(copia({ areas: areas, notas: notas })); if (historico.length > 50) historico.shift(); }
   function escapar(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
   function marcarSujo() {
     sujo = true; atualizarBarra();
@@ -167,9 +200,19 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
     document.querySelectorAll('[data-modo]').forEach((b) => b.classList.toggle('ativo', b.dataset.modo === modo));
     $('desfazer').disabled = !historico.length;
     $('salvar').disabled = !sujo;
-    $('estado').textContent = sujo ? 'Alterações não salvas' : (areas.length ? 'Tudo salvo' : '');
+    $('estado').textContent = sujo ? 'Alterações não salvas' : (areas.length || notas.length ? 'Tudo salvo' : '');
     $('estado').className = 'estado' + (sujo ? ' sujo' : '');
     $('quadro').classList.toggle('desenhando', editar && modo !== 'ver');
+    $('quadro').classList.toggle('modo-nota', editar && modo === 'nota');
+    $('quadro').classList.toggle('editando', editar);
+    $('quadro').classList.toggle('sem-notas', notasOcultas);
+    const bn = $('botao-notas');
+    bn.classList.toggle('on', notas.length > 0);
+    bn.innerHTML = (notasOcultas ? ICONE_OLHO : ICONE_OLHO_FECHADO)
+      + (notasOcultas ? 'Mostrar notas' : 'Ocultar notas') + ' (' + notas.length + ')';
+    const nota = editar && notaSel !== null && notas[notaSel];
+    $('detalhe-nota').classList.toggle('on', !!nota);
+    if (nota && document.activeElement !== $('texto-nota')) $('texto-nota').value = nota.texto || '';
     const sel = editar && selecionada !== null && areas[selecionada];
     $('detalhe').classList.toggle('on', !!sel);
     if (sel && document.activeElement !== $('descricao')) $('descricao').value = sel.descricao || '';
@@ -186,7 +229,8 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
       : !legendas.length ? 'Crie uma legenda (+ Nova legenda) para começar a desenhar.'
       : modo === 'livre' ? 'Desenhando com "' + legendaDe(ativa).nome + '": segure o botão do mouse e contorne a área. Ao soltar, a área é fechada.'
       : modo === 'pontos' ? 'Desenhando com "' + legendaDe(ativa).nome + '": clique para marcar os cantos. Clique no primeiro ponto (ou dê dois cliques) para fechar. Esc cancela.'
-      : 'Clique numa área para descrever ou excluir. Para desenhar, escolha Mão livre ou Pontos.') + dicaZoom;
+      : modo === 'nota' ? 'Nota: clique no ponto que a seta vai indicar e arraste até onde o texto deve ficar. Depois escreva a nota embaixo da imagem.'
+      : 'Clique numa área ou nota para editar ou excluir. Arraste a nota para mudar de lugar, ou a bolinha laranja para mudar a ponta da seta. Para desenhar, escolha Mão livre, Pontos ou Nota.') + dicaZoom;
     desenharLegenda();
     altura();
   }
@@ -211,8 +255,8 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
       item.children[2].textContent = qtd ? '· ' + qtd : '';
       if (editar) item.addEventListener('click', () => {
         // Escolher a legenda já deixa pronto para desenhar com ela.
-        ativa = l.id; selecionada = null;
-        if (modo === 'ver') modo = 'livre';
+        ativa = l.id; selecionada = null; soltarNota();
+        if (modo === 'ver' || modo === 'nota') modo = 'livre';
         desenhar(); atualizarBarra();
       });
       leg.appendChild(item);
@@ -245,8 +289,8 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
       legendas.push(l); novas.push(l); ativa = l.id; marcarSujo();
     }
     $('nova-nome').value = ''; $('form-legenda').classList.remove('on');
-    if (modo === 'ver') modo = 'livre';
-    selecionada = null;
+    if (modo === 'ver' || modo === 'nota') modo = 'livre';
+    selecionada = null; soltarNota();
     desenhar(); atualizarBarra();
   }
 
@@ -263,13 +307,15 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
       const t = legendaDe(a.legenda);
       const pol = document.createElementNS(NS, 'polygon');
       pol.setAttribute('points', pontosSvg(a.pontos));
-      pol.setAttribute('class', 'area' + (i === selecionada ? ' sel' : ''));
+      pol.setAttribute('class', 'area' + (i === selecionada ? ' sel' : '') + (i === realce ? ' realce' : ''));
       pol.setAttribute('fill', t.cor);
       pol.setAttribute('fill-opacity', '0.42');
       pol.setAttribute('stroke', t.cor);
       pol.dataset.indice = i;
       svg.appendChild(pol);
     });
+    notas.forEach((n, i) => desenharSeta(svg, n.alvo, n.caixa, i === notaSel && !!args.editar, false));
+    if (rascunhoNota) desenharSeta(svg, rascunhoNota.alvo, rascunhoNota.caixa, false, true);
     if (rascunho && rascunho.length) {
       const linha = document.createElementNS(NS, 'polyline');
       linha.setAttribute('class', 'rascunho');
@@ -286,6 +332,143 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
         });
       }
     }
+  }
+
+  // Quantos pixels da imagem cabem em 1 pixel da tela (para a ponta da seta ter o mesmo tamanho em qualquer zoom).
+  function pixelImagem() {
+    const w = $('palco').clientWidth || args.largura;
+    return args.largura / w / zoom;
+  }
+
+  function desenharSeta(svg, alvo, caixa, sel, rasc) {
+    const W = args.largura, H = args.altura, px = pixelImagem();
+    const ax = alvo[0] * W, ay = alvo[1] * H, cx = caixa[0] * W, cy = caixa[1] * H;
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('class', 'seta' + (rasc ? ' rascunho' : ''));
+    const dist = Math.hypot(ax - cx, ay - cy), L = 10 * px;
+    if (dist > L * 1.4) {
+      const ux = (ax - cx) / dist, uy = (ay - cy) / dist;
+      const fimX = ax - ux * L * 0.8, fimY = ay - uy * L * 0.8;
+      ['halo', 'traco'].forEach((c) => {
+        const l = document.createElementNS(NS, 'line');
+        l.setAttribute('class', c);
+        l.setAttribute('x1', cx); l.setAttribute('y1', cy); l.setAttribute('x2', fimX); l.setAttribute('y2', fimY);
+        g.appendChild(l);
+      });
+      const ponta = document.createElementNS(NS, 'polygon');
+      const bx = ax - ux * L, by = ay - uy * L, nx = -uy * L * 0.45, ny = ux * L * 0.45;
+      ponta.setAttribute('points', [ax, ay, bx + nx, by + ny, bx - nx, by - ny].map((v) => v.toFixed(2)).join(' '));
+      g.appendChild(ponta);
+    }
+    if (sel) {
+      const c = document.createElementNS(NS, 'circle');
+      c.setAttribute('cx', ax); c.setAttribute('cy', ay); c.setAttribute('r', 5.5 * px);
+      g.appendChild(c);
+    }
+    svg.appendChild(g);
+  }
+
+  function desenharNotas() {
+    const camadaNotas = $('notas');
+    camadaNotas.innerHTML = '';
+    notas.forEach((n, i) => {
+      const div = document.createElement('div');
+      div.className = 'nota' + (n.texto ? '' : ' vazia') + (i === notaSel && args.editar ? ' sel' : '');
+      div.textContent = n.texto || 'Escreva a nota…';
+      div.style.left = (n.caixa[0] * 100) + '%';
+      div.style.top = (n.caixa[1] * 100) + '%';
+      div.dataset.indice = i;
+      div.addEventListener('pointerdown', (ev) => pegarNota(ev, div));
+      camadaNotas.appendChild(div);
+    });
+  }
+
+  function marcarNotaSel() {
+    document.querySelectorAll('.nota').forEach((d) =>
+      d.classList.toggle('sel', !!args.editar && +d.dataset.indice === notaSel));
+  }
+
+  // Ao sair de uma nota que ficou sem texto, ela some (não teria o que mostrar).
+  function soltarNota() {
+    if (notaSel !== null && notas[notaSel] && !notas[notaSel].texto.trim()) {
+      notas.splice(notaSel, 1); notaSel = null; desenharNotas();
+    }
+    notaSel = null;
+  }
+
+  function escolherNota(i) {
+    const alvo = notas[i];
+    selecionada = null;
+    if (notaSel !== i) soltarNota();
+    notaSel = notas.indexOf(alvo);
+    marcarNotaSel(); desenhar(); atualizarBarra();
+  }
+
+  function pegarNota(ev, div) {
+    if (!args.editar || ev.button === 1 || espaco) return;
+    ev.stopPropagation(); ev.preventDefault();
+    escolherNota(+div.dataset.indice);
+    const n = notas[notaSel], p = posicao(ev);
+    arrasteNota = { tipo: 'caixa', nota: n, dx: n.caixa[0] - p[0], dy: n.caixa[1] - p[1], mexeu: false,
+      antes: copia({ areas: areas, notas: notas }) };
+    $('camada').setPointerCapture(ev.pointerId);
+  }
+
+  function moverNota(ev) {
+    if (!arrasteNota) return false;
+    const p = posicao(ev), a = arrasteNota;
+    if (a.tipo === 'nova') {
+      rascunhoNota = { alvo: a.alvo, caixa: p };
+      desenhar(); return true;
+    }
+    if (!a.mexeu) {
+      a.mexeu = true;
+      historico.push(a.antes); if (historico.length > 50) historico.shift();
+    }
+    if (a.tipo === 'caixa') {
+      a.nota.caixa = [+Math.min(1, Math.max(0, p[0] + a.dx)).toFixed(4), +Math.min(1, Math.max(0, p[1] + a.dy)).toFixed(4)];
+      // Procura a caixa de novo a cada passo: o site pode ter redesenhado as notas no meio do arraste.
+      const el = document.querySelector('.nota[data-indice="' + notas.indexOf(a.nota) + '"]');
+      if (el) { el.style.left = (a.nota.caixa[0] * 100) + '%'; el.style.top = (a.nota.caixa[1] * 100) + '%'; }
+    } else {
+      a.nota.alvo = [+p[0].toFixed(4), +p[1].toFixed(4)];
+    }
+    desenhar(); return true;
+  }
+
+  function terminarNota(ev) {
+    if (!arrasteNota) return false;
+    const a = arrasteNota;
+    arrasteNota = null; rascunhoNota = null;
+    if (a.tipo === 'nova') {
+      const p = posicao(ev), r = $('camada').getBoundingClientRect();
+      let caixa = p;
+      if (Math.hypot((p[0] - a.alvo[0]) * r.width, (p[1] - a.alvo[1]) * r.height) < 14) {
+        // Só um clique: coloca a caixa um pouco acima e ao lado do ponto, para dentro da imagem.
+        const lado = a.alvo[0] > 0.7 ? -1 : 1, cima = a.alvo[1] < 0.25 ? 1 : -1;
+        caixa = [a.alvo[0] + lado * 110 / r.width, a.alvo[1] + cima * 55 / r.height];
+      }
+      caixa = caixa.map((v) => +Math.min(0.98, Math.max(0.02, v)).toFixed(4));
+      guardar();
+      notas.push({ alvo: a.alvo.map((v) => +v.toFixed(4)), caixa: caixa, texto: '' });
+      notaSel = notas.length - 1;
+      marcarSujo(); desenharNotas(); desenhar(); atualizarBarra();
+      $('texto-nota').value = ''; $('texto-nota').focus();
+      return true;
+    }
+    if (a.mexeu) marcarSujo();
+    desenhar(); return true;
+  }
+
+  function pertoDaPonta(p) {
+    if (notaSel === null || !notas[notaSel] || notasOcultas) return false;
+    const r = $('camada').getBoundingClientRect(), al = notas[notaSel].alvo;
+    return Math.hypot((p[0] - al[0]) * r.width, (p[1] - al[1]) * r.height) < 10;
+  }
+
+  function excluirNota() {
+    if (notaSel === null) return;
+    guardar(); notas.splice(notaSel, 1); notaSel = null; marcarSujo(); desenharNotas(); desenhar();
   }
 
   function posicao(ev) {
@@ -373,7 +556,7 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
     ty = Math.min(0, Math.max(H - H * zoom, ty));
     $('palco').style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + zoom + ')';
     $('palco').style.setProperty('--z', zoom);
-    if (rascunho) desenhar();
+    if (rascunho || notas.length) desenhar();
     $('zoom-valor').textContent = Math.round(zoom * 100) + '%';
     $('zoom-menos').disabled = zoom <= 1;
     $('zoom-mais').disabled = zoom >= 8;
@@ -413,17 +596,36 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
   const camada = $('camada');
   camada.addEventListener('pointerdown', (ev) => {
     const p = posicao(ev);
+    // Bolinha laranja da nota escolhida: arrasta a ponta da seta.
+    if (args.editar && (modo === 'ver' || modo === 'nota') && !espaco && ev.button !== 1 && pertoDaPonta(p)) {
+      ev.preventDefault();
+      arrasteNota = { tipo: 'alvo', nota: notas[notaSel], mexeu: false, antes: copia({ areas: areas, notas: notas }) };
+      camada.setPointerCapture(ev.pointerId);
+      return;
+    }
     // Arrastar a imagem ampliada: barra de espaço, botão do meio, ou clique num vazio em Selecionar.
     const vazio = (modo === 'ver' || !args.editar) && areaEm(p) === null;
     if (zoom > 1 && (espaco || ev.button === 1 || vazio)) {
       ev.preventDefault();
-      if (args.editar && vazio && selecionada !== null) { selecionada = null; desenhar(); atualizarBarra(); }
+      if (args.editar && vazio && (selecionada !== null || notaSel !== null)) {
+        selecionada = null; soltarNota(); marcarNotaSel(); desenhar(); atualizarBarra();
+      }
       pan = { x: ev.clientX, y: ev.clientY, tx: tx, ty: ty };
       camada.setPointerCapture(ev.pointerId);
       $('quadro').classList.add('movendo');
       return;
     }
     if (!args.editar) return;
+    if (modo === 'nota') {
+      ev.preventDefault();
+      soltarNota(); marcarNotaSel();
+      if (notasOcultas) { notasOcultas = false; guardarOcultas(); }
+      arrasteNota = { tipo: 'nova', alvo: p };
+      rascunhoNota = { alvo: p, caixa: p };
+      camada.setPointerCapture(ev.pointerId);
+      desenhar(); atualizarBarra();
+      return;
+    }
     if (modo !== 'ver' && (ativa === null || !legendas.length)) return;
     if (modo === 'livre') {
       arrastando = true; rascunho = [p];
@@ -447,11 +649,13 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
       rascunho.push(p);
       desenhar(); atualizarBarra();
     } else {
+      soltarNota(); marcarNotaSel();
       selecionada = areaEm(p);
       desenhar(); atualizarBarra();
     }
   });
   camada.addEventListener('pointermove', (ev) => {
+    if (moverNota(ev)) return;
     if (pan) {
       tx = pan.tx + (ev.clientX - pan.x); ty = pan.ty + (ev.clientY - pan.y);
       aplicarZoom(); return;
@@ -468,7 +672,8 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
     }
   });
   camada.addEventListener('pointerleave', () => { realcar(null); $('dica').style.display = 'none'; });
-  camada.addEventListener('pointerup', () => {
+  camada.addEventListener('pointerup', (ev) => {
+    if (terminarNota(ev)) return;
     if (pan) { pan = null; $('quadro').classList.remove('movendo'); return; }
     if (!arrastando) return;
     arrastando = false;
@@ -487,16 +692,21 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
     if (ev.key === 'Escape' && rascunho) { rascunho = null; desenhar(); atualizarBarra(); }
     if ((ev.key === 'Delete' || ev.key === 'Backspace') && selecionada !== null &&
         document.activeElement !== $('descricao') && args.editar) excluirSelecionada();
+    if ((ev.key === 'Delete' || ev.key === 'Backspace') && notaSel !== null && !digitando() && args.editar) excluirNota();
   });
 
   document.querySelectorAll('[data-modo]').forEach((b) => b.addEventListener('click', () => {
     modo = b.dataset.modo; rascunho = null; arrastando = false;
     if (modo !== 'ver') selecionada = null;
+    if (modo === 'livre' || modo === 'pontos') { soltarNota(); marcarNotaSel(); }
+    if (modo === 'nota' && notasOcultas) { notasOcultas = false; guardarOcultas(); }
     desenhar(); atualizarBarra();
   }));
   $('desfazer').addEventListener('click', () => {
     if (!historico.length) return;
-    areas = historico.pop(); selecionada = null; marcarSujo(); desenhar();
+    const antes = historico.pop();
+    areas = antes.areas; notas = antes.notas; selecionada = null; notaSel = null;
+    marcarSujo(); desenharNotas(); desenhar();
   });
   function excluirSelecionada() {
     if (selecionada === null) return;
@@ -516,16 +726,35 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
     if (selecionada === null) return;
     areas[selecionada].descricao = $('descricao').value; marcarSujo();
   });
+  $('excluir-nota').addEventListener('click', excluirNota);
+  $('texto-nota').addEventListener('input', () => {
+    if (notaSel === null || !notas[notaSel]) return;
+    const texto = $('texto-nota').value;
+    notas[notaSel].texto = texto;
+    const el = document.querySelector('.nota[data-indice="' + notaSel + '"]');
+    if (el) { el.textContent = texto || 'Escreva a nota…'; el.classList.toggle('vazia', !texto); }
+    marcarSujo();
+  });
+  $('texto-nota').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') $('texto-nota').blur(); });
+  function guardarOcultas() {
+    try { localStorage.setItem('pint_notas_ocultas', notasOcultas ? '1' : '0'); } catch (e) { /* sem storage */ }
+  }
+  $('botao-notas').addEventListener('click', () => {
+    notasOcultas = !notasOcultas; guardarOcultas();
+    if (notasOcultas) { soltarNota(); if (modo === 'nota') modo = 'ver'; }
+    desenharNotas(); desenhar(); atualizarBarra();
+  });
   $('salvar').addEventListener('click', () => {
+    soltarNota(); desenharNotas(); desenhar(); atualizarBarra();
     enviar('streamlit:setComponentValue', {
-      value: { pedido: Date.now() + '-' + Math.random().toString(36).slice(2), areas: areas, legendas_novas: novas },
+      value: { pedido: Date.now() + '-' + Math.random().toString(36).slice(2), areas: areas, notas: notas, legendas_novas: novas },
       dataType: 'json',
     });
     $('salvar').disabled = true;
     $('estado').textContent = 'Salvando…';
   });
 
-  $('imagem').addEventListener('load', altura);
+  $('imagem').addEventListener('load', () => { desenhar(); altura(); });
   window.addEventListener('resize', altura);
 
   window.addEventListener('message', (ev) => {
@@ -538,12 +767,15 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z
     if (args.versao !== versao) {
       versao = args.versao;
       areas = copia(args.areas || []);
+      notas = copia(args.notas || []);
       legendas = copia(args.legendas || []);
       novas = [];
-      historico = []; sujo = false; selecionada = null; rascunho = null;
+      historico = []; sujo = false; selecionada = null; notaSel = null; rascunho = null;
+      arrasteNota = null; rascunhoNota = null;
       if (!legendas.some((l) => String(l.id) === String(ativa))) ativa = legendas.length ? legendas[0].id : null;
     }
     if (!args.editar) modo = 'ver';
+    desenharNotas();
     desenhar();
     atualizarBarra();
   });
