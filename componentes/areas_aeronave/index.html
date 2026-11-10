@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Desenho das áreas (ex.: material composto) por cima das vistas da aeronave.
+     Componente do Streamlit sem build: fala com o site pelo protocolo de mensagens. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&family=Source+Sans+3:wght@400;600&display=swap');
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; color: #1F2430;
+  font: 14px/1.4 'Source Sans 3', 'Source Sans Pro', system-ui, sans-serif; }
+.barra { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; margin-bottom: .6rem; }
+.legenda { display: flex; flex-wrap: wrap; gap: .4rem .9rem; align-items: center; }
+.legenda .rot { font-family: Inter, sans-serif; font-size: 10.5px; font-weight: 600; letter-spacing: .12em;
+  text-transform: uppercase; color: #9AA1AD; }
+.legenda .item { display: inline-flex; align-items: center; gap: .4rem; font-weight: 600; font-size: 13.5px; }
+.legenda .cor { width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid; }
+.legenda .qtd { color: #8A919C; font-weight: 400; }
+.legenda .item.escolha { cursor: pointer; padding: 4px 9px; border-radius: 9px; border: 1px solid #E3E6EB;
+  background: #fff; font-weight: 500; }
+.legenda .item.escolha:hover { border-color: #FFB27F; }
+.legenda .item.escolha.ativa { border-color: #FF6A13; box-shadow: 0 0 0 2px rgba(255,106,19,.18); font-weight: 600; }
+.legenda .nova { font-size: 13px; color: #6B7280; padding: 4px 9px; border-radius: 9px; border: 1px dashed #D3D8DF;
+  background: transparent; }
+.form-legenda { display: none; align-items: center; gap: .45rem; flex-wrap: wrap; margin: -.1rem 0 .6rem; }
+.form-legenda.on { display: flex; }
+.form-legenda input[type=text] { font: inherit; padding: 6px 10px; border: 1px solid #E3E6EB; border-radius: 9px;
+  outline: none; width: 220px; }
+.form-legenda input[type=text]:focus { border-color: #FF6A13; box-shadow: 0 0 0 3px rgba(255,106,19,.15); }
+.form-legenda input[type=color] { width: 38px; height: 32px; padding: 2px; border: 1px solid #E3E6EB;
+  border-radius: 9px; background: #fff; cursor: pointer; }
+.form-legenda .erro { color: #B42318; font-size: 12.5px; }
+.detalhe select { font: inherit; padding: 6px 8px; border: 1px solid #E3E6EB; border-radius: 9px; background: #fff; }
+.ferramentas { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin-left: auto; }
+.grupo { display: inline-flex; border: 1px solid #E3E6EB; border-radius: 10px; overflow: hidden; background: #fff; }
+.grupo button { border: 0; border-right: 1px solid #E3E6EB; border-radius: 0; }
+.grupo button:last-child { border-right: 0; }
+button { font: 500 13px 'Source Sans 3', system-ui, sans-serif; color: #3B4352; background: #fff;
+  border: 1px solid #E3E6EB; border-radius: 10px; padding: 6px 11px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: .35rem; }
+button:hover:not(:disabled) { color: #E85A05; border-color: #FFB27F; }
+.grupo button:hover:not(:disabled) { border-color: #E3E6EB; }
+button.ativo { background: rgba(255, 106, 19, .10); color: #E85A05; font-weight: 600; }
+button.primario { background: #FF6A13; color: #fff; border-color: #FF6A13; font-weight: 600; }
+button.primario:hover:not(:disabled) { background: #E85A05; color: #fff; }
+button:disabled { opacity: .45; cursor: default; }
+svg.ic { width: 15px; height: 15px; }
+.estado { font-size: 12.5px; color: #8A919C; }
+.estado.sujo { color: #B54708; font-weight: 600; }
+.quadro { position: relative; border-radius: 16px; overflow: hidden; border: 1px solid rgba(227, 230, 235, .85);
+  background: linear-gradient(160deg, #F7F8FA 0%, #ECEFF3 100%); user-select: none; -webkit-user-select: none; }
+.quadro img { display: block; width: 100%; height: auto; pointer-events: none; }
+.quadro svg.camada { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+.quadro.desenhando svg.camada { cursor: crosshair; }
+polygon.area { stroke-width: 2; vector-effect: non-scaling-stroke; transition: fill-opacity .12s ease; }
+polygon.area.realce { fill-opacity: .62 !important; }
+polygon.area.sel { stroke-dasharray: 6 4; stroke-width: 2.5; }
+polyline.rascunho { fill: none; stroke: #1F2430; stroke-width: 2; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+polygon.area, polyline.rascunho, circle.vertice { pointer-events: none; }
+circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.dica { position: absolute; pointer-events: none; z-index: 5; background: #1F2430; color: #fff;
+  padding: 6px 10px; border-radius: 9px; font-size: 13px; box-shadow: 0 8px 22px -10px rgba(0,0,0,.5);
+  white-space: nowrap; transform: translate(12px, 12px); display: none; }
+.dica b { font-weight: 600; display: flex; align-items: center; gap: .4rem; }
+.dica .cor { width: 10px; height: 10px; border-radius: 3px; }
+.dica span { color: #C9CED6; display: block; font-size: 12px; }
+.detalhe { display: none; margin-top: .6rem; padding: .6rem .8rem; border-radius: 12px; background: #fff;
+  border: 1px solid #E3E6EB; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.detalhe.on { display: flex; }
+.detalhe label { font-size: 12.5px; color: #6B7280; }
+.detalhe input { flex: 1; min-width: 180px; font: inherit; padding: 6px 10px; border: 1px solid #E3E6EB;
+  border-radius: 9px; outline: none; }
+.detalhe input:focus { border-color: #FF6A13; box-shadow: 0 0 0 3px rgba(255,106,19,.15); }
+.ajuda { font-size: 12.5px; color: #8A919C; margin-top: .45rem; min-height: 1.1em; }
+</style>
+</head>
+<body>
+<div class="barra">
+  <div class="legenda" id="legenda"></div>
+  <div class="ferramentas" id="ferramentas">
+    <div class="grupo">
+      <button data-modo="ver" title="Ver e escolher uma área">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>Selecionar</button>
+      <button data-modo="livre" title="Arraste o mouse contornando a área">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/></svg>Mão livre</button>
+      <button data-modo="pontos" title="Clique ponto a ponto; clique no primeiro ponto para fechar">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20 8 5l8 4 5 11z"/><circle cx="8" cy="5" r="1.5"/><circle cx="16" cy="9" r="1.5"/></svg>Pontos</button>
+    </div>
+    <button id="desfazer" title="Desfazer a última alteração">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>Desfazer</button>
+    <button id="salvar" class="primario" disabled>Salvar áreas</button>
+    <span class="estado" id="estado"></span>
+  </div>
+</div>
+<div class="form-legenda" id="form-legenda">
+  <input type="text" id="nova-nome" maxlength="40" placeholder="Nome da legenda, ex.: Material composto">
+  <input type="color" id="nova-cor" value="#2E90FA" title="Cor da legenda">
+  <button id="nova-ok" class="primario">Adicionar legenda</button>
+  <button id="nova-cancelar">Cancelar</button>
+  <span class="erro" id="nova-erro"></span>
+</div>
+<div class="quadro" id="quadro">
+  <img id="imagem" alt="">
+  <svg class="camada" id="camada" preserveAspectRatio="none"></svg>
+  <div class="dica" id="dica"></div>
+</div>
+<div class="detalhe" id="detalhe">
+  <label for="legenda-area">Área selecionada:</label>
+  <select id="legenda-area" title="Legenda desta área"></select>
+  <input id="descricao" placeholder="Descrição (opcional), ex.: radome, carenagem da asa, flap">
+  <button id="excluir">Excluir área</button>
+</div>
+<div class="ajuda" id="ajuda"></div>
+<script>
+(function () {
+  const NS = 'http://www.w3.org/2000/svg';
+  const $ = (id) => document.getElementById(id);
+  const enviar = (tipo, dados) => window.parent.postMessage(
+    Object.assign({ isStreamlitMessage: true, type: tipo }, dados), '*');
+
+  let args = {}, versao = null, areas = [], historico = [], sujo = false;
+  let legendas = [], novas = [], ativa = null, contadorNovas = 0;
+  let modo = 'ver', selecionada = null, rascunho = null, arrastando = false, ultimoClique = null;
+
+  function legendaDe(id) {
+    return legendas.find((l) => String(l.id) === String(id)) || { id: id, nome: 'Sem legenda', cor: '#98A2B3' };
+  }
+  function copia(lista) { return JSON.parse(JSON.stringify(lista)); }
+  function guardar() { historico.push(copia(areas)); if (historico.length > 50) historico.shift(); }
+  function escapar(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+  function marcarSujo() {
+    sujo = true; atualizarBarra();
+  }
+
+  function altura() {
+    enviar('streamlit:setFrameHeight', { height: Math.ceil(document.body.scrollHeight) + 4 });
+  }
+
+  function atualizarBarra() {
+    const editar = !!args.editar;
+    $('ferramentas').style.display = editar ? '' : 'none';
+    document.querySelectorAll('[data-modo]').forEach((b) => b.classList.toggle('ativo', b.dataset.modo === modo));
+    $('desfazer').disabled = !historico.length;
+    $('salvar').disabled = !sujo;
+    $('estado').textContent = sujo ? 'Alterações não salvas' : (areas.length ? 'Tudo salvo' : '');
+    $('estado').className = 'estado' + (sujo ? ' sujo' : '');
+    $('quadro').classList.toggle('desenhando', editar && modo !== 'ver');
+    const sel = editar && selecionada !== null && areas[selecionada];
+    $('detalhe').classList.toggle('on', !!sel);
+    if (sel && document.activeElement !== $('descricao')) $('descricao').value = sel.descricao || '';
+    if (sel) {
+      const caixa = $('legenda-area');
+      caixa.innerHTML = legendas.map((l) => '<option value="' + escapar(String(l.id)) + '">' + escapar(l.nome) + '</option>').join('');
+      caixa.value = String(sel.legenda);
+    }
+    $('ajuda').textContent = !editar
+      ? (areas.length ? 'Passe o mouse sobre a aeronave para ver as áreas.' : '')
+      : !legendas.length ? 'Crie uma legenda (+ Nova legenda) para começar a desenhar.'
+      : modo === 'livre' ? 'Desenhando com "' + legendaDe(ativa).nome + '": segure o botão do mouse e contorne a área. Ao soltar, a área é fechada.'
+      : modo === 'pontos' ? 'Desenhando com "' + legendaDe(ativa).nome + '": clique para marcar os cantos. Clique no primeiro ponto (ou dê dois cliques) para fechar. Esc cancela.'
+      : 'Clique numa área para descrever ou excluir. Para desenhar, escolha Mão livre ou Pontos.';
+    desenharLegenda();
+    altura();
+  }
+
+  function desenharLegenda() {
+    const leg = $('legenda');
+    leg.innerHTML = '';
+    const editar = !!args.editar;
+    const rot = document.createElement('span');
+    rot.className = 'rot'; rot.textContent = editar ? 'Desenhar com' : 'Legenda';
+    leg.appendChild(rot);
+    // Vendo: só as legendas usadas nesta vista. Editando: todas, para escolher com qual desenhar.
+    const lista = editar ? legendas : legendas.filter((l) => areas.some((a) => String(a.legenda) === String(l.id)));
+    lista.forEach((l) => {
+      const qtd = areas.filter((a) => String(a.legenda) === String(l.id)).length;
+      const item = document.createElement('span');
+      item.className = 'item' + (editar ? ' escolha' : '') + (editar && String(l.id) === String(ativa) ? ' ativa' : '');
+      item.innerHTML = '<span class="cor"></span><span></span><span class="qtd"></span>';
+      item.children[0].style.background = l.cor + '73';
+      item.children[0].style.borderColor = l.cor;
+      item.children[1].textContent = l.nome;
+      item.children[2].textContent = qtd ? '· ' + qtd : '';
+      if (editar) item.addEventListener('click', () => {
+        // Escolher a legenda já deixa pronto para desenhar com ela.
+        ativa = l.id; selecionada = null;
+        if (modo === 'ver') modo = 'livre';
+        desenhar(); atualizarBarra();
+      });
+      leg.appendChild(item);
+    });
+    if (editar) {
+      const nova = document.createElement('button');
+      nova.className = 'nova'; nova.textContent = '+ Nova legenda';
+      nova.addEventListener('click', () => {
+        $('form-legenda').classList.add('on'); $('nova-erro').textContent = '';
+        $('nova-cor').value = proximaCor(); $('nova-nome').focus(); altura();
+      });
+      leg.appendChild(nova);
+    } else if (!lista.length) {
+      leg.innerHTML = '';
+    }
+  }
+
+  const CORES = ['#2E90FA', '#12B76A', '#7A5AF8', '#F04438', '#EE46BC', '#0BA5EC', '#F79009', '#475467'];
+  function proximaCor() {
+    return CORES.find((c) => !legendas.some((l) => l.cor.toLowerCase() === c.toLowerCase())) || CORES[legendas.length % CORES.length];
+  }
+
+  function adicionarLegenda() {
+    const nome = $('nova-nome').value.trim().replace(/\s+/g, ' ');
+    if (!nome) { $('nova-erro').textContent = 'Digite o nome da legenda.'; return; }
+    const igual = legendas.find((l) => l.nome.toLowerCase() === nome.toLowerCase());
+    if (igual) { ativa = igual.id; }
+    else {
+      const l = { id: 'nova' + (++contadorNovas), nome: nome, cor: $('nova-cor').value };
+      legendas.push(l); novas.push(l); ativa = l.id; marcarSujo();
+    }
+    $('nova-nome').value = ''; $('form-legenda').classList.remove('on');
+    if (modo === 'ver') modo = 'livre';
+    selecionada = null;
+    desenhar(); atualizarBarra();
+  }
+
+  function pontosSvg(pontos) {
+    const w = args.largura, h = args.altura;
+    return pontos.map((p) => (p[0] * w).toFixed(1) + ',' + (p[1] * h).toFixed(1)).join(' ');
+  }
+
+  function desenhar() {
+    const svg = $('camada');
+    svg.setAttribute('viewBox', '0 0 ' + args.largura + ' ' + args.altura);
+    svg.innerHTML = '';
+    areas.forEach((a, i) => {
+      const t = legendaDe(a.legenda);
+      const pol = document.createElementNS(NS, 'polygon');
+      pol.setAttribute('points', pontosSvg(a.pontos));
+      pol.setAttribute('class', 'area' + (i === selecionada ? ' sel' : ''));
+      pol.setAttribute('fill', t.cor);
+      pol.setAttribute('fill-opacity', '0.42');
+      pol.setAttribute('stroke', t.cor);
+      pol.dataset.indice = i;
+      svg.appendChild(pol);
+    });
+    if (rascunho && rascunho.length) {
+      const linha = document.createElementNS(NS, 'polyline');
+      linha.setAttribute('class', 'rascunho');
+      linha.setAttribute('points', pontosSvg(rascunho));
+      svg.appendChild(linha);
+      if (modo === 'pontos') {
+        const raio = Math.max(args.largura, args.altura) / 220;
+        rascunho.forEach((p, i) => {
+          const c = document.createElementNS(NS, 'circle');
+          c.setAttribute('class', 'vertice');
+          c.setAttribute('cx', p[0] * args.largura); c.setAttribute('cy', p[1] * args.altura);
+          c.setAttribute('r', i === 0 ? raio * 1.6 : raio);
+          svg.appendChild(c);
+        });
+      }
+    }
+  }
+
+  function posicao(ev) {
+    const r = $('camada').getBoundingClientRect();
+    return [
+      Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)),
+      Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)),
+    ];
+  }
+
+  function dentro(p, pontos) {
+    let d = false;
+    for (let i = 0, j = pontos.length - 1; i < pontos.length; j = i++) {
+      const a = pontos[i], b = pontos[j];
+      if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) d = !d;
+    }
+    return d;
+  }
+
+  function areaEm(p) {
+    for (let i = areas.length - 1; i >= 0; i--) if (dentro(p, areas[i].pontos)) return i;
+    return null;
+  }
+
+  // Ramer-Douglas-Peucker: tira os pontos em excesso do traço à mão livre.
+  function simplificar(pontos, eps) {
+    if (pontos.length < 3) return pontos;
+    const [a, b] = [pontos[0], pontos[pontos.length - 1]];
+    let maior = 0, idx = 0;
+    for (let i = 1; i < pontos.length - 1; i++) {
+      const p = pontos[i];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const comp = Math.hypot(dx, dy);
+      // Traço fechado (começo = fim): mede a distância até o ponto inicial.
+      const d = comp < 1e-6 ? Math.hypot(p[0] - a[0], p[1] - a[1])
+        : Math.abs(dy * p[0] - dx * p[1] + b[0] * a[1] - b[1] * a[0]) / comp;
+      if (d > maior) { maior = d; idx = i; }
+    }
+    if (maior <= eps) return [a, b];
+    return simplificar(pontos.slice(0, idx + 1), eps).slice(0, -1).concat(simplificar(pontos.slice(idx), eps));
+  }
+
+  function fecharRascunho() {
+    if (rascunho && rascunho.length >= 3) {
+      guardar();
+      const pontos = rascunho.map((p) => [+p[0].toFixed(4), +p[1].toFixed(4)]);
+      areas.push({ legenda: ativa, descricao: '', pontos: pontos });
+      selecionada = areas.length - 1;
+      marcarSujo();
+    }
+    rascunho = null;
+    desenhar();
+    atualizarBarra();
+  }
+
+  function mostrarDica(ev, i) {
+    const dica = $('dica');
+    if (i === null || rascunho) { dica.style.display = 'none'; return; }
+    const a = areas[i], t = legendaDe(a.legenda);
+    dica.innerHTML = '<b><span class="cor"></span></b>';
+    dica.querySelector('.cor').style.background = t.cor;
+    dica.querySelector('b').appendChild(document.createTextNode(t.nome));
+    if (a.descricao) {
+      const s = document.createElement('span'); s.textContent = a.descricao; dica.appendChild(s);
+    }
+    const r = $('quadro').getBoundingClientRect();
+    let x = ev.clientX - r.left, y = ev.clientY - r.top;
+    dica.style.display = 'block';
+    // Não deixa a dica sair pela direita.
+    if (x + dica.offsetWidth + 24 > r.width) x -= dica.offsetWidth + 24;
+    dica.style.left = x + 'px'; dica.style.top = y + 'px';
+  }
+
+  let realce = null;
+  function realcar(i) {
+    if (realce === i) return;
+    realce = i;
+    document.querySelectorAll('polygon.area').forEach((p) =>
+      p.classList.toggle('realce', i !== null && +p.dataset.indice === i));
+  }
+
+  const camada = $('camada');
+  camada.addEventListener('pointerdown', (ev) => {
+    if (!args.editar) return;
+    const p = posicao(ev);
+    if (modo !== 'ver' && (ativa === null || !legendas.length)) return;
+    if (modo === 'livre') {
+      arrastando = true; rascunho = [p];
+      camada.setPointerCapture(ev.pointerId);
+      desenhar();
+    } else if (modo === 'pontos') {
+      if (!rascunho) rascunho = [];
+      const primeiro = rascunho[0];
+      const r = camada.getBoundingClientRect();
+      // Dois cliques no mesmo lugar fecham a área (o primeiro clique já marcou o ponto).
+      const agora = Date.now(), ant = ultimoClique;
+      ultimoClique = { t: agora, p: p };
+      if (ant && agora - ant.t < 450 && rascunho.length >= 3 &&
+          Math.hypot((p[0] - ant.p[0]) * r.width, (p[1] - ant.p[1]) * r.height) < 8) {
+        ultimoClique = null; fecharRascunho(); return;
+      }
+      if (primeiro && rascunho.length >= 3 &&
+          Math.hypot((p[0] - primeiro[0]) * r.width, (p[1] - primeiro[1]) * r.height) < 12) {
+        fecharRascunho(); return;
+      }
+      rascunho.push(p);
+      desenhar(); atualizarBarra();
+    } else {
+      selecionada = areaEm(p);
+      desenhar(); atualizarBarra();
+    }
+  });
+  camada.addEventListener('pointermove', (ev) => {
+    const p = posicao(ev);
+    if (arrastando && rascunho) {
+      const u = rascunho[rascunho.length - 1];
+      const r = camada.getBoundingClientRect();
+      if (Math.hypot((p[0] - u[0]) * r.width, (p[1] - u[1]) * r.height) > 3) { rascunho.push(p); desenhar(); }
+      return;
+    }
+    if (modo === 'ver' || !args.editar) {
+      const i = areaEm(p); realcar(i); mostrarDica(ev, i);
+    }
+  });
+  camada.addEventListener('pointerleave', () => { realcar(null); $('dica').style.display = 'none'; });
+  camada.addEventListener('pointerup', () => {
+    if (!arrastando) return;
+    arrastando = false;
+    if (rascunho) rascunho = simplificar(rascunho, 0.0025);
+    fecharRascunho();
+  });
+  camada.addEventListener('dblclick', () => { if (modo === 'pontos' && rascunho) fecharRascunho(); });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && rascunho) { rascunho = null; desenhar(); atualizarBarra(); }
+    if ((ev.key === 'Delete' || ev.key === 'Backspace') && selecionada !== null &&
+        document.activeElement !== $('descricao') && args.editar) excluirSelecionada();
+  });
+
+  document.querySelectorAll('[data-modo]').forEach((b) => b.addEventListener('click', () => {
+    modo = b.dataset.modo; rascunho = null; arrastando = false;
+    if (modo !== 'ver') selecionada = null;
+    desenhar(); atualizarBarra();
+  }));
+  $('desfazer').addEventListener('click', () => {
+    if (!historico.length) return;
+    areas = historico.pop(); selecionada = null; marcarSujo(); desenhar();
+  });
+  function excluirSelecionada() {
+    if (selecionada === null) return;
+    guardar(); areas.splice(selecionada, 1); selecionada = null; marcarSujo(); desenhar();
+  }
+  $('excluir').addEventListener('click', excluirSelecionada);
+  $('legenda-area').addEventListener('change', () => {
+    if (selecionada === null) return;
+    guardar(); areas[selecionada].legenda = $('legenda-area').value.startsWith('nova')
+      ? $('legenda-area').value : +$('legenda-area').value;
+    marcarSujo(); desenhar();
+  });
+  $('nova-ok').addEventListener('click', adicionarLegenda);
+  $('nova-nome').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') adicionarLegenda(); });
+  $('nova-cancelar').addEventListener('click', () => { $('form-legenda').classList.remove('on'); altura(); });
+  $('descricao').addEventListener('input', () => {
+    if (selecionada === null) return;
+    areas[selecionada].descricao = $('descricao').value; marcarSujo();
+  });
+  $('salvar').addEventListener('click', () => {
+    enviar('streamlit:setComponentValue', {
+      value: { pedido: Date.now() + '-' + Math.random().toString(36).slice(2), areas: areas, legendas_novas: novas },
+      dataType: 'json',
+    });
+    $('salvar').disabled = true;
+    $('estado').textContent = 'Salvando…';
+  });
+
+  $('imagem').addEventListener('load', altura);
+  window.addEventListener('resize', altura);
+
+  window.addEventListener('message', (ev) => {
+    if (!ev.data || ev.data.type !== 'streamlit:render') return;
+    args = ev.data.args || {};
+    if ($('imagem').getAttribute('src') !== args.imagem) $('imagem').src = args.imagem;
+    // Só recarrega as áreas quando o banco mudou (senão perderia o desenho não salvo).
+    if (args.versao !== versao) {
+      versao = args.versao;
+      areas = copia(args.areas || []);
+      legendas = copia(args.legendas || []);
+      novas = [];
+      historico = []; sujo = false; selecionada = null; rascunho = null;
+      if (!legendas.some((l) => String(l.id) === String(ativa))) ativa = legendas.length ? legendas[0].id : null;
+    }
+    if (!args.editar) modo = 'ver';
+    desenhar();
+    atualizarBarra();
+  });
+  enviar('streamlit:componentReady', { apiVersion: 1 });
+})();
+</script>
+</body>
+</html>
