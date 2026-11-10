@@ -50,15 +50,29 @@ svg.ic { width: 15px; height: 15px; }
 .estado.sujo { color: #B54708; font-weight: 600; }
 .quadro { position: relative; border-radius: 16px; overflow: hidden; border: 1px solid rgba(227, 230, 235, .85);
   background: linear-gradient(160deg, #F7F8FA 0%, #ECEFF3 100%); user-select: none; -webkit-user-select: none; }
+.palco { position: relative; transform-origin: 0 0; will-change: transform; }
 .quadro img { display: block; width: 100%; height: auto; pointer-events: none; }
+.quadro.mover svg.camada, .quadro.ampliado:not(.desenhando) svg.camada { cursor: grab; }
+.quadro.movendo svg.camada { cursor: grabbing !important; }
+.zoom { position: absolute; right: 10px; bottom: 10px; z-index: 6; display: flex; align-items: center;
+  background: rgba(255, 255, 255, .92); border: 1px solid #E3E6EB; border-radius: 10px; overflow: hidden;
+  box-shadow: 0 6px 18px -10px rgba(30, 36, 48, .35); }
+.zoom button { border: 0; border-radius: 0; padding: 5px 10px; min-width: 34px; justify-content: center;
+  font-size: 15px; line-height: 1; background: transparent; }
+.zoom button#zoom-valor { font-size: 12.5px; min-width: 52px; color: #5F6672; border-left: 1px solid #E3E6EB;
+  border-right: 1px solid #E3E6EB; }
+.aviso-zoom { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center;
+  background: rgba(31, 36, 48, .38); color: #fff; font-size: 15px; font-weight: 600; pointer-events: none;
+  opacity: 0; transition: opacity .2s ease; }
+.aviso-zoom.on { opacity: 1; }
 .quadro svg.camada { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
 .quadro.desenhando svg.camada { cursor: crosshair; }
-polygon.area { stroke-width: 2; vector-effect: non-scaling-stroke; transition: fill-opacity .12s ease; }
+polygon.area { stroke-width: calc(2px / var(--z, 1)); vector-effect: non-scaling-stroke; transition: fill-opacity .12s ease; }
 polygon.area.realce { fill-opacity: .62 !important; }
-polygon.area.sel { stroke-dasharray: 6 4; stroke-width: 2.5; }
-polyline.rascunho { fill: none; stroke: #1F2430; stroke-width: 2; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+polygon.area.sel { stroke-dasharray: 6 4; stroke-width: calc(2.5px / var(--z, 1)); }
+polyline.rascunho { fill: none; stroke: #1F2430; stroke-width: calc(2px / var(--z, 1)); stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
 polygon.area, polyline.rascunho, circle.vertice { pointer-events: none; }
-circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: calc(1.5px / var(--z, 1)); vector-effect: non-scaling-stroke; }
 .dica { position: absolute; pointer-events: none; z-index: 5; background: #1F2430; color: #fff;
   padding: 6px 10px; border-radius: 9px; font-size: 13px; box-shadow: 0 8px 22px -10px rgba(0,0,0,.5);
   white-space: nowrap; transform: translate(12px, 12px); display: none; }
@@ -101,9 +115,17 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: 
   <span class="erro" id="nova-erro"></span>
 </div>
 <div class="quadro" id="quadro">
-  <img id="imagem" alt="">
-  <svg class="camada" id="camada" preserveAspectRatio="none"></svg>
+  <div class="palco" id="palco">
+    <img id="imagem" alt="">
+    <svg class="camada" id="camada" preserveAspectRatio="none"></svg>
+  </div>
   <div class="dica" id="dica"></div>
+  <div class="aviso-zoom" id="aviso-zoom">Use Ctrl + roda do mouse para dar zoom</div>
+  <div class="zoom" title="Zoom (também com Ctrl + roda do mouse)">
+    <button id="zoom-menos" title="Diminuir zoom">−</button>
+    <button id="zoom-valor" title="Voltar para 100%">100%</button>
+    <button id="zoom-mais" title="Aumentar zoom">+</button>
+  </div>
 </div>
 <div class="detalhe" id="detalhe">
   <label for="legenda-area">Área selecionada:</label>
@@ -122,6 +144,8 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: 
   let args = {}, versao = null, areas = [], historico = [], sujo = false;
   let legendas = [], novas = [], ativa = null, contadorNovas = 0;
   let modo = 'ver', selecionada = null, rascunho = null, arrastando = false, ultimoClique = null;
+  // Zoom: a imagem e o desenho ficam num "palco" ampliado e deslocado dentro do quadro.
+  let zoom = 1, tx = 0, ty = 0, pan = null, espaco = false, avisoTempo = null;
 
   function legendaDe(id) {
     return legendas.find((l) => String(l.id) === String(id)) || { id: id, nome: 'Sem legenda', cor: '#98A2B3' };
@@ -154,12 +178,15 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: 
       caixa.innerHTML = legendas.map((l) => '<option value="' + escapar(String(l.id)) + '">' + escapar(l.nome) + '</option>').join('');
       caixa.value = String(sel.legenda);
     }
-    $('ajuda').textContent = !editar
+    const dicaZoom = zoom > 1
+      ? ' Para mover a imagem ampliada, arraste num espaço vazio em Selecionar ou segure a barra de espaço e arraste.'
+      : ' Zoom: botões + e − ou Ctrl + roda do mouse.';
+    $('ajuda').textContent = (!editar
       ? (areas.length ? 'Passe o mouse sobre a aeronave para ver as áreas.' : '')
       : !legendas.length ? 'Crie uma legenda (+ Nova legenda) para começar a desenhar.'
       : modo === 'livre' ? 'Desenhando com "' + legendaDe(ativa).nome + '": segure o botão do mouse e contorne a área. Ao soltar, a área é fechada.'
       : modo === 'pontos' ? 'Desenhando com "' + legendaDe(ativa).nome + '": clique para marcar os cantos. Clique no primeiro ponto (ou dê dois cliques) para fechar. Esc cancela.'
-      : 'Clique numa área para descrever ou excluir. Para desenhar, escolha Mão livre ou Pontos.';
+      : 'Clique numa área para descrever ou excluir. Para desenhar, escolha Mão livre ou Pontos.') + dicaZoom;
     desenharLegenda();
     altura();
   }
@@ -249,7 +276,7 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: 
       linha.setAttribute('points', pontosSvg(rascunho));
       svg.appendChild(linha);
       if (modo === 'pontos') {
-        const raio = Math.max(args.largura, args.altura) / 220;
+        const raio = Math.max(args.largura, args.altura) / 220 / zoom;
         rascunho.forEach((p, i) => {
           const c = document.createElementNS(NS, 'circle');
           c.setAttribute('class', 'vertice');
@@ -340,10 +367,63 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: 
       p.classList.toggle('realce', i !== null && +p.dataset.indice === i));
   }
 
+  function aplicarZoom() {
+    const q = $('quadro'), W = q.clientWidth, H = q.clientHeight;
+    tx = Math.min(0, Math.max(W - W * zoom, tx));
+    ty = Math.min(0, Math.max(H - H * zoom, ty));
+    $('palco').style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + zoom + ')';
+    $('palco').style.setProperty('--z', zoom);
+    if (rascunho) desenhar();
+    $('zoom-valor').textContent = Math.round(zoom * 100) + '%';
+    $('zoom-menos').disabled = zoom <= 1;
+    $('zoom-mais').disabled = zoom >= 8;
+    const antes = q.classList.contains('ampliado');
+    q.classList.toggle('ampliado', zoom > 1);
+    if (antes !== zoom > 1) atualizarBarra();
+  }
+  function zoomEm(novo, cx, cy) {
+    novo = Math.min(8, Math.max(1, novo));
+    tx = cx - (cx - tx) * (novo / zoom);
+    ty = cy - (cy - ty) * (novo / zoom);
+    zoom = novo;
+    aplicarZoom();
+  }
+  function zoomCentro(fator) {
+    const q = $('quadro');
+    zoomEm(zoom * fator, q.clientWidth / 2, q.clientHeight / 2);
+  }
+  $('zoom-mais').addEventListener('click', () => zoomCentro(1.5));
+  $('zoom-menos').addEventListener('click', () => zoomCentro(1 / 1.5));
+  $('zoom-valor').addEventListener('click', () => { zoom = 1; tx = 0; ty = 0; aplicarZoom(); });
+  $('quadro').addEventListener('wheel', (ev) => {
+    if (ev.ctrlKey || ev.metaKey) {
+      // Ctrl + roda (ou pinça no touchpad): zoom no ponto do mouse.
+      ev.preventDefault();
+      const r = $('quadro').getBoundingClientRect();
+      zoomEm(zoom * Math.exp(-ev.deltaY * 0.0025), ev.clientX - r.left, ev.clientY - r.top);
+    } else {
+      // Sem Ctrl a roda continua rolando a página; só avisa como dar zoom.
+      $('aviso-zoom').classList.add('on');
+      clearTimeout(avisoTempo);
+      avisoTempo = setTimeout(() => $('aviso-zoom').classList.remove('on'), 900);
+    }
+  }, { passive: false });
+  window.addEventListener('resize', aplicarZoom);
+
   const camada = $('camada');
   camada.addEventListener('pointerdown', (ev) => {
-    if (!args.editar) return;
     const p = posicao(ev);
+    // Arrastar a imagem ampliada: barra de espaço, botão do meio, ou clique num vazio em Selecionar.
+    const vazio = (modo === 'ver' || !args.editar) && areaEm(p) === null;
+    if (zoom > 1 && (espaco || ev.button === 1 || vazio)) {
+      ev.preventDefault();
+      if (args.editar && vazio && selecionada !== null) { selecionada = null; desenhar(); atualizarBarra(); }
+      pan = { x: ev.clientX, y: ev.clientY, tx: tx, ty: ty };
+      camada.setPointerCapture(ev.pointerId);
+      $('quadro').classList.add('movendo');
+      return;
+    }
+    if (!args.editar) return;
     if (modo !== 'ver' && (ativa === null || !legendas.length)) return;
     if (modo === 'livre') {
       arrastando = true; rascunho = [p];
@@ -372,6 +452,10 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: 
     }
   });
   camada.addEventListener('pointermove', (ev) => {
+    if (pan) {
+      tx = pan.tx + (ev.clientX - pan.x); ty = pan.ty + (ev.clientY - pan.y);
+      aplicarZoom(); return;
+    }
     const p = posicao(ev);
     if (arrastando && rascunho) {
       const u = rascunho[rascunho.length - 1];
@@ -385,13 +469,21 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: 
   });
   camada.addEventListener('pointerleave', () => { realcar(null); $('dica').style.display = 'none'; });
   camada.addEventListener('pointerup', () => {
+    if (pan) { pan = null; $('quadro').classList.remove('movendo'); return; }
     if (!arrastando) return;
     arrastando = false;
     if (rascunho) rascunho = simplificar(rascunho, 0.0025);
     fecharRascunho();
   });
   camada.addEventListener('dblclick', () => { if (modo === 'pontos' && rascunho) fecharRascunho(); });
+  const digitando = () => ['INPUT', 'SELECT', 'TEXTAREA'].includes((document.activeElement || {}).tagName);
+  document.addEventListener('keyup', (ev) => {
+    if (ev.key === ' ') { espaco = false; $('quadro').classList.remove('mover'); }
+  });
   document.addEventListener('keydown', (ev) => {
+    if (ev.key === ' ' && !digitando()) { ev.preventDefault(); espaco = true; $('quadro').classList.add('mover'); }
+    if ((ev.key === '+' || ev.key === '=') && !digitando()) zoomCentro(1.5);
+    if (ev.key === '-' && !digitando()) zoomCentro(1 / 1.5);
     if (ev.key === 'Escape' && rascunho) { rascunho = null; desenhar(); atualizarBarra(); }
     if ((ev.key === 'Delete' || ev.key === 'Backspace') && selecionada !== null &&
         document.activeElement !== $('descricao') && args.editar) excluirSelecionada();
@@ -439,7 +531,9 @@ circle.vertice { fill: #fff; stroke: #1F2430; stroke-width: 1.5; vector-effect: 
   window.addEventListener('message', (ev) => {
     if (!ev.data || ev.data.type !== 'streamlit:render') return;
     args = ev.data.args || {};
-    if ($('imagem').getAttribute('src') !== args.imagem) $('imagem').src = args.imagem;
+    if ($('imagem').getAttribute('src') !== args.imagem) {
+      $('imagem').src = args.imagem; zoom = 1; tx = 0; ty = 0; aplicarZoom();
+    }
     // Só recarrega as áreas quando o banco mudou (senão perderia o desenho não salvo).
     if (args.versao !== versao) {
       versao = args.versao;
