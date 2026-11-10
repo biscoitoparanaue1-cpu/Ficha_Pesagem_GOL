@@ -9417,6 +9417,10 @@ def garantir_pode_editar_pintura():
         raise PermissionError("Seu perfil só pode consultar o controle de pintura.")
 
 
+# O cache fica na própria função que cria as tabelas: o Streamlit guarda o resultado pelo código
+# da função decorada, então uma tabela ou coluna nova aqui faz o cache rodar de novo no deploy.
+# (Com o cache numa função de fora, o código dela não mudava e as tabelas novas nunca eram criadas.)
+@st.cache_resource
 def criar_tabelas_pintura():
     with conectar_banco() as conn:
         conn.execute('''
@@ -9533,7 +9537,6 @@ def criar_tabelas_pintura():
         ''')
 
 
-@st.cache_resource
 def garantir_tabelas_pintura():
     criar_tabelas_pintura()
     return True
@@ -11523,6 +11526,7 @@ def pode_atualizar_consulta_srs():
 
 
 
+@st.cache_resource  # no próprio criador, pelo mesmo motivo de criar_tabelas_pintura
 def criar_tabela_consulta_srs():
     with conectar_banco() as conn:
         conn.execute('''
@@ -11538,7 +11542,6 @@ def criar_tabela_consulta_srs():
         ''')
 
 
-@st.cache_resource
 def garantir_tabela_consulta_srs():
     criar_tabela_consulta_srs()
     return True
