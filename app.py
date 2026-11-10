@@ -32,6 +32,9 @@ if 'pagina_atual' not in st.session_state:
 # Parte do site escolhida depois do login ('ficha' ou 'plantao'); None mostra a escolha.
 if 'area' not in st.session_state:
     st.session_state['area'] = None
+# Engenharia escolhida no primeiro nível da tela inicial (ver SETORES); None mostra as engenharias.
+if 'setor' not in st.session_state:
+    st.session_state['setor'] = None
 
 st.markdown(
     """
@@ -12067,6 +12070,29 @@ AREAS = {
     },
 }
 
+# Primeiro nível da tela inicial: cada engenharia agrupa partes do site (AREAS).
+# Uma engenharia sem partes aparece como "Em breve" e não abre.
+SETORES = {
+    'estruturas': {
+        'titulo': "Engenharia de Estruturas",
+        'descricao': "Pintura, Consulta SR's, ficha de pesagem e agenda do time.",
+        'icone': 'plane',
+        'areas': ['pintura', 'srs', 'ficha', 'plantao'],
+    },
+    'interiores': {
+        'titulo': "Engenharia de Interiores",
+        'descricao': "Os módulos de Interiores vão aparecer aqui.",
+        'icone': 'armchair',
+        'areas': [],
+    },
+    'confins': {
+        'titulo': "Time Confins",
+        'descricao': "Funções do time, projetos, atividades e prazos.",
+        'icone': 'map-pin',
+        'areas': ['time'],
+    },
+}
+
 
 def pagina_permitida(pagina, nivel):
     if pagina == 'gerou_aprovou' and not pode_preencher_gerou_aprovou():
@@ -12097,11 +12123,50 @@ def entrar_na_area(area):
         st.session_state['pagina_atual'] = paginas[0]
 
 
+def areas_do_setor(setor, nivel):
+    return [a for a in SETORES[setor]['areas'] if paginas_da_area(a, nivel)]
+
+
+def setor_da_area(area):
+    return next((s for s, dados in SETORES.items() if area in dados['areas']), None)
+
+
+def entrar_no_setor(setor):
+    st.session_state['setor'] = setor
+    # Engenharia com uma parte só (Time Confins) já abre direto nela.
+    areas = areas_do_setor(setor, st.session_state['nivel_acesso'])
+    if len(areas) == 1:
+        entrar_na_area(areas[0])
+
+
 def voltar_para_escolha():
     st.session_state['area'] = None
+    # Volta para a lista de módulos da engenharia; se ela só tem um, vai direto às engenharias.
+    setor = st.session_state.get('setor')
+    if setor not in SETORES or len(areas_do_setor(setor, st.session_state['nivel_acesso'])) <= 1:
+        st.session_state['setor'] = None
+
+
+def voltar_para_setores():
+    st.session_state['area'] = None
+    st.session_state['setor'] = None
 
 
 ICONES_AREA = {
+    'plane': (
+        '<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2'
+        'c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3'
+        'c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>'
+    ),
+    'armchair': (
+        '<path d="M19 9V6a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v3"/>'
+        '<path d="M3 16a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5a2 2 0 0 0-4 0v1.5a.5.5 0 0 1-.5.5h-9'
+        'a.5.5 0 0 1-.5-.5V11a2 2 0 0 0-4 0z"/><path d="M5 18v2"/><path d="M19 18v2"/>'
+    ),
+    'map-pin': (
+        '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993'
+        ' 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/>'
+    ),
     'paintbrush': (
         '<path d="m14.622 17.897-10.68-2.913"/>'
         '<path d="M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .707l.944.944'
@@ -12145,28 +12210,45 @@ def svg_icone_area(nome):
 
 
 def tela_escolha_area(nivel):
-    """Depois do login: dois cartões de vidro para escolher a parte do site."""
-    areas = [area for area in AREAS if paginas_da_area(area, nivel)]
-    if len(areas) == 1:
-        entrar_na_area(areas[0])
+    """Depois do login: primeiro as engenharias (SETORES), depois os módulos da escolhida."""
+    setor = st.session_state.get('setor')
+    if setor not in SETORES:
+        setor = None
+    todas = [area for area in AREAS if paginas_da_area(area, nivel)]
+    if len(todas) == 1:
+        st.session_state['setor'] = setor_da_area(todas[0])
+        entrar_na_area(todas[0])
         st.rerun()
+    if setor is None:
+        # Cartões das engenharias; a que não tem nada para esta pessoa fica "Em breve".
+        itens = [(f"setor_{s}", SETORES[s], bool(areas_do_setor(s, nivel)), entrar_no_setor, s)
+                 for s in SETORES]
+    else:
+        itens = [(f"area_{a}", AREAS[a], True, entrar_na_area, a) for a in areas_do_setor(setor, nivel)]
+    clicaveis = [chave for chave, _, ativo, _, _ in itens if ativo]
     primeiro_nome = safe_str(st.session_state.get('nome_usuario')).split(" ")[0]
     regras_cartoes = "\n".join(
         f"""
-.st-key-area_{area} {{ position: relative; }}
-.st-key-area_{area} .st-key-entrar_{area} {{
+.st-key-{chave} {{ position: relative; }}
+.st-key-{chave} .st-key-entrar_{chave} {{
   position: absolute; inset: 0; z-index: 2; margin: 0;
   width: 100% !important; height: 100% !important; }}
-.st-key-entrar_{area} .stButton, .st-key-entrar_{area} button {{
+.st-key-entrar_{chave} .stButton, .st-key-entrar_{chave} button {{
   width: 100%; height: 100%; opacity: 0; cursor: pointer; }}
-.st-key-area_{area}:hover .cartao-area {{
+.st-key-{chave}:hover .cartao-area {{
   transform: translateY(-3px); background: rgba(255, 255, 255, .8);
   border-color: rgba(255, 106, 19, .45);
   box-shadow: 0 18px 40px -18px rgba(30, 36, 48, .3); }}
-.st-key-area_{area}:hover .cartao-area-seta {{ color: #FF6A13; transform: translateX(4px); }}
+.st-key-{chave}:hover .cartao-area-seta {{ color: #FF6A13; transform: translateX(4px); }}
 """
-        for area in areas
+        for chave in clicaveis
     )
+    if setor is None:
+        titulo = f"Olá, {primeiro_nome}"
+        subtitulo = "Escolha a engenharia."
+    else:
+        titulo = SETORES[setor]['titulo']
+        subtitulo = "Para onde você quer seguir?"
     st.markdown(
         f"""
 <style>
@@ -12204,40 +12286,55 @@ def tela_escolha_area(nivel):
 .cartao-area p {{ margin: 0; color: #5F6672; font-size: .93rem; line-height: 1.45; }}
 .cartao-area-seta {{ margin-top: auto; color: #9AA1AD; font-size: .9rem; font-weight: 500;
   transition: color .18s ease, transform .18s ease; }}
+.cartao-area.em-breve {{ background: rgba(255, 255, 255, .32); box-shadow: none; cursor: default; }}
+.cartao-area.em-breve .cartao-area-icone {{ color: #9AA1AD; background: rgba(160, 170, 185, .16); }}
+.cartao-area.em-breve .cartao-area-titulo {{ color: #5F6672; }}
+.cartao-area-selo {{ margin-top: auto; align-self: flex-start; padding: .2rem .65rem; border-radius: 999px;
+  background: rgba(160, 170, 185, .18); color: #5F6672; font-size: .8rem; font-weight: 500; }}
+.st-key-escolha_voltar {{ margin: -1.2rem 0 1.2rem; }}
+.st-key-escolha_voltar button {{ background: rgba(255, 255, 255, .55); border: 1px solid rgba(255, 255, 255, .8);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-radius: 999px; color: #3B4150; }}
+.st-key-escolha_voltar button:hover {{ color: #FF6A13; border-color: rgba(255, 106, 19, .45); }}
 {regras_cartoes}
 </style>
 <div class="escolha-topo">
   <div class="escolha-marca">Central de Engenharia</div>
-  <div class="escolha-titulo">Olá, {primeiro_nome}</div>
-  <p>Para onde você quer seguir?</p>
+  <div class="escolha-titulo">{titulo}</div>
+  <p>{subtitulo}</p>
 </div>
 """,
         unsafe_allow_html=True,
     )
+    if setor is not None:
+        _, meio, _ = st.columns([1, 0.22, 1])
+        with meio, st.container(key="escolha_voltar"):
+            st.button("Voltar", key="escolha_voltar_botao", icon=":material/arrow_back:",
+                      on_click=voltar_para_setores, help="Voltar para a escolha da engenharia",
+                      use_container_width=True)
     # Com quatro partes, duas linhas de dois; com cinco ou seis, linhas de três
     # (os títulos cabem numa linha). A última linha incompleta fica centralizada.
-    por_linha = 2 if len(areas) == 4 else 3 if len(areas) > 4 else len(areas)
+    por_linha = 2 if len(itens) == 4 else 3 if len(itens) > 4 else len(itens)
     margem = 0.6 if por_linha <= 2 else 0.1
     lugares = []
-    for inicio in range(0, len(areas), por_linha):
+    for inicio in range(0, len(itens), por_linha):
         if inicio:
             st.markdown("<div style='height:.4rem'></div>", unsafe_allow_html=True)
-        nesta_linha = min(por_linha, len(areas) - inicio)
+        nesta_linha = min(por_linha, len(itens) - inicio)
         lado = margem + (por_linha - nesta_linha) / 2
         _, *colunas, _ = st.columns([lado] + [1] * nesta_linha + [lado], gap="large")
         lugares += colunas
-    for coluna, area in zip(lugares, areas):
-        dados = AREAS[area]
-        with coluna, st.container(key=f"area_{area}"):
+    for coluna, (chave, dados, ativo, ao_clicar, alvo) in zip(lugares, itens):
+        rodape = ('<div class="cartao-area-seta">Entrar →</div>' if ativo
+                  else '<div class="cartao-area-selo">Em breve</div>')
+        with coluna, st.container(key=chave):
             st.markdown(
-                f'<div class="cartao-area"><div class="cartao-area-icone">'
+                f'<div class="cartao-area{"" if ativo else " em-breve"}"><div class="cartao-area-icone">'
                 f'{svg_icone_area(dados["icone"])}</div><div class="cartao-area-titulo">{dados["titulo"]}</div>'
-                f'<p>{dados["descricao"]}</p><div class="cartao-area-seta">Entrar →</div></div>',
+                f'<p>{dados["descricao"]}</p>{rodape}</div>',
                 unsafe_allow_html=True,
             )
-            st.button(
-                dados["titulo"], key=f"entrar_{area}", on_click=entrar_na_area, args=(area,),
-            )
+            if ativo:
+                st.button(dados["titulo"], key=f"entrar_{chave}", on_click=ao_clicar, args=(alvo,))
     _, centro, _ = st.columns([1, 0.5, 1])
     with centro:
         st.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)
@@ -12252,6 +12349,7 @@ def sair():
     st.session_state['nome_usuario'] = ""
     st.session_state['pagina_atual'] = 'consulta'
     st.session_state['area'] = None
+    st.session_state['setor'] = None
     st.rerun()
 
 
@@ -12351,6 +12449,7 @@ elif not st.session_state['usuario_logado']:
                     st.session_state['nome_usuario'] = registro_usuario['nome']
                     st.session_state['pagina_atual'] = 'consulta'
                     st.session_state['area'] = None
+                    st.session_state['setor'] = None
                     st.session_state['boas_vindas'] = True
                     st.rerun()
                 else:
