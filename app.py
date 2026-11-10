@@ -10721,6 +10721,8 @@ COLUNAS_TAREFAS_PINTURA = ["fase", "tarefa", "inicio", "fim", "fim_real", "base_
 DATAS_TAREFAS_PINTURA = ["inicio", "fim", "fim_real", "base_inicio", "base_fim"]
 CORES_FASES_PINTURA = ["#1570EF", "#66C61C", "#7A5AF8", "#F79009", "#0BA5EC", "#EE46BC", "#12B76A", "#475467"]
 MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+MESES_INGLES = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
 DIAS_SEMANA_CURTOS = ["2ª", "3ª", "4ª", "5ª", "6ª", "Sá", "Do"]
 
 
@@ -10749,9 +10751,16 @@ def como_data_pintura(valor):
         return valor.date()
     if isinstance(valor, datetime.date):
         return valor
-    texto = safe_str(valor).strip()
+    texto = re.sub(r"\s+", " ", safe_str(valor)).strip()
     if not texto:
         return None
+    # Data no formato do JavaScript, como o monday exporta: "Mon Oct 26 2026 00:00:00 GMT+0000 (...)".
+    js = re.match(r"^[A-Za-z]{3},? ([A-Za-z]{3}) (\d{1,2}),? (\d{4})\b", texto)
+    if js and js.group(1).lower() in MESES_INGLES:
+        try:
+            return datetime.date(int(js.group(3)), MESES_INGLES[js.group(1).lower()], int(js.group(2)))
+        except ValueError:
+            return None
     for formato in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y"):
         try:
             return datetime.datetime.strptime(texto, formato).date()
@@ -10783,7 +10792,11 @@ def tarefas_pintura_em_lista(tabela):
     primeira = {}
     for t in tarefas:
         primeira[t["fase"]] = min(primeira.get(t["fase"], t["inicio"]), t["inicio"])
-    tarefas.sort(key=lambda t: (primeira[t["fase"]], t["fase"], t["inicio"], t["fim"]))
+    # Fases numeradas ("1. Indução", "2. Preparação"...) ficam na ordem do número; as outras, pela primeira data.
+    numeros = {f: re.match(r"^\s*(\d+)\s*[.)\-–]", f) for f in primeira}
+    numeradas = bool(numeros) and all(numeros.values())
+    ordem_fase = {f: (int(numeros[f].group(1)) if numeradas else 0, primeira[f]) for f in primeira}
+    tarefas.sort(key=lambda t: (ordem_fase[t["fase"]], t["fase"], t["inicio"], t["fim"]))
     return tarefas, erros
 
 
@@ -10811,13 +10824,74 @@ def salvar_linha_base_pintura(aeronave_id):
     limpar_caches_pintura()
 
 
+STATUS_CONCLUIDO_PINTURA = {"concluido", "concluida", "done", "feito", "finalizado", "finalizada", "completo"}
+
+
+def ler_exportacao_monday_pintura(bruta):
+    """Gantt exportado do monday: cada grupo vira uma fase, com o cabeçalho
+    Name / Status / Data Exec / Início / Fim / Baseline - Start / Baseline - End repetido em cada grupo.
+    Devolve None se a planilha não estiver nesse formato."""
+    colunas = {
+        "name": "tarefa", "nome": "tarefa", "status": "status", "data exec": "exec",
+        "inicio": "inicio", "fim": "fim", "baseline - start": "base_inicio", "baseline - end": "base_fim",
+        "data planejada": "planejada",
+    }
+    linhas = [[None if (not isinstance(v, str) and pd.isna(v)) else v for v in linha]
+              for linha in bruta.itertuples(index=False)]
+
+    def cabecalho(linha):
+        nomes = {sem_acento(safe_str(v)).strip().lower(): i for i, v in enumerate(linha) if safe_str(v).strip()}
+        if "name" in nomes and ("inicio" in nomes or "baseline - start" in nomes):
+            return {colunas[n]: i for n, i in nomes.items() if n in colunas}
+        return None
+
+    if not any(cabecalho(l) for l in linhas):
+        return None
+    hoje = datetime.date.today()
+    tarefas, fase, mapa, titulo = [], "", None, ""
+    for numero, linha in enumerate(linhas):
+        novo = cabecalho(linha)
+        if novo:
+            mapa, fase = novo, titulo
+            continue
+        primeira = re.sub(r"\s+", " ", safe_str(linha[0] if linha else "")).strip()
+        if not primeira:
+            continue  # linha de resumo do grupo (sem nome) ou em branco
+        seguinte = linhas[numero + 1] if numero + 1 < len(linhas) else []
+        if cabecalho(seguinte):
+            titulo = primeira  # nome do grupo, logo acima do cabeçalho
+            continue
+        if mapa is None:
+            continue  # título e descrição do quadro, antes do primeiro grupo
+        valor = lambda chave: linha[mapa[chave]] if chave in mapa and mapa[chave] < len(linha) else None
+        data = lambda chave: como_data_pintura(valor(chave))
+        inicio = data("inicio") or data("base_inicio") or data("planejada")
+        fim = data("fim") or data("base_fim") or inicio
+        concluida = sem_acento(safe_str(valor("status"))).strip().lower() in STATUS_CONCLUIDO_PINTURA
+        fim_real = (data("exec") or (min(fim, hoje) if fim else hoje)) if concluida else None
+        tarefas.append({
+            "fase": fase, "tarefa": safe_str(valor("tarefa")).strip(), "inicio": inicio, "fim": fim,
+            "fim_real": fim_real, "base_inicio": data("base_inicio"), "base_fim": data("base_fim"),
+        })
+    return pd.DataFrame(tarefas, columns=COLUNAS_TAREFAS_PINTURA, dtype=object)
+
+
 def ler_planilha_tarefas_pintura(arquivo):
-    """Planilha com Fase, Tarefa, Início, Fim e (opcional) Concluída em."""
-    if arquivo.name.lower().endswith((".xlsx", ".xlsm", ".xls")):
-        bruta = pd.read_excel(arquivo, dtype=object)
+    """Planilha com Fase, Tarefa, Início, Fim e (opcional) Concluída em, ou o Gantt exportado do monday."""
+    excel = arquivo.name.lower().endswith((".xlsx", ".xlsm", ".xls"))
+    if excel:
+        monday = ler_exportacao_monday_pintura(pd.read_excel(arquivo, header=None, dtype=object))
+        arquivo.seek(0)
     else:
         conteudo = arquivo.getvalue().decode("utf-8-sig", errors="replace")
         separador = ";" if conteudo.count(";") >= conteudo.count(",") else ","
+        monday = ler_exportacao_monday_pintura(
+            pd.read_csv(io.StringIO(conteudo), sep=separador, dtype=object, header=None))
+    if monday is not None:
+        return monday
+    if excel:
+        bruta = pd.read_excel(arquivo, dtype=object)
+    else:
         bruta = pd.read_csv(io.StringIO(conteudo), sep=separador, dtype=object)
     nomes = {
         "fase": "fase", "etapa": "fase", "grupo": "fase",
@@ -11175,16 +11249,18 @@ def aba_planejamento_pintura(aeronave):
             st.rerun()
     with st.expander("Importar planilha (Excel ou CSV)"):
         st.caption(
-            "Colunas: Fase, Tarefa, Início, Fim e, se tiver, Concluída em. Datas em dd/mm/aaaa. "
-            "A importação substitui as tarefas deste prefixo (a linha de base vem junto só se a planilha tiver "
-            "as colunas \"Linha de base início\" e \"Linha de base fim\")."
+            "Aceita o Gantt exportado do monday do jeito que ele sai (cada grupo vira uma fase; Início, Fim, "
+            "Baseline e Status vêm junto, e as tarefas Concluídas entram com a Data Exec). "
+            "Também aceita uma planilha simples com as colunas Fase, Tarefa, Início, Fim e, se tiver, "
+            "Concluída em (datas em dd/mm/aaaa). A importação substitui as tarefas deste prefixo."
         )
         modelo = "Fase;Tarefa;Início;Fim;Concluída em\n5. Selagem;Remoção dos selantes danificados;07/11/2026;08/11/2026;\n"
         st.download_button("Baixar modelo de planilha", data=modelo.encode("utf-8-sig"),
                            file_name="modelo_planejamento_pintura.csv", mime="text/csv", key="plan_modelo")
-        arquivo = st.file_uploader("Planilha", type=["xlsx", "xls", "csv"], key=f"plan_arquivo_{aeronave['id']}",
+        arquivo = st.file_uploader("Planilha", type=["xlsx", "xls", "csv"],
+                                   key=f"plan_arquivo_{aeronave['id']}_{st.session_state.get('plan_versao', 0)}",
                                    label_visibility="collapsed")
-        if arquivo is not None and st.button("Importar", key="plan_importar"):
+        if arquivo is not None:
             try:
                 novas, erros = tarefas_pintura_em_lista(ler_planilha_tarefas_pintura(arquivo))
             except Exception as erro:
@@ -11195,9 +11271,23 @@ def aba_planejamento_pintura(aeronave):
                 elif not novas:
                     st.error("A planilha não tem tarefas.")
                 else:
-                    salvar_tarefas_pintura(aeronave["id"], novas)
-                    st.session_state['plan_versao'] = st.session_state.get('plan_versao', 0) + 1
-                    st.rerun()
+                    fases = len({t["fase"] for t in novas})
+                    feitas = sum(1 for t in novas if t["fim_real"])
+                    com_base = sum(1 for t in novas if t["base_fim"])
+                    st.markdown(
+                        f"Encontrei **{len(novas)} tarefas** em **{fases} fase{'s' if fases != 1 else ''}**, "
+                        f"de {data_longa(min(t['inicio'] for t in novas))} a "
+                        f"{data_longa(max(t['fim'] for t in novas))}. "
+                        f"{feitas} já concluída{'s' if feitas != 1 else ''}"
+                        + (f", {com_base} com linha de base." if com_base else ", sem linha de base.")
+                    )
+                    rotulo = (f"Importar e substituir as {len(tarefas)} tarefas atuais" if tarefas
+                              else "Importar")
+                    if st.button(rotulo, type="primary", key="plan_importar"):
+                        salvar_tarefas_pintura(aeronave["id"], novas)
+                        st.session_state['plan_versao'] = st.session_state.get('plan_versao', 0) + 1
+                        st.toast(f"Planejamento importado ({len(novas)} tarefas).")
+                        st.rerun()
 
 
 @st.cache_data(show_spinner=False)
