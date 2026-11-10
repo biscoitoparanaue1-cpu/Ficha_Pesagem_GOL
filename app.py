@@ -9468,6 +9468,8 @@ def criar_tabelas_pintura():
         ''')
         # Notas com seta (texto ligado a um ponto da vista), também em coordenadas 0-1.
         conn.execute("ALTER TABLE pintura_vistas ADD COLUMN IF NOT EXISTS notas TEXT NOT NULL DEFAULT '[]'")
+        # Nome das vistas criadas pelo usuário (ex.: Asa superior); as três fixas usam VISTAS_PINTURA.
+        conn.execute("ALTER TABLE pintura_vistas ADD COLUMN IF NOT EXISTS nome TEXT")
         # Legendas das áreas (ex.: Composto), as mesmas para todas as aeronaves.
         conn.execute('''
             CREATE TABLE IF NOT EXISTS pintura_legendas (
@@ -10311,8 +10313,8 @@ def carregar_vistas_pintura(aeronave_id):
     garantir_tabelas_pintura()
     with conectar_banco() as conn:
         linhas = conn.execute(
-            '''SELECT vista, imagem, largura, altura, areas, notas, atualizado_por, atualizado_em
-               FROM pintura_vistas WHERE aeronave_id = ?''',
+            '''SELECT id, vista, nome, imagem, largura, altura, areas, notas, atualizado_por, atualizado_em
+               FROM pintura_vistas WHERE aeronave_id = ? ORDER BY id''',
             (aeronave_id,),
         ).fetchall()
     vistas = {}
@@ -10326,6 +10328,7 @@ def carregar_vistas_pintura(aeronave_id):
         except ValueError:
             notas = []
         vistas[safe_str(l["vista"])] = {
+            "id": int(l["id"]), "nome": safe_str(l["nome"]),
             "imagem": bytes(l["imagem"]) if l["imagem"] is not None else None,
             "largura": int(l["largura"] or 0), "altura": int(l["altura"] or 0), "areas": areas, "notas": notas,
             "atualizado_por": safe_str(l["atualizado_por"]), "atualizado_em": safe_str(l["atualizado_em"]),
@@ -10353,21 +10356,34 @@ def marcar_aeronave_alterada(conn, aeronave_id):
     )
 
 
-def salvar_imagem_vista_pintura(aeronave_id, vista, imagem):
+def salvar_imagem_vista_pintura(aeronave_id, vista, imagem, nome=None):
     garantir_pode_editar_pintura()
     largura, altura = PillowImage.open(io.BytesIO(imagem)).size
     usuario = safe_str(st.session_state.get('nome_usuario'))
     with conectar_banco() as conn:
         conn.execute(
-            '''INSERT INTO pintura_vistas (aeronave_id, vista, imagem, largura, altura, atualizado_por, atualizado_em)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+            '''INSERT INTO pintura_vistas (aeronave_id, vista, nome, imagem, largura, altura, atualizado_por, atualizado_em)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (aeronave_id, vista) DO UPDATE SET
                    imagem = excluded.imagem, largura = excluded.largura, altura = excluded.altura,
                    atualizado_por = excluded.atualizado_por, atualizado_em = excluded.atualizado_em''',
-            (aeronave_id, vista, imagem, largura, altura, usuario, agora_iso()),
+            (aeronave_id, vista, nome, imagem, largura, altura, usuario, agora_iso()),
         )
         marcar_aeronave_alterada(conn, aeronave_id)
     limpar_caches_pintura()
+
+
+def nome_vista_pintura(vista, vistas):
+    """Nome para mostrar: as três fixas pelo dicionário, as criadas pelo nome que o usuário deu."""
+    return VISTAS_PINTURA.get(vista) or (vistas.get(vista) or {}).get("nome") or vista
+
+
+def chave_nova_vista_pintura(nome, vistas):
+    base = "extra_" + (re.sub(r"[^a-z0-9]+", "_", sem_acento(nome).lower()).strip("_") or "vista")
+    chave, n = base, 2
+    while chave in vistas or chave in VISTAS_PINTURA:
+        chave, n = f"{base}_{n}", n + 1
+    return chave
 
 
 def excluir_vista_pintura(aeronave_id, vista):
@@ -10452,9 +10468,10 @@ def copiar_vistas_pintura(origem_id, destino_id):
     with conectar_banco() as conn:
         conn.execute('DELETE FROM pintura_vistas WHERE aeronave_id = ?', (destino_id,))
         conn.execute(
-            '''INSERT INTO pintura_vistas (aeronave_id, vista, imagem, largura, altura, areas, notas,
+            '''INSERT INTO pintura_vistas (aeronave_id, vista, nome, imagem, largura, altura, areas, notas,
                                           atualizado_por, atualizado_em)
-               SELECT ?, vista, imagem, largura, altura, areas, notas, ?, ? FROM pintura_vistas WHERE aeronave_id = ?''',
+               SELECT ?, vista, nome, imagem, largura, altura, areas, notas, ?, ? FROM pintura_vistas
+               WHERE aeronave_id = ? ORDER BY id''',
             (destino_id, usuario, agora_iso(), origem_id),
         )
         marcar_aeronave_alterada(conn, destino_id)
@@ -10499,16 +10516,62 @@ def excluir_legenda_pintura(legenda_id):
     limpar_caches_pintura()
 
 
+def formulario_nova_vista_pintura(aeronave, vistas):
+    versao = st.session_state.get('pint_nova_vista_versao', 0)
+    nome = st.text_input("Nome da vista", key=f"pint_nova_vista_nome_{versao}", max_chars=40,
+                         placeholder="ex.: Asa superior")
+    arquivo = st.file_uploader("Imagem da vista", type=["png", "jpg", "jpeg", "webp"],
+                               key=f"pint_nova_vista_arq_{versao}")
+    if not st.button("Adicionar vista", type="primary", key=f"pint_nova_vista_ok_{versao}",
+                     use_container_width=True):
+        return
+    nome = re.sub(r"\s+", " ", nome).strip()
+    existentes = {nome_vista_pintura(v, vistas).casefold() for v in [*VISTAS_PINTURA, *vistas]}
+    if not nome:
+        st.error("Dê um nome à vista.")
+    elif nome.casefold() in existentes:
+        st.error("Já existe uma vista com esse nome.")
+    elif arquivo is None:
+        st.error("Envie a imagem da vista.")
+    else:
+        try:
+            imagem = preparar_imagem_pintura(arquivo, 2000)
+        except Exception:
+            st.error("Não consegui abrir essa imagem. Envie um PNG, JPG ou WEBP.")
+            return
+        chave = chave_nova_vista_pintura(nome, vistas)
+        salvar_imagem_vista_pintura(aeronave["id"], chave, imagem, nome)
+        st.session_state['pint_nova_vista_versao'] = versao + 1
+        st.session_state['pint_vista_pendente'] = chave
+        st.rerun()
+
+
 def aba_vistas_pintura(modelo, aeronave):
     editar = pode_editar_pintura()
     vistas = carregar_vistas_pintura(aeronave["id"])
     legendas = carregar_legendas_pintura()
-    escolha = st.segmented_control(
-        "Vista", list(VISTAS_PINTURA), default="lateral", key=f"pint_vista_{aeronave['id']}",
-        format_func=lambda v: VISTAS_PINTURA[v] + ("" if v in vistas else " (sem imagem)"),
+    # As três vistas fixas e, depois delas, as criadas para este prefixo (na ordem em que foram criadas).
+    opcoes = list(VISTAS_PINTURA) + [v for v in vistas if v not in VISTAS_PINTURA]
+    chave_escolha = f"pint_vista_{aeronave['id']}"
+    pendente = st.session_state.pop('pint_vista_pendente', None)
+    if pendente in opcoes:
+        st.session_state[chave_escolha] = pendente
+    elif st.session_state.get(chave_escolha) not in opcoes + [None]:
+        st.session_state[chave_escolha] = "lateral"  # a vista escolhida foi apagada
+    seletor, nova = st.columns([5, 1.3], vertical_alignment="center") if editar else (st.container(), None)
+    escolha = seletor.segmented_control(
+        "Vista", opcoes, key=chave_escolha,
+        # Sem default quando o valor já está guardado (evita o aviso do Streamlit ao trocar a vista pelo código).
+        default=None if chave_escolha in st.session_state else "lateral",
+        format_func=lambda v: nome_vista_pintura(v, vistas) + ("" if v in vistas else " (sem imagem)"),
         label_visibility="collapsed",
     ) or "lateral"
+    if nova is not None:
+        with nova.popover("Nova vista", icon=":material/add:", use_container_width=True):
+            formulario_nova_vista_pintura(aeronave, vistas)
     vista = vistas.get(escolha)
+    extra = escolha not in VISTAS_PINTURA
+    rotulo = nome_vista_pintura(escolha, vistas) if extra else VISTAS_PINTURA[escolha].lower()
     if vista and vista["imagem"]:
         if not vista["areas"] and not vista["notas"] and not editar:
             st.caption("Nenhuma área marcada nesta vista.")
@@ -10526,14 +10589,14 @@ def aba_vistas_pintura(modelo, aeronave):
                 resposta.get("notas"),
             )
             st.toast(
-                f"Vista {VISTAS_PINTURA[escolha].lower()} salva ({total} área{'s' if total != 1 else ''}"
+                f"Vista {rotulo} salva ({total} área{'s' if total != 1 else ''}"
                 + (f", {total_notas} nota{'s' if total_notas != 1 else ''}" if total_notas else "") + ")."
             )
             st.rerun()
     else:
         st.markdown(
             f'<div class="pint-livery-grande"><div class="pint-livery-vazia">{ICONE_AVIAO_PINTURA}'
-            f'Nenhuma imagem da vista {VISTAS_PINTURA[escolha].lower()} ainda.'
+            f'Nenhuma imagem da vista {html.escape(rotulo)} ainda.'
             + ('<br>Envie a imagem abaixo para começar a marcar as áreas.' if editar else '')
             + '</div></div>',
             unsafe_allow_html=True,
@@ -10542,7 +10605,7 @@ def aba_vistas_pintura(modelo, aeronave):
         return
     versao = st.session_state.get('pint_upload_versao', 0)
     arquivo = st.file_uploader(
-        f"{'Trocar' if vista else 'Enviar'} a imagem da vista {VISTAS_PINTURA[escolha].lower()}",
+        f"{'Trocar' if vista else 'Enviar'} a imagem da vista {rotulo}",
         type=["png", "jpg", "jpeg", "webp"], key=f"pint_vista_arq_{aeronave['id']}_{escolha}_{versao}",
         help="Desenho ou foto da aeronave vista de cima, de lado ou de frente.",
     )
@@ -10575,14 +10638,14 @@ def aba_vistas_pintura(modelo, aeronave):
         if not outros:
             st.caption(f"Nenhum outro prefixo de {modelo['nome']} tem vistas cadastradas.")
         else:
-            st.caption("Copia as três vistas, com as áreas e as notas, e substitui as deste prefixo.")
+            st.caption("Copia todas as vistas, com as áreas e as notas, e substitui as deste prefixo.")
             origem = st.selectbox("Copiar de", outros, format_func=lambda a: a["prefixo"], key="pint_copiar_de")
             if st.button("Copiar vistas", key="pint_copiar_vistas"):
                 copiar_vistas_pintura(origem["id"], aeronave["id"])
                 st.rerun()
         if vista:
             st.divider()
-            if st.checkbox(f"Quero apagar a vista {VISTAS_PINTURA[escolha].lower()}", key="pint_apagar_vista_ok"):
+            if st.checkbox(f"Quero apagar a vista {rotulo}", key=f"pint_apagar_vista_ok_{escolha}"):
                 if st.button("Apagar vista", key="pint_apagar_vista"):
                     excluir_vista_pintura(aeronave["id"], escolha)
                     st.rerun()
