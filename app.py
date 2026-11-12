@@ -129,6 +129,15 @@ st.markdown(
         letter-spacing: -.01em; color: #1F2430; white-space: nowrap; overflow: hidden;
         text-overflow: ellipsis; }
     .st-key-menu_inicio { margin-top: 1.1rem; }
+    /* Clicar no logo GOL volta para a tela inicial: um botão invisível fica por cima do logo. */
+    .st-key-marca_caixa, .st-key-srs_marca_caixa { position: relative; }
+    .st-key-marca_logo, .st-key-srs_logo { position: absolute !important; top: 50%; transform: translateY(-50%);
+        left: .5rem; width: 72px !important; height: 34px; z-index: 3; }
+    .st-key-srs_logo { left: -.25rem; width: 86px !important; }
+    .st-key-marca_logo button, .st-key-srs_logo button { opacity: 0; width: 100%; height: 34px;
+        min-height: 0 !important; padding: 0 !important; cursor: pointer; }
+    .st-key-marca_caixa:has(.st-key-marca_logo:hover) .menu-marca img,
+    .st-key-srs_marca_caixa:has(.st-key-srs_logo:hover) .srs-marca img { opacity: .7; transition: opacity .15s; }
     section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
         display: flex; flex-direction: column; min-height: calc(100vh - 3.5rem);
         padding-top: .25rem; padding-bottom: 1.2rem;
@@ -14435,12 +14444,16 @@ def desenhar_consulta_srs():
 
     outras_areas = [a for a in AREAS if a != 'srs' and paginas_da_area(a, nivel_atual())]
     with st.container(key="srs_barra", horizontal=True):
-        st.markdown(
-            f'<div class="srs-marca">{logo_html()}<div class="srs-marca-sep"></div>'
-            '<div class="srs-marca-titulo">Consulta SR\'s</div>'
-            f'<div class="srs-marca-info">{resumo}</div></div>',
-            unsafe_allow_html=True, width="stretch",
-        )
+        with st.container(key="srs_marca_caixa", width="stretch"):
+            st.markdown(
+                f'<div class="srs-marca">{logo_html()}<div class="srs-marca-sep"></div>'
+                '<div class="srs-marca-titulo">Consulta SR\'s</div>'
+                f'<div class="srs-marca-info">{resumo}</div></div>',
+                unsafe_allow_html=True, width="stretch",
+            )
+            if outras_areas:
+                st.button("Início", key="srs_logo", on_click=voltar_para_setores,
+                          help="Voltar para a tela inicial (escolher a engenharia)")
         if pode_configurar:
             if configurando:
                 st.button("Voltar à consulta", key="srs_voltar", icon=":material/arrow_back:",
@@ -14975,12 +14988,16 @@ else:
     # A Consulta SR's usa a tela inteira, com a própria barra no topo.
     if area != 'srs':
         with st.sidebar:
-            st.markdown(
-                f'<div class="menu-marca">{logo_html()}<div class="menu-marca-sep"></div>'
-                f'<div class="menu-marca-nome">{AREAS[area]["menu"]}</div></div>',
-                unsafe_allow_html=True,
-            )
             outras = [a for a in AREAS if a != area and paginas_da_area(a, nivel)]
+            with st.container(key="marca_caixa"):
+                st.markdown(
+                    f'<div class="menu-marca">{logo_html()}<div class="menu-marca-sep"></div>'
+                    f'<div class="menu-marca-nome">{AREAS[area]["menu"]}</div></div>',
+                    unsafe_allow_html=True,
+                )
+                if outras:
+                    st.button("Início", key="marca_logo", on_click=voltar_para_setores,
+                              help="Voltar para a tela inicial (escolher a engenharia)")
             if outras:
                 st.button(
                     "Início", key="menu_inicio", use_container_width=True,
