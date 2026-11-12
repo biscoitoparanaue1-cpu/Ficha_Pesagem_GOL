@@ -14452,8 +14452,8 @@ def desenhar_consulta_srs():
                 unsafe_allow_html=True, width="stretch",
             )
             if outras_areas:
-                st.button("Início", key="srs_logo", on_click=voltar_para_escolha,
-                          help="Voltar para a tela inicial")
+                st.button("Início", key="srs_logo", on_click=voltar_para_setores,
+                          help="Voltar para a tela inicial (escolher a engenharia)")
         if pode_configurar:
             if configurando:
                 st.button("Voltar à consulta", key="srs_voltar", icon=":material/arrow_back:",
@@ -14996,8 +14996,8 @@ else:
                     unsafe_allow_html=True,
                 )
                 if outras:
-                    st.button("Início", key="marca_logo", on_click=voltar_para_escolha,
-                              help="Voltar para a tela inicial")
+                    st.button("Início", key="marca_logo", on_click=voltar_para_setores,
+                              help="Voltar para a tela inicial (escolher a engenharia)")
             if outras:
                 st.button(
                     "Início", key="menu_inicio", use_container_width=True,
