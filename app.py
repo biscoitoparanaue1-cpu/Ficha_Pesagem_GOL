@@ -13426,7 +13426,11 @@ def ler_relatorio_estoque_pintura(arquivo, nome):
         return ler_relatorio_estoque_pintura_tabela(list(csv.reader(io.StringIO(texto), delimiter=separador)))
     wb = openpyxl.load_workbook(io.BytesIO(arquivo), data_only=True, read_only=True)
     nome_aba = next((n for n in wb.sheetnames if sem_acento(n).lower().startswith("relatorio")), wb.sheetnames[0])
-    return ler_relatorio_estoque_pintura_tabela([list(l) for l in wb[nome_aba].iter_rows(values_only=True)])
+    aba = wb[nome_aba]
+    # O "Standard Table Report" exportado pelo sistema grava um tamanho de planilha errado (A1:B4);
+    # sem isto o modo read_only só leria 2 colunas e 4 linhas.
+    aba.reset_dimensions()
+    return ler_relatorio_estoque_pintura_tabela([list(l) for l in aba.iter_rows(values_only=True)])
 
 
 # Estoque de tintas ("PNs críticos para pintura"): quantidade necessária para uma pintura de cada
