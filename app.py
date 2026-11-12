@@ -10343,6 +10343,12 @@ def aba_livery_pintura(aeronave):
                 st.error("O fim da pintura está antes do início.")
             elif fim and vencimento and vencimento <= fim:
                 st.error("O vencimento precisa ser depois do fim da pintura.")
+            elif inicio and (choque := conflitos_hangar_pintura(carregar_aeronaves_pintura(), inicio, fim, aeronave["id"])):
+                st.error(
+                    "O hangar pinta um avião por vez e nesse período já está "
+                    + ", ".join(f'o {a["prefixo"]} ({texto_periodo_pintura(a)})' for a in choque)
+                    + ". Veja o Cronograma do hangar."
+                )
             else:
                 atualizar_aeronave_pintura(
                     aeronave["id"], data_inicio=inicio, data_fim=fim, data_vencimento=vencimento,
@@ -12238,6 +12244,24 @@ def periodo_cronograma_pintura(aeronave):
     return inicio, (fim if fim and fim >= inicio else inicio), bool(fim and fim >= inicio)
 
 
+def conflitos_hangar_pintura(aeronaves, inicio, fim, ignorar_id=None):
+    """Prefixos cujo período no hangar cruza [inicio, fim]: o hangar pinta um avião por vez."""
+    fim = fim or inicio
+    conflitos = []
+    for a in aeronaves:
+        periodo = periodo_cronograma_pintura(a)
+        if a["id"] == ignorar_id or not periodo:
+            continue
+        if periodo[0] <= fim and periodo[1] >= inicio:
+            conflitos.append(a)
+    return sorted(conflitos, key=lambda a: a["data_inicio"])
+
+
+def texto_periodo_pintura(aeronave):
+    ini, fim, tem_fim = periodo_cronograma_pintura(aeronave)
+    return f"{data_br(ini)} a {data_br(fim)}" if tem_fim else f"início em {data_br(ini)}"
+
+
 def html_calendario_cronograma_pintura(ano, mes, aeronaves, nomes_modelos):
     primeiro = datetime.date(ano, mes, 1)
     # Domingo antes (ou no) dia 1; weekday(): segunda = 0 ... domingo = 6.
@@ -12275,6 +12299,8 @@ def html_calendario_cronograma_pintura(ano, mes, aeronaves, nomes_modelos):
             else:
                 faixas[faixa] = col_fim
             forte, claro = cor_cronograma_pintura(aeronave["id"])
+            if conflitos_hangar_pintura(aeronaves, ini, fim, aeronave["id"]):
+                forte, claro = "#D92D20", "#FDECEA"
             classes = ["pc-barra"]
             if ini >= dia:
                 classes.append("ini")
@@ -12359,6 +12385,14 @@ def dialogo_agendar_pintura(aeronaves, modelos, aeronave_id=None):
     if fim and fim < inicio:
         st.error("O fim está antes do início.")
         return
+    conflitos = conflitos_hangar_pintura(aeronaves, inicio, fim, None if escolha == NOVO else escolha)
+    if conflitos:
+        st.error(
+            "O hangar pinta um avião por vez e nesse período já está "
+            + ", ".join(f'o {a["prefixo"]} ({texto_periodo_pintura(a)})' for a in conflitos)
+            + ". Escolha outras datas ou mude antes as datas dele."
+        )
+        return
     if atual and fim and atual["data_vencimento"] and atual["data_vencimento"] <= fim:
         st.error("O vencimento da pintura deste prefixo é antes do fim. Ajuste o vencimento em Livery e datas.")
         return
@@ -12392,17 +12426,30 @@ def tela_cronograma_pintura():
                  if periodo_cronograma_pintura(a)[0] <= hoje <= periodo_cronograma_pintura(a)[1]]
     proximas = [a for a in agendadas if periodo_cronograma_pintura(a)[0] > hoje]
     topo, botao = st.columns([4, 1.3], vertical_alignment="bottom")
+    no_hangar_texto = (", ".join(a["prefixo"] for a in no_hangar) + " no hangar hoje") if no_hangar \
+        else "Hangar livre hoje"
     topo.markdown(
         '<div class="pint-topo"><div class="ativ-titulo">Cronograma do hangar</div>'
-        '<p class="ativ-desc">Quando cada aeronave entra e sai do hangar de pintura. '
+        '<p class="ativ-desc">Quando cada aeronave entra e sai do hangar de pintura (um avião por vez). '
         'As datas são as mesmas da aba Livery e datas de cada prefixo.</p>'
-        f'<div class="ativ-resumo"><b>{len(no_hangar)}</b> no hangar hoje · '
+        f'<div class="ativ-resumo"><b>{esc(no_hangar_texto)}</b> · '
         f'<b>{len(proximas)}</b> agendada{"s" if len(proximas) != 1 else ""} para depois</div></div>',
         unsafe_allow_html=True,
     )
     if pode_editar_pintura() and botao.button("Agendar pintura", icon=":material/add:", type="primary",
                                              use_container_width=True, key="pint_cron_agendar"):
         dialogo_agendar_pintura(aeronaves, modelos)
+    choques = []
+    for a in sorted(agendadas, key=lambda a: a["data_inicio"]):
+        for b in conflitos_hangar_pintura(agendadas, *periodo_cronograma_pintura(a)[:2], a["id"]):
+            if b["data_inicio"] > a["data_inicio"] or (b["data_inicio"] == a["data_inicio"] and b["id"] > a["id"]):
+                choques.append(f'{a["prefixo"]} e {b["prefixo"]}')
+    if choques:
+        st.warning(
+            "O hangar pinta um avião por vez, mas há pinturas ao mesmo tempo (em vermelho no calendário): "
+            + "; ".join(choques) + ".",
+            icon=":material/warning:",
+        )
     mes_atual = st.session_state.get('pint_cron_mes') or hoje.replace(day=1)
     c_ant, c_hoje, c_prox, c_nome = st.columns([0.45, 0.8, 0.45, 5], vertical_alignment="center")
     c_ant.button("", icon=":material/chevron_left:", key="pint_cron_ant", on_click=mudar_mes_cronograma_pintura,
