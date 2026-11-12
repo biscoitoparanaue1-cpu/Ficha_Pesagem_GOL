@@ -12178,6 +12178,302 @@ def aba_material_pintura(aeronave):
         )
 
 
+# Cronograma do hangar: calendário com o período de pintura de cada prefixo.
+# Usa as mesmas datas de início/fim da aba "Livery e datas": mudar lá muda aqui e vice-versa.
+NOMES_MESES_PINTURA = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto",
+                       "Setembro", "Outubro", "Novembro", "Dezembro"]
+DIAS_SEMANA_PINTURA = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"]
+# Pares (faixa forte, fundo claro) para diferenciar os prefixos no calendário.
+CORES_CRONOGRAMA_PINTURA = [
+    ("#FF6A13", "#FFF1E8"), ("#2E6BE6", "#EAF1FD"), ("#12A26A", "#E8F7F0"), ("#8B5CF6", "#F2EDFE"),
+    ("#D9466F", "#FCEBF0"), ("#0E9AA7", "#E6F6F7"), ("#B7791F", "#FBF3E6"), ("#5F6672", "#EFF0F2"),
+]
+
+CSS_CRONOGRAMA_PINTURA = """
+<style>
+.pc-mes { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.15rem; color: #1F2430; }
+.pc-cal { background: rgba(255, 255, 255, .6); border: 1px solid rgba(227, 230, 235, .9);
+  border-radius: 14px; overflow: hidden; }
+.pc-cab { display: grid; grid-template-columns: repeat(7, 1fr); border-bottom: 1px solid #E8EAEE; }
+.pc-cab div { font-size: .72rem; font-weight: 600; color: #8A919C; text-transform: uppercase;
+  letter-spacing: .04em; padding: .5rem .6rem; }
+.pc-semana { display: grid; grid-template-columns: repeat(7, 1fr); position: relative;
+  border-bottom: 1px solid #EEF0F3; }
+.pc-semana:last-child { border-bottom: none; }
+.pc-dia { grid-row: 1 / -1; border-right: 1px solid #EEF0F3; padding: .3rem .5rem; }
+.pc-dia:nth-child(7) { border-right: none; }
+.pc-dia .n { font-size: .8rem; color: #3B4352; font-weight: 500; }
+.pc-dia.fora .n { color: #C3C8D0; }
+.pc-dia.fds { background: rgba(31, 36, 48, .018); }
+.pc-dia.hoje .n { background: #FF6A13; color: #fff; border-radius: 999px; padding: .05rem .42rem; }
+.pc-barra { z-index: 1; margin: 2px 4px; padding: 0 .5rem; font-size: .76rem; line-height: 22px; height: 22px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #1F2430; border-radius: 6px; }
+.pc-barra.ini { border-left: 4px solid var(--forte); }
+.pc-barra.cont-esq { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: 0; }
+.pc-barra.cont-dir { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: 0; }
+.pc-barra.sem-fim { border-style: dashed; border-width: 1px 1px 1px 4px; border-color: var(--forte); }
+.pc-barra b { font-weight: 600; }
+.pc-barra .mod { color: #5F6672; }
+.pc-vazio-cal { color: #9AA1AD; font-size: .85rem; padding: .6rem 0 0; }
+.pc-legenda { display: flex; flex-wrap: wrap; gap: .4rem .9rem; font-size: .8rem; color: #5F6672; margin: .6rem 0 0; }
+.pc-legenda span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  margin-right: .35rem; vertical-align: -1px; background: var(--forte); }
+.pc-linha { display: flex; align-items: center; gap: .6rem; min-height: 2.4rem; }
+.pc-linha .cor { width: 4px; align-self: stretch; border-radius: 4px; background: var(--forte); }
+.pc-linha .pref { font-weight: 600; color: #1F2430; font-size: .95rem; }
+.pc-linha .sub { color: #8A919C; font-size: .8rem; }
+</style>
+"""
+
+
+def cor_cronograma_pintura(aeronave_id):
+    return CORES_CRONOGRAMA_PINTURA[aeronave_id % len(CORES_CRONOGRAMA_PINTURA)]
+
+
+def periodo_cronograma_pintura(aeronave):
+    """(início, fim, tem_fim) do período no hangar; sem fim, mostra só o dia do início."""
+    inicio, fim = aeronave["data_inicio"], aeronave["data_fim"]
+    if not inicio:
+        return None
+    return inicio, (fim if fim and fim >= inicio else inicio), bool(fim and fim >= inicio)
+
+
+def html_calendario_cronograma_pintura(ano, mes, aeronaves, nomes_modelos):
+    primeiro = datetime.date(ano, mes, 1)
+    # Domingo antes (ou no) dia 1; weekday(): segunda = 0 ... domingo = 6.
+    inicio_grade = primeiro - datetime.timedelta(days=(primeiro.weekday() + 1) % 7)
+    hoje = hoje_brasilia()
+    periodos = [(a, *p) for a in aeronaves if (p := periodo_cronograma_pintura(a))]
+    periodos.sort(key=lambda x: (x[1], x[2], x[0]["prefixo"]))
+    semanas = []
+    dia = inicio_grade
+    while True:
+        fim_semana = dia + datetime.timedelta(days=6)
+        celulas = []
+        for i in range(7):
+            d = dia + datetime.timedelta(days=i)
+            classes = ["pc-dia"]
+            if d.month != mes:
+                classes.append("fora")
+            if i in (0, 6):
+                classes.append("fds")
+            if d == hoje:
+                classes.append("hoje")
+            celulas.append(f'<div class="{" ".join(classes)}" style="grid-column:{i + 1}"><span class="n">{d.day}</span></div>')
+        # Distribui as barras em faixas para que pinturas simultâneas não se sobreponham.
+        faixas = []
+        barras = []
+        for aeronave, ini, fim, tem_fim in periodos:
+            if fim < dia or ini > fim_semana:
+                continue
+            col_ini = max((ini - dia).days, 0)
+            col_fim = min((fim - dia).days, 6)
+            faixa = next((n for n, ocupado in enumerate(faixas) if ocupado < col_ini), None)
+            if faixa is None:
+                faixas.append(col_fim)
+                faixa = len(faixas) - 1
+            else:
+                faixas[faixa] = col_fim
+            forte, claro = cor_cronograma_pintura(aeronave["id"])
+            classes = ["pc-barra"]
+            if ini >= dia:
+                classes.append("ini")
+            else:
+                classes.append("cont-esq")
+            if fim > fim_semana:
+                classes.append("cont-dir")
+            if not tem_fim:
+                classes.append("sem-fim")
+            texto = f'<b>{esc(aeronave["prefixo"])}</b> <span class="mod">{esc(nomes_modelos.get(aeronave["modelo_id"], ""))}</span>'
+            if not tem_fim:
+                texto += ' <span class="mod">· início (fim a definir)</span>'
+            dica = (f'{aeronave["prefixo"]} · {data_br(ini)} a {data_br(fim)}' if tem_fim
+                    else f'{aeronave["prefixo"]} · início em {data_br(ini)}, fim a definir')
+            barras.append(
+                f'<div class="{" ".join(classes)}" title="{esc(dica)}" '
+                f'style="grid-column:{col_ini + 1} / {col_fim + 2};grid-row:{faixa + 2};'
+                f'--forte:{forte};background:{claro}">{texto}</div>'
+            )
+        linhas = max(len(faixas), 2)
+        semanas.append(
+            f'<div class="pc-semana" style="grid-template-rows:26px repeat({linhas}, 26px) 6px">'
+            + "".join(celulas) + "".join(barras) + '</div>'
+        )
+        dia = fim_semana + datetime.timedelta(days=1)
+        if dia.month != mes and dia > primeiro:
+            break
+    cabecalho = "".join(f"<div>{d}</div>" for d in DIAS_SEMANA_PINTURA)
+    return f'<div class="pc-cal"><div class="pc-cab">{cabecalho}</div>{"".join(semanas)}</div>'
+
+
+def mudar_mes_cronograma_pintura(delta):
+    atual = st.session_state.get('pint_cron_mes') or hoje_brasilia().replace(day=1)
+    if delta == 0:
+        st.session_state['pint_cron_mes'] = hoje_brasilia().replace(day=1)
+        return
+    mes = atual.month - 1 + delta
+    st.session_state['pint_cron_mes'] = datetime.date(atual.year + mes // 12, mes % 12 + 1, 1)
+
+
+def abrir_prefixo_do_cronograma(aeronave_id, modelo_id):
+    st.session_state['pint_modelo'] = modelo_id
+    st.session_state['pint_aeronave'] = aeronave_id
+    st.session_state['pagina_atual'] = 'pintura'
+
+
+@st.dialog("Agendar pintura no hangar")
+def dialogo_agendar_pintura(aeronaves, modelos, aeronave_id=None):
+    nomes_modelos = {m["id"]: m["nome"] for m in modelos}
+    NOVO = "novo"
+    opcoes = [a["id"] for a in sorted(aeronaves, key=lambda a: a["prefixo"])] + [NOVO]
+    por_id = {a["id"]: a for a in aeronaves}
+    escolha = st.selectbox(
+        "Aeronave", opcoes, index=opcoes.index(aeronave_id) if aeronave_id in opcoes else None,
+        placeholder="Escolha o prefixo",
+        format_func=lambda i: "+ Cadastrar um prefixo novo" if i == NOVO
+        else f'{por_id[i]["prefixo"]} · {nomes_modelos.get(por_id[i]["modelo_id"], "")}',
+    )
+    modelo_id = prefixo_novo = None
+    if escolha == NOVO:
+        if not modelos:
+            st.warning("Cadastre primeiro um modelo em Pintura da frota.")
+            return
+        c1, c2 = st.columns(2)
+        modelo_id = c1.selectbox("Modelo", [m["id"] for m in modelos], format_func=nomes_modelos.get)
+        prefixo_novo = c2.text_input("Prefixo", placeholder="ex.: PR-GXA")
+    atual = por_id.get(escolha) if escolha not in (None, NOVO) else None
+    c1, c2 = st.columns(2)
+    inicio = c1.date_input("Entra no hangar (início)", value=atual["data_inicio"] if atual else None,
+                           format="DD/MM/YYYY")
+    fim = c2.date_input("Sai do hangar (fim)", value=atual["data_fim"] if atual else None, format="DD/MM/YYYY")
+    if atual and (atual["data_inicio"] or atual["data_fim"]):
+        st.caption("Estas são as mesmas datas da aba Livery e datas do prefixo: mudar aqui muda lá também.")
+    if not st.button("Salvar no cronograma", type="primary", use_container_width=True):
+        return
+    if escolha is None:
+        st.error("Escolha a aeronave.")
+        return
+    if not inicio:
+        st.error("Informe a data de início.")
+        return
+    if fim and fim < inicio:
+        st.error("O fim está antes do início.")
+        return
+    if atual and fim and atual["data_vencimento"] and atual["data_vencimento"] <= fim:
+        st.error("O vencimento da pintura deste prefixo é antes do fim. Ajuste o vencimento em Livery e datas.")
+        return
+    if escolha == NOVO:
+        prefixo = normalizar_prefixo_pintura(prefixo_novo)
+        if not prefixo:
+            st.error("Digite o prefixo.")
+            return
+        if any(a["prefixo"] == prefixo and a["modelo_id"] == modelo_id for a in aeronaves):
+            st.error(f"O {prefixo} já existe neste modelo. Escolha ele na lista.")
+            return
+        novo_id = criar_aeronave_pintura(modelo_id, prefixo, inicio)
+        if fim:
+            atualizar_aeronave_pintura(novo_id, data_fim=fim)
+    else:
+        atualizar_aeronave_pintura(escolha, data_inicio=inicio, data_fim=fim)
+    st.session_state['pint_cron_mes'] = inicio.replace(day=1)
+    st.rerun()
+
+
+def tela_cronograma_pintura():
+    if not exigir_nivel(*NIVEIS_PINTURA):
+        return
+    st.markdown(CSS_ATIVIDADES + CSS_TIME + CSS_PINTURA + CSS_CRONOGRAMA_PINTURA, unsafe_allow_html=True)
+    modelos = carregar_modelos_pintura()
+    nomes_modelos = {m["id"]: m["nome"] for m in modelos}
+    aeronaves = [a for a in carregar_aeronaves_pintura() if a["modelo_id"] in nomes_modelos]
+    hoje = hoje_brasilia()
+    agendadas = [a for a in aeronaves if periodo_cronograma_pintura(a)]
+    no_hangar = [a for a in agendadas
+                 if periodo_cronograma_pintura(a)[0] <= hoje <= periodo_cronograma_pintura(a)[1]]
+    proximas = [a for a in agendadas if periodo_cronograma_pintura(a)[0] > hoje]
+    topo, botao = st.columns([4, 1.3], vertical_alignment="bottom")
+    topo.markdown(
+        '<div class="pint-topo"><div class="ativ-titulo">Cronograma do hangar</div>'
+        '<p class="ativ-desc">Quando cada aeronave entra e sai do hangar de pintura. '
+        'As datas são as mesmas da aba Livery e datas de cada prefixo.</p>'
+        f'<div class="ativ-resumo"><b>{len(no_hangar)}</b> no hangar hoje · '
+        f'<b>{len(proximas)}</b> agendada{"s" if len(proximas) != 1 else ""} para depois</div></div>',
+        unsafe_allow_html=True,
+    )
+    if pode_editar_pintura() and botao.button("Agendar pintura", icon=":material/add:", type="primary",
+                                             use_container_width=True, key="pint_cron_agendar"):
+        dialogo_agendar_pintura(aeronaves, modelos)
+    mes_atual = st.session_state.get('pint_cron_mes') or hoje.replace(day=1)
+    c_ant, c_hoje, c_prox, c_nome = st.columns([0.45, 0.8, 0.45, 5], vertical_alignment="center")
+    c_ant.button("", icon=":material/chevron_left:", key="pint_cron_ant", on_click=mudar_mes_cronograma_pintura,
+                 args=(-1,), help="Mês anterior")
+    c_hoje.button("Hoje", key="pint_cron_hoje", on_click=mudar_mes_cronograma_pintura, args=(0,),
+                  use_container_width=True)
+    c_prox.button("", icon=":material/chevron_right:", key="pint_cron_prox", on_click=mudar_mes_cronograma_pintura,
+                  args=(1,), help="Próximo mês")
+    c_nome.markdown(
+        f'<div class="pc-mes">{NOMES_MESES_PINTURA[mes_atual.month - 1]} de {mes_atual.year}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        html_calendario_cronograma_pintura(mes_atual.year, mes_atual.month, agendadas, nomes_modelos),
+        unsafe_allow_html=True,
+    )
+    primeiro = mes_atual
+    ultimo = (mes_atual.replace(day=28) + datetime.timedelta(days=4)).replace(day=1) - datetime.timedelta(days=1)
+    do_mes = sorted(
+        (a for a in agendadas
+         if periodo_cronograma_pintura(a)[0] <= ultimo and periodo_cronograma_pintura(a)[1] >= primeiro),
+        key=lambda a: (a["data_inicio"], a["prefixo"]),
+    )
+    sem_data = sorted((a for a in aeronaves if not a["data_inicio"]), key=lambda a: a["prefixo"])
+    st.markdown(
+        f'<div class="ativ-secao">Pinturas em {NOMES_MESES_PINTURA[mes_atual.month - 1].lower()} '
+        f'<span class="contagem">{len(do_mes)}</span></div>',
+        unsafe_allow_html=True,
+    )
+    if not do_mes:
+        st.markdown(
+            '<div class="ativ-vazio">Nenhuma pintura neste mês.'
+            + ('<br>Use <b>Agendar pintura</b> para colocar uma aeronave no cronograma.' if pode_editar_pintura() else '')
+            + '</div>',
+            unsafe_allow_html=True,
+        )
+    for aeronave in do_mes:
+        linha_cronograma_pintura(aeronave, aeronaves, modelos, nomes_modelos)
+    if sem_data:
+        with st.expander(f"Prefixos sem data de pintura ({len(sem_data)})"):
+            for aeronave in sem_data:
+                linha_cronograma_pintura(aeronave, aeronaves, modelos, nomes_modelos)
+
+
+def linha_cronograma_pintura(aeronave, aeronaves, modelos, nomes_modelos):
+    periodo = periodo_cronograma_pintura(aeronave)
+    forte, _ = cor_cronograma_pintura(aeronave["id"])
+    if not periodo:
+        quando = "Sem data de início"
+    elif periodo[2]:
+        dias = (periodo[1] - periodo[0]).days + 1
+        quando = f"{data_br(periodo[0])} a {data_br(periodo[1])} · {dias} dia{'s' if dias != 1 else ''}"
+    else:
+        quando = f"Início em {data_br(periodo[0])} · fim a definir"
+    with st.container(key=f"ativ_tarefa_cron_{aeronave['id']}"):
+        c_txt, c_abrir, c_editar = st.columns([5, 1.2, 1.2], vertical_alignment="center")
+        c_txt.markdown(
+            f'<div class="pc-linha" style="--forte:{forte}"><span class="cor"></span><div>'
+            f'<div class="pref">{esc(aeronave["prefixo"])} <span class="sub">{esc(nomes_modelos.get(aeronave["modelo_id"], ""))}</span></div>'
+            f'<div class="sub">{quando}</div></div></div>',
+            unsafe_allow_html=True,
+        )
+        c_abrir.button("Abrir prefixo", key=f"pint_cron_abrir_{aeronave['id']}", use_container_width=True,
+                       on_click=abrir_prefixo_do_cronograma, args=(aeronave["id"], aeronave["modelo_id"]))
+        if pode_editar_pintura() and c_editar.button(
+            "Mudar datas", icon=":material/edit_calendar:", key=f"pint_cron_editar_{aeronave['id']}",
+            use_container_width=True,
+        ):
+            dialogo_agendar_pintura(aeronaves, modelos, aeronave["id"])
+
+
 # 4b. CONSULTA DE SRs BOEING
 # A página Consulta_SRs.html é gerada pelo banco_srs.py no PC da Engenharia e tem dados
 # BOEING PROPRIETARY: ela fica só no banco (Supabase), nunca no repositório, que é público.
@@ -12616,6 +12912,8 @@ PAGINAS = {
     'time': ("Funções do time", ":material/groups:", tela_time, NIVEIS_TIME),
     'consulta_srs': ("Consulta SR's", ":material/description:", tela_consulta_srs, NIVEIS_CONSULTA_SRS),
     'pintura': ("Pintura da frota", ":material/format_paint:", tela_pintura, NIVEIS_PINTURA),
+    'pintura_cronograma': ("Cronograma do hangar", ":material/calendar_month:", tela_cronograma_pintura,
+                           NIVEIS_PINTURA),
 }
 GRUPOS_MENU = {
     'ficha': [
@@ -12634,7 +12932,7 @@ GRUPOS_MENU = {
         ("SRs Boeing", ['consulta_srs']),
     ],
     'pintura': [
-        ("Pintura", ['pintura']),
+        ("Pintura", ['pintura', 'pintura_cronograma']),
     ],
 }
 # Partes do site oferecidas na tela de escolha depois do login.
@@ -12665,7 +12963,7 @@ AREAS = {
     },
     'pintura': {
         'titulo': "Pintura",
-        'descricao': "Pintura da frota: prefixos, livery, lista de material e vencimento.",
+        'descricao': "Pintura da frota: prefixos, livery, cronograma do hangar e vencimento.",
         'icone': 'paintbrush',
         'menu': "Pintura",
     },
