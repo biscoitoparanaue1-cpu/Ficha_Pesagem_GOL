@@ -10102,9 +10102,58 @@ def dialogo_novo_prefixo_pintura(modelo):
     st.rerun()
 
 
+# Tela de carregamento ao entrar na área Pintura: cobre a página até ela terminar de desenhar.
+CSS_CARREGANDO_PINTURA = """
+<style>
+@keyframes gol-girar { to { transform: rotate(360deg); } }
+@keyframes pint-desistir { to { opacity: 0; visibility: hidden; } }
+.pint-carregando { position: fixed; inset: 0; z-index: 1000100; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px; text-align: center;
+  background: linear-gradient(160deg, #FAFAFB 0%, #EEF0F3 100%); transition: opacity .3s ease;
+  animation: pint-desistir .3s ease 30s forwards; }
+.pint-carregando.pint-pronto { opacity: 0; pointer-events: none; }
+.pint-carregando img { height: 40px !important; }
+.pint-carregando-marca { font-family: 'Inter', sans-serif; font-weight: 600; font-size: .8rem;
+  letter-spacing: .14em; text-transform: uppercase; color: #FF6A13; margin-top: .4rem; }
+.pint-carregando-titulo { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.6rem;
+  letter-spacing: -.02em; color: #1F2430; }
+.pint-carregando p { margin: .2rem 0 0; color: #6B7280; font-size: .95rem; }
+.pint-carregando .gol-loader { width: 28px; height: 28px; border-radius: 50%; border: 3px solid #FFE1CC;
+  border-top-color: #FF6A13; animation: gol-girar .8s linear infinite; }
+[data-testid="stElementContainer"]:has(> iframe[height="0"]) { display: none !important; }
+</style>
+"""
+SCRIPT_FIM_CARREGAMENTO_PINTURA = """
+<script>
+(function(){function pronto(){try{window.parent.document.querySelectorAll('.pint-carregando')
+.forEach(function(e){e.classList.add('pint-pronto');setTimeout(function(){e.remove()},350)})}catch(e){}}
+setTimeout(pronto,150)})();
+</script>
+"""
+
+
 def tela_pintura():
     if not exigir_nivel(*NIVEIS_PINTURA):
         return
+    carregando = st.session_state.pop('pint_carregando', False)
+    if carregando:
+        st.markdown(
+            CSS_CARREGANDO_PINTURA
+            + f'<div class="pint-carregando">{logo_html()}'
+            '<div class="pint-carregando-marca">Central de Engenharia</div>'
+            '<div class="pint-carregando-titulo">Pintura</div>'
+            '<div class="gol-loader"></div><p>Carregando a pintura da frota…</p></div>',
+            unsafe_allow_html=True,
+        )
+    try:
+        desenhar_tela_pintura()
+    finally:
+        # Mesmo com erro, a tela de carregamento não pode ficar cobrindo a página.
+        if carregando:
+            components.html(SCRIPT_FIM_CARREGAMENTO_PINTURA, height=0)
+
+
+def desenhar_tela_pintura():
     st.markdown(CSS_ATIVIDADES + CSS_TIME + CSS_PINTURA, unsafe_allow_html=True)
     modelos = {m["id"]: m for m in carregar_modelos_pintura()}
     aeronaves = {a["id"]: a for a in carregar_aeronaves_pintura()}
@@ -12823,8 +12872,15 @@ def excluir_livery_tintas(livery_id):
     carregar_liveries_tintas.clear()
 
 
+def pode_importar_tintas():
+    # Importar o PowerPoint troca as figuras e cores de todas as liveries: só o login engenharia.
+    return safe_str(st.session_state.get('usuario_id')).casefold() == 'engenharia'
+
+
 def importar_liveries_tintas(liveries):
     """Livery com o mesmo nome é atualizada (figura e cores); as outras são criadas."""
+    if not pode_importar_tintas():
+        raise PermissionError("Só o usuário engenharia importa o PowerPoint das tintas.")
     existentes = {l["nome"].casefold(): l["id"] for l in carregar_liveries_tintas()}
     novas = atualizadas = 0
     for livery in liveries:
@@ -12939,7 +12995,7 @@ def tela_tintas_pintura():
         unsafe_allow_html=True,
     )
     if editar:
-        if c_imp.button("Importar PowerPoint", icon=":material/upload_file:", use_container_width=True,
+        if pode_importar_tintas() and c_imp.button("Importar PowerPoint", icon=":material/upload_file:", use_container_width=True,
                         key="pint_tintas_abrir_importar"):
             dialogo_importar_tintas()
         if c_nova.button("Nova livery", icon=":material/add:", type="primary", use_container_width=True,
@@ -12949,7 +13005,7 @@ def tela_tintas_pintura():
         st.markdown(
             '<div class="ativ-vazio">Nenhuma livery cadastrada ainda.'
             + ('<br>Use <b>Importar PowerPoint</b> com o arquivo "Tintas utilizadas na frota" '
-               'para trazer todas de uma vez.' if editar else '')
+               'para trazer todas de uma vez.' if pode_importar_tintas() else '')
             + '</div>',
             unsafe_allow_html=True,
         )
@@ -13615,6 +13671,8 @@ def entrar_na_area(area):
     if area == 'srs':
         st.session_state['srs_carregando'] = True
         st.session_state['srs_configurando'] = False
+    if area == 'pintura':
+        st.session_state['pint_carregando'] = True
     paginas = paginas_da_area(area, st.session_state['nivel_acesso'])
     if st.session_state['pagina_atual'] not in paginas and paginas:
         st.session_state['pagina_atual'] = paginas[0]
