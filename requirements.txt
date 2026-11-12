@@ -4,3 +4,4 @@ openpyxl
 Pillow
 psycopg[binary]
 SQLAlchemy
+python-pptx
