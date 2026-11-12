@@ -13468,6 +13468,44 @@ CSS_ESTOQUE_PINTURA = """
 .est-tabela td:not(.fixa1):not(.fixa2) { border-top: 1px solid transparent !important; background-clip: padding-box; }
 .est-tabela tr.grupo td { border-top: 0; }
 .est-tabela tr.grupo .fixa-texto { position: sticky; left: .6rem; }
+.estc-resumo { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: .3rem 0 1rem; }
+.estc-kpi { background: rgba(255, 255, 255, .78); border: 1px solid #E6E8EC; border-radius: 14px; padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+.estc-kpi .rot { font-size: .78rem; color: #6B7280; }
+.estc-kpi .val { font-family: 'Inter', sans-serif; font-size: 1.6rem; font-weight: 600; color: #1F2430; line-height: 1.2; }
+.estc-kpi .val small { font-size: .85rem; color: #8A919C; font-weight: 500; }
+.estc-kpi.ok .val { color: #067647; }
+.estc-kpi.falta .val { color: #B42318; }
+.estc-grupo { display: flex; align-items: center; gap: .55rem; font-family: 'Inter', sans-serif; font-weight: 600;
+  font-size: 1rem; color: #1F2430; margin: 1.3rem 0 .6rem; }
+.estc-grupo-marca { width: 10px; height: 10px; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0, 0, 0, .08); }
+.estc-grupo-resumo { font-family: inherit; font-weight: 400; font-size: .8rem; color: #8A919C; }
+.estc-grupo-resumo .falta { color: #B42318; }
+.estc-grade { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;
+  margin-bottom: 1rem; }
+.estc-cartao { background: rgba(255, 255, 255, .82); border: 1px solid #E6E8EC; border-radius: 14px; padding: 14px 16px 10px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+.estc-topo { display: flex; align-items: center; gap: .7rem; margin-bottom: .55rem; }
+.estc-amostra { width: 30px; height: 30px; border-radius: 50%; flex: none;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .12), 0 1px 2px rgba(0, 0, 0, .08); }
+.estc-nome { flex: 1; min-width: 0; font-weight: 600; font-size: .9rem; color: #1F2430; line-height: 1.2; }
+.estc-bac { display: block; font-weight: 400; font-size: .74rem; color: #8A919C; }
+.estc-chip { font-size: .7rem; font-weight: 600; padding: .18rem .55rem; border-radius: 999px; white-space: nowrap; }
+.estc-chip.ok { background: #ECFDF3; color: #067647; }
+.estc-chip.falta { background: #FEF3F2; color: #B42318; }
+.estc-linha { display: flex; align-items: center; gap: .8rem; padding: .42rem 0; border-top: 1px solid #F0F1F4; }
+.estc-forn { flex: 1; min-width: 0; font-size: .8rem; font-weight: 500; color: #3B4352; }
+.estc-pn { display: block; font-size: .7rem; color: #8A919C; font-weight: 400; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.estc-alt { margin-left: .3rem; }
+.estc-qtd { width: 92px; flex: none; text-align: right; }
+.estc-num { font-size: .74rem; color: #8A919C; }
+.estc-num b { font-size: .86rem; color: #1F2430; }
+.estc-linha.falta .estc-num b { color: #B42318; }
+.estc-barra { height: 5px; background: #EEF0F3; border-radius: 99px; margin-top: 4px; overflow: hidden; }
+.estc-barra i { display: block; height: 100%; border-radius: 99px; background: #12B76A; }
+.estc-linha.falta .estc-barra i { background: #F04438; }
+@media (max-width: 700px) { .estc-resumo { grid-template-columns: 1fr; } }
 .est-legenda { display: flex; gap: 1rem; align-items: center; font-size: .78rem; color: #5B6270; margin: .2rem 0 .6rem; }
 .est-legenda span { display: inline-flex; align-items: center; gap: .35rem; }
 .est-legenda i { width: .9rem; height: .9rem; border-radius: 3px; display: inline-block; border: 1px solid #D5D9E0; }
@@ -13615,6 +13653,75 @@ def _celula_stk_estoque(it, total):
     return ok, f'<td class="stk {"ok" if ok else "falta"}" title="{dica}">{stk:g}</td>'
 
 
+def _situacao_cores_estoque(itens, total):
+    """Agrupa os PNs por cor (grupo + cor + BAC) e diz quais fornecedores cobrem a QTY."""
+    cores = {}
+    for it in itens:
+        separado = not it["fornecedor"] or it["grupo"] == "Thinner / ativador"
+        chave = (it["grupo"], it["descricao"], it["bac"], it["pn"] if separado else "")
+        cor = cores.setdefault(chave, {"grupo": it["grupo"], "descricao": it["descricao"], "bac": it["bac"],
+                                       "cor_hex": it["cor_hex"], "cor_grupo": it["cor_grupo"], "linhas": []})
+        cor["cor_hex"] = cor["cor_hex"] or it["cor_hex"]
+        stk = stk_item_estoque(it, total)
+        ok = it["qty"] is None or stk >= it["qty"]
+        cor["linhas"].append({"item": it, "stk": stk, "ok": ok})
+    for cor in cores.values():
+        cor["ok"] = [l["item"]["fornecedor"] or "" for l in cor["linhas"] if l["ok"]]
+        cor["pronta"] = bool(cor["ok"])
+    return list(cores.values())
+
+
+def _cartao_cor_estoque(cor):
+    amostra = cor["cor_hex"] or "#FFFFFF"
+    so_um = len(cor["linhas"]) == 1
+    if so_um:
+        chip = ('<span class="estc-chip ok">Tem estoque</span>' if cor["pronta"]
+                else '<span class="estc-chip falta">Falta</span>')
+    elif cor["pronta"]:
+        chip = f'<span class="estc-chip ok">Dá com {len(cor["ok"])} de {len(cor["linhas"])}</span>'
+    else:
+        chip = '<span class="estc-chip falta">Falta em todos</span>'
+    linhas = []
+    for l in cor["linhas"]:
+        it, stk, ok = l["item"], l["stk"], l["ok"]
+        qty = it["qty"]
+        pct = 100 if not qty else max(0, min(100, stk / qty * 100))
+        alt = f'<span class="estc-alt">+ {esc(it["alternativos"])}</span>' if it["alternativos"] else ""
+        rotulo = esc(it["fornecedor"] or "Estoque")
+        linhas.append(
+            f'<div class="estc-linha {"ok" if ok else "falta"}">'
+            f'<div class="estc-forn">{rotulo}<span class="estc-pn">{esc(it["pn"])}{alt}</span></div>'
+            f'<div class="estc-qtd"><div class="estc-num"><b>{stk:g}</b> / {_num_estoque_html(qty)}</div>'
+            f'<div class="estc-barra"><i style="width:{pct:.0f}%"></i></div></div></div>'
+        )
+    bac = f'<span class="estc-bac">{esc(cor["bac"])}</span>' if cor["bac"] else ""
+    return (f'<div class="estc-cartao"><div class="estc-topo">'
+            f'<span class="estc-amostra" style="background:{esc(amostra)}"></span>'
+            f'<div class="estc-nome">{esc(cor["descricao"].title())}{bac}</div>{chip}</div>'
+            f'<div class="estc-linhas">{"".join(linhas)}</div></div>')
+
+
+def html_cartoes_estoque_pintura(cores, so_falta, grupo_sel=None):
+    blocos = []
+    for grupo in dict.fromkeys(c["grupo"] for c in cores):
+        if grupo_sel and grupo != grupo_sel:
+            continue
+        do_grupo = [c for c in cores if c["grupo"] == grupo]
+        mostrar = [c for c in do_grupo if not so_falta or not all(l["ok"] for l in c["linhas"])]
+        if not mostrar:
+            continue
+        faltando = sum(1 for c in do_grupo if not c["pronta"])
+        cor_grupo = next((c["cor_grupo"] for c in do_grupo if c["cor_grupo"]), "") or "#C3C8D0"
+        resumo = (f'{len(do_grupo)} {"item" if len(do_grupo) == 1 else "itens"}'
+                  + (f' · <span class="falta">{faltando} sem estoque</span>' if faltando else ' · tudo com estoque'))
+        blocos.append(
+            f'<div class="estc-grupo"><span class="estc-grupo-marca" style="background:{esc(cor_grupo)}"></span>'
+            f'{esc(grupo)}<span class="estc-grupo-resumo">{resumo}</span></div>'
+            f'<div class="estc-grade">{"".join(_cartao_cor_estoque(c) for c in mostrar)}</div>'
+        )
+    return "".join(blocos)
+
+
 def html_painel_estoque_pintura(itens, total, so_falta):
     """Painel igual ao da planilha: grupos em faixas coloridas, a cor da tinta na célula do BAC
     e nas divisórias, e STK verde quando o estoque cobre a QTY."""
@@ -13746,8 +13853,6 @@ def tela_estoque_pintura():
         st.toast(aviso)
     total = estoque_por_pn_pintura(dados)
     itens = dados["itens"]
-    com_qty = [i for i in itens if i["qty"] is not None]
-    ok = sum(1 for i in com_qty if stk_item_estoque(i, total) >= i["qty"])
     if dados["relatorio_em"]:
         rel = (f'Relatório de estoque de <b>{formatar_data_hora_brasilia(dados["relatorio_em"])}</b>'
                f' por {esc(dados["relatorio_por"] or "—")} · {len(dados["lotes"])} lotes')
@@ -13756,10 +13861,9 @@ def tela_estoque_pintura():
     topo, c_rel, c_imp = st.columns([3.4, 1.5, 1.4], vertical_alignment="bottom")
     topo.markdown(
         '<div class="pint-topo"><div class="ativ-titulo">Estoque de tintas</div>'
-        '<p class="ativ-desc">PNs críticos para pintura: quanto precisa para uma pintura (QTY) e quanto tem '
-        'no estoque (STK), por fornecedor. Verde = tem o suficiente.</p>'
+        '<p class="ativ-desc">Quanto tem de cada tinta no estoque comparado com o que uma pintura precisa, '
+        'por fornecedor.</p>'
         f'<div class="ativ-resumo">{rel}'
-        + (f' · <b>{ok}</b> de {len(com_qty)} PNs com estoque suficiente' if itens and dados["lotes"] else '')
         + '</div></div>',
         unsafe_allow_html=True,
     )
@@ -13783,15 +13887,39 @@ def tela_estoque_pintura():
         nomes_abas.append("Configurar")
     abas = st.tabs(nomes_abas)
     with abas[0]:
-        c_leg, c_tog = st.columns([3, 1.3], vertical_alignment="center")
-        c_leg.markdown('<div class="est-legenda"><span><i style="background:#2DDF15"></i>STK cobre a QTY</span>'
-                       '<span><b style="color:#B42318">0</b> falta tinta</span>'
-                       '<span>Cor da tinta na célula do BAC</span></div>', unsafe_allow_html=True)
-        so_falta = c_tog.toggle("Só o que falta", key="pint_est_so_falta")
         if not dados["lotes"]:
-            st.info("Envie o relatório de estoque para ver o STK.")
-        st.markdown(html_painel_estoque_pintura(itens, total, so_falta) or
-                    '<div class="ativ-vazio">Nada faltando. 🎉</div>', unsafe_allow_html=True)
+            st.info("Envie o relatório de estoque para ver quanto tem de cada tinta.")
+        cores = _situacao_cores_estoque(itens, total)
+        tintas = [c for c in cores if c["grupo"] != "Thinner / ativador"
+                  and any(l["item"]["fornecedor"] for l in c["linhas"])]
+        prontas = sum(1 for c in tintas if c["pronta"])
+        pns_falta = sum(1 for c in cores for l in c["linhas"] if not l["ok"])
+        st.markdown(
+            '<div class="estc-resumo">'
+            f'<div class="estc-kpi ok"><div class="rot">Cores que dá para pintar</div>'
+            f'<div class="val">{prontas} <small>de {len(tintas)}</small></div></div>'
+            f'<div class="estc-kpi {"falta" if len(tintas) - prontas else ""}"><div class="rot">Cores sem estoque em '
+            f'nenhum fornecedor</div><div class="val">{len(tintas) - prontas}</div></div>'
+            f'<div class="estc-kpi"><div class="rot">PNs abaixo da quantidade de uma pintura</div>'
+            f'<div class="val">{pns_falta} <small>de {sum(len(c["linhas"]) for c in cores)}</small></div></div>'
+            '</div>', unsafe_allow_html=True)
+        c_vis, c_grp, c_tog = st.columns([1.3, 1.6, 1.1], vertical_alignment="center")
+        visao = c_vis.segmented_control("Visão", ["Cartões", "Tabela da planilha"], default="Cartões",
+                                        label_visibility="collapsed", key="pint_est_visao") or "Cartões"
+        grupos = list(dict.fromkeys(c["grupo"] for c in cores))
+        grupo_sel = c_grp.selectbox("Grupo", ["Todos os grupos"] + grupos, label_visibility="collapsed",
+                                    key="pint_est_grupo")
+        grupo_sel = None if grupo_sel == "Todos os grupos" else grupo_sel
+        so_falta = c_tog.toggle("Só o que falta", key="pint_est_so_falta")
+        if visao == "Cartões":
+            html_painel = html_cartoes_estoque_pintura(cores, so_falta, grupo_sel)
+        else:
+            html_painel = html_painel_estoque_pintura(
+                [i for i in itens if not grupo_sel or i["grupo"] == grupo_sel], total, so_falta)
+        if visao == "Cartões":
+            st.caption("Em cada fornecedor: **tem no estoque / precisa para uma pintura**. "
+                       "Barra verde = dá para pintar com ele.")
+        st.markdown(html_painel or '<div class="ativ-vazio">Nada faltando.</div>', unsafe_allow_html=True)
         st.caption(f"STK soma os lotes do relatório de todas as bases, sem os depósitos "
                    f"{', '.join(dados['excluidas']) or '—'}. Nos PNs com \"+\", soma também o PN alternativo.")
     with abas[1]:
