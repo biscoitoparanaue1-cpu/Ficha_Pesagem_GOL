@@ -559,6 +559,9 @@ def obter_conexao_postgresql():
         pool_size=5,
         max_overflow=5,
         connect_args={"prepare_threshold": None},
+        # O app não usa hstore; sem isto o SQLAlchemy consulta o tipo no banco
+        # ao abrir a primeira conexão (mais idas e voltas no início).
+        use_native_hstore=False,
     )
 
 
@@ -596,9 +599,35 @@ class ResultadoBanco:
 
 
 class ConexaoPostgreSQL:
-    def __init__(self):
-        self._sessao = obter_conexao_postgresql().session
+    def __init__(self, leitura=False):
+        # leitura=True: só SELECTs, sem transação (autocommit). Cada consulta vai
+        # ao banco numa ida e volta só, em vez de três (BEGIN, consulta, COMMIT);
+        # com o Supabase longe do servidor do Streamlit isso pesa no carregamento.
+        self._leitura = leitura
+        self._sessao = self._nova_sessao()
         self._primeira_consulta = True
+        self._adiados = None
+
+    def adiar_comandos(self):
+        """Daqui em diante, comandos sem parâmetros que não são SELECT (CREATE,
+        ALTER, UPDATE...) ficam guardados e vão ao banco todos juntos, numa ida
+        e volta só: antes da próxima consulta que devolve linhas ou tem
+        parâmetros, ou no fim da transação."""
+        self._adiados = []
+
+    def _enviar_adiados(self):
+        comandos, self._adiados = self._adiados, None
+        try:
+            if comandos:
+                self.execute(";\n".join(comandos))
+        finally:
+            self._adiados = []
+
+    def _nova_sessao(self):
+        sessao = obter_conexao_postgresql().session
+        if self._leitura:
+            sessao.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+        return sessao
 
     @property
     def row_factory(self):
@@ -624,6 +653,11 @@ class ConexaoPostgreSQL:
         return consulta, valores
 
     def execute(self, sql, parametros=None):
+        if self._adiados is not None:
+            if parametros is None and not sql.lstrip().upper().startswith("SELECT"):
+                self._adiados.append(sql.strip().rstrip(";"))
+                return None
+            self._enviar_adiados()
         consulta, valores = self._preparar(sql, parametros)
         primeira = self._primeira_consulta
         self._primeira_consulta = False
@@ -636,12 +670,14 @@ class ConexaoPostgreSQL:
                 raise
             self._sessao.rollback()
             self._sessao.close()
-            self._sessao = obter_conexao_postgresql().session
+            self._sessao = self._nova_sessao()
             return ResultadoBanco(self._sessao.execute(text(consulta), valores))
 
     def executemany(self, sql, sequencias):
         if not sequencias:
             return None
+        if self._adiados is not None:
+            self._enviar_adiados()
         consulta, _ = self._preparar(sql, sequencias[0])
         valores = [self._preparar(sql, linha)[1] for linha in sequencias]
         return ResultadoBanco(self._sessao.execute(text(consulta), valores))
@@ -652,6 +688,8 @@ class ConexaoPostgreSQL:
     def __exit__(self, tipo_erro, _erro, _rastreio):
         try:
             if tipo_erro is None:
+                if self._adiados is not None:
+                    self._enviar_adiados()
                 self._sessao.commit()
             else:
                 self._sessao.rollback()
@@ -663,8 +701,8 @@ class ConexaoPostgreSQL:
         self._sessao.close()
 
 
-def conectar_banco():
-    return ConexaoPostgreSQL()
+def conectar_banco(leitura=False):
+    return ConexaoPostgreSQL(leitura)
 
 
 def normalizar_valor_json(valor):
@@ -828,7 +866,7 @@ def atualizar_ficha(prefixo, pesagem, revisao, registro):
 
 @st.cache_data
 def carregar_dados_banco():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             """SELECT dados FROM pesagens
                WHERE NULLIF(btrim(dados->>'Prefixo'), '') IS NOT NULL
@@ -862,7 +900,7 @@ def dataframe_fichas(registros):
 
 @st.cache_data
 def carregar_prefixos_fichas():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             """SELECT DISTINCT dados->>'Prefixo' AS prefixo
                FROM pesagens
@@ -878,7 +916,7 @@ def carregar_fichas_prefixo(prefixo):
 
 
 def consultar_registros_prefixo(prefixo):
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         return conn.execute(
             """SELECT dados FROM pesagens
                WHERE lower(btrim(dados->>'Prefixo')) = lower(btrim(?))
@@ -903,7 +941,7 @@ def carregar_linha_ficha(prefixo, pesagem, revisao):
 
 @st.cache_data
 def carregar_fichas_para_momento_flaps(prefixo, tipo_aeronave):
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             """SELECT dados FROM pesagens
                WHERE lower(btrim(dados->>'Prefixo')) = lower(btrim(?))
@@ -998,7 +1036,7 @@ def normalizar_prefixo(prefixo):
 
 @st.cache_data
 def carregar_aeronaves_cadastradas():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             """SELECT prefixo, modelo, serial, vrbl, line, armnose,
                       cadastrado_por, cadastrado_em
@@ -1065,6 +1103,9 @@ def obter_senha_admin_inicial():
 @st.cache_resource
 def inicializar_controle_acesso():
     with conectar_banco() as conn:
+        # Os CREATE/ALTER abaixo vão ao banco de uma vez só (antes eram ~50 idas
+        # e voltas, vários segundos a cada vez que o servidor reiniciava).
+        conn.adiar_comandos()
         conn.execute('''
             CREATE TABLE IF NOT EXISTS pesagens (
                 id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -1078,6 +1119,13 @@ def inicializar_controle_acesso():
         conn.execute('''
             CREATE INDEX IF NOT EXISTS pesagens_tipo_aeronave_idx
             ON pesagens (lower(btrim(dados->>'Tipo_aeronave')))
+        ''')
+        # Só ~300 das ~29.700 linhas de pesagens têm prefixo (o resto são linhas
+        # vazias da migração). Sem este índice, as consultas da frota inteira
+        # liam a tabela toda (35 MB) a cada carregamento.
+        conn.execute('''
+            CREATE INDEX IF NOT EXISTS pesagens_com_prefixo_idx
+            ON pesagens (id) WHERE NULLIF(btrim(dados->>'Prefixo'), '') IS NOT NULL
         ''')
         conn.execute('''
             CREATE TABLE IF NOT EXISTS usuarios (
@@ -1355,7 +1403,7 @@ def inicializar_controle_acesso():
                      datetime.datetime.now(datetime.timezone.utc).isoformat())
                 )
 def autenticar_usuario(usuario, senha):
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registro = conn.execute(
             'SELECT * FROM usuarios WHERE lower(usuario) = lower(?)',
             (usuario.strip(),),
@@ -1418,7 +1466,7 @@ def redefinir_senha(usuario, senha):
 
 
 def listar_usuarios_assinaturas():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             '''SELECT usuarios.usuario, usuarios.nome, usuarios.nivel_acesso,
                       assinaturas_usuarios.atualizado_em
@@ -1434,7 +1482,7 @@ def listar_usuarios_assinaturas():
 def carregar_assinatura_usuario(usuario):
     if not usuario:
         return None
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registro = conn.execute(
             'SELECT imagem_png FROM assinaturas_usuarios WHERE usuario = ?',
             (usuario,),
@@ -1591,7 +1639,7 @@ def registrar_ficha(prefixo, pesagem, revisao, usuario, acao="Gerada", alteracoe
 
 @st.cache_data
 def buscar_fluxo_ficha(prefixo, pesagem, revisao):
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registro = conn.execute(
             '''SELECT fluxo_fichas.gerado_por AS gerador_usuario,
                       gerador.nome AS gerador_nome,
@@ -1627,7 +1675,7 @@ def buscar_fluxo_ficha(prefixo, pesagem, revisao):
     }
 
 def carregar_fluxos_fichas():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             '''SELECT fluxo_fichas.prefixo, fluxo_fichas.pesagem,
                       fluxo_fichas.revisao,
@@ -1658,7 +1706,7 @@ def carregar_fluxos_fichas():
 
 @st.cache_data
 def carregar_campos_com_erro(prefixo, pesagem, revisao):
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             '''SELECT campos_com_erro.campo, campos_com_erro.descricao,
                       campos_com_erro.marcado_por, usuarios.nome AS marcador_nome
@@ -1676,7 +1724,7 @@ def carregar_campos_com_erro(prefixo, pesagem, revisao):
 
 
 def carregar_chaves_fichas():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             """SELECT dados->>'Prefixo' AS prefixo,
                       dados->>'Pesagem' AS pesagem,
@@ -1689,7 +1737,7 @@ def carregar_chaves_fichas():
 
 @st.cache_data
 def listar_fichas_devolvidas_usuario(usuario):
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             """SELECT campos_com_erro.prefixo, campos_com_erro.pesagem,
                       campos_com_erro.revisao, campos_com_erro.campo,
@@ -1742,7 +1790,7 @@ def listar_fichas_devolvidas_usuario(usuario):
 def listar_fichas_pendentes():
     fluxos = carregar_fluxos_fichas()
     fora_aprovacao = carregar_fichas_fora_aprovacao()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros_erros = conn.execute(
             '''SELECT prefixo, pesagem, revisao, campo, descricao
                FROM campos_com_erro
@@ -1818,7 +1866,7 @@ def listar_fichas_pendentes():
 
 
 def carregar_fichas_fora_aprovacao():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             'SELECT prefixo, pesagem, revisao FROM fichas_fora_aprovacao'
         ).fetchall()
@@ -1840,7 +1888,7 @@ def separar_pendentes_migradas():
     """Roda uma vez só: as fichas que aguardavam aprovação em 21/10/2026 (as
     migradas sem quem gerou/aprovou) saem da Aprovação e ficam só em
     "Gerou e aprovou". Fichas geradas depois seguem o fluxo normal."""
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         if conn.execute(
             'SELECT 1 FROM ajustes_aplicados WHERE nome = ?',
             (AJUSTE_PENDENTES_MIGRADAS,),
@@ -1950,7 +1998,7 @@ def pode_preencher_gerou_aprovou():
 @st.cache_data
 def listar_fichas_gerou_aprovou():
     fluxos = carregar_fluxos_fichas()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             """SELECT dados->>'Prefixo' AS prefixo,
                       dados->>'Pesagem' AS pesagem,
@@ -2033,9 +2081,11 @@ def normalizar_chaves_fluxo():
     Linhas que colidiriam com uma já normalizada são mantidas como estão.
     """
     normalizar = r"regexp_replace({0}, '^(-?[0-9]+)[.]0+$', '\1')"
-    for tabela, chave_extra in (("fluxo_fichas", ""), ("campos_com_erro", " AND g.campo = f.campo")):
-        try:
-            with conectar_banco() as conn:
+    # As duas tabelas numa ida ao banco só.
+    try:
+        with conectar_banco() as conn:
+            conn.adiar_comandos()
+            for tabela, chave_extra in (("fluxo_fichas", ""), ("campos_com_erro", " AND g.campo = f.campo")):
                 conn.execute(
                     f"""UPDATE {tabela} AS f
                         SET pesagem = {normalizar.format('f.pesagem')},
@@ -2049,8 +2099,8 @@ def normalizar_chaves_fluxo():
                                 {chave_extra}
                           )"""
                 )
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 def avisar_banco_indisponivel(erro):
@@ -3742,7 +3792,7 @@ PRESETS["lopa"], PRESETS["config_lopa"] = carregar_presets_lopa()
 
 @st.cache_data
 def carregar_opcoes_cadastradas():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registros = conn.execute(
             'SELECT categoria, valor FROM opcoes_cadastradas ORDER BY valor'
         ).fetchall()
@@ -5790,7 +5840,7 @@ def formatar_dia_plantao(data, com_ano=False):
 
 @st.cache_data
 def carregar_escala_plantao():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             f"SELECT {', '.join(COLUNAS_ESCALA_PLANTAO)} FROM plantao_escala ORDER BY data"
         ).fetchall()
@@ -5806,7 +5856,7 @@ def carregar_escala_plantao():
 
 @st.cache_data
 def carregar_colaboradores_plantao():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             "SELECT nome, ativo FROM plantao_colaboradores ORDER BY lower(nome)"
         ).fetchall()
@@ -5815,14 +5865,14 @@ def carregar_colaboradores_plantao():
 
 @st.cache_data
 def carregar_emails_plantao():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute("SELECT nome, email FROM plantao_colaboradores").fetchall()
     return {linha['nome']: linha['email'] or "" for linha in linhas}
 
 
 @st.cache_data
 def carregar_historico_plantao():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             '''SELECT data, acao, antes, depois, motivo, nome, usuario, registrado_em
                FROM plantao_historico ORDER BY id DESC'''
@@ -6997,7 +7047,7 @@ def sem_acento(texto):
 
 @st.cache_data
 def carregar_ferias_plantao():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             "SELECT id, colaborador, inicio, fim FROM plantao_ferias ORDER BY inicio, colaborador"
         ).fetchall()
@@ -7011,7 +7061,7 @@ def carregar_ferias_plantao():
 @st.cache_data
 def carregar_crachas_plantao():
     """Pessoa → lista de (base, validade), em ordem de base."""
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             "SELECT pessoa, base, validade FROM crachas ORDER BY pessoa, base"
         ).fetchall()
@@ -7024,7 +7074,7 @@ def carregar_crachas_plantao():
 @st.cache_data
 def carregar_vinculos_plantao():
     """Colaborador → login, quando o usuário engenharia ligou à mão em Configurar."""
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             "SELECT usuario, colaborador FROM plantao_usuarios WHERE colaborador IS NOT NULL"
         ).fetchall()
@@ -7033,7 +7083,7 @@ def carregar_vinculos_plantao():
 
 @st.cache_data
 def carregar_logins_site():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute("SELECT usuario, nome FROM usuarios ORDER BY lower(nome)").fetchall()
     return {linha['usuario']: linha['nome'] for linha in linhas}
 
@@ -7955,7 +8005,7 @@ def garantir_pode_usar_atividades():
 
 @st.cache_data
 def carregar_projetos_atividades():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             '''SELECT id, nome, descricao, lider, etapa, prazo, criado_por, criado_em
                FROM atividades_projetos ORDER BY lower(nome)'''
@@ -7965,7 +8015,7 @@ def carregar_projetos_atividades():
 
 @st.cache_data
 def carregar_participantes_atividades():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             '''SELECT projeto_id, nome, usuario FROM atividades_participantes
                ORDER BY lower(nome)'''
@@ -7975,7 +8025,7 @@ def carregar_participantes_atividades():
 
 @st.cache_data
 def carregar_tarefas_atividades():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             '''SELECT id, projeto_id, titulo, descricao, responsavel, prazo, status,
                       criado_por, criado_em, concluido_em
@@ -7987,7 +8037,7 @@ def carregar_tarefas_atividades():
 @st.cache_data
 def carregar_pessoas_atividades():
     """Usuários do site, oferecidos como participantes dos projetos."""
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute('SELECT usuario, nome FROM usuarios ORDER BY lower(nome)').fetchall()
     return {linha['nome'] or linha['usuario']: linha['usuario'] for linha in linhas}
 
@@ -8943,7 +8993,7 @@ CSS_TIME = """
 
 @st.cache_data
 def carregar_funcoes_time():
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             f"SELECT {', '.join(COLUNAS_TIME)} FROM time_funcoes ORDER BY ordem, id"
         ).fetchall()
@@ -9704,7 +9754,7 @@ def agora_iso():
 @st.cache_data(show_spinner=False)
 def carregar_modelos_pintura():
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             'SELECT id, nome, imagem FROM pintura_modelos ORDER BY lower(nome)'
         ).fetchall()
@@ -9719,7 +9769,7 @@ def carregar_modelos_pintura():
 def carregar_aeronaves_pintura():
     """Prefixos de todos os modelos, só com a miniatura da livery (a imagem grande vem à parte)."""
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             '''SELECT a.id, a.modelo_id, a.prefixo, a.livery_mini, a.livery IS NOT NULL AS tem_livery,
                       a.data_inicio, a.data_fim, a.data_vencimento, a.observacoes,
@@ -9755,7 +9805,7 @@ def carregar_aeronaves_pintura():
 @st.cache_data(max_entries=8, show_spinner=False)
 def carregar_livery_pintura(aeronave_id, versao):
     """A versão (última alteração) entra só para trocar o cache quando muda."""
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linha = conn.execute(
             'SELECT livery FROM pintura_aeronaves WHERE id = ?', (aeronave_id,)
         ).fetchone()
@@ -9765,7 +9815,7 @@ def carregar_livery_pintura(aeronave_id, versao):
 @st.cache_data(show_spinner=False)
 def carregar_materiais_pintura(aeronave_id):
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             f'''SELECT {", ".join(COLUNAS_MATERIAL_PINTURA)} FROM pintura_materiais
                 WHERE aeronave_id = ? ORDER BY ordem, id''',
@@ -10523,7 +10573,7 @@ COMPONENTE_AREAS_AERONAVE = components.declare_component(
 @st.cache_data(show_spinner=False)
 def carregar_legendas_pintura():
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute('SELECT id, nome, cor FROM pintura_legendas ORDER BY id').fetchall()
     return [{"id": int(l["id"]), "nome": safe_str(l["nome"]), "cor": safe_str(l["cor"])} for l in linhas]
 
@@ -10531,7 +10581,7 @@ def carregar_legendas_pintura():
 @st.cache_data(max_entries=16, show_spinner=False)
 def carregar_vistas_pintura(aeronave_id):
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             '''SELECT id, vista, nome, imagem, largura, altura, areas, notas, atualizado_por, atualizado_em
                FROM pintura_vistas WHERE aeronave_id = ? ORDER BY id''',
@@ -10559,7 +10609,7 @@ def carregar_vistas_pintura(aeronave_id):
 @st.cache_data(show_spinner=False)
 def carregar_observacoes_pintura(aeronave_id):
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             '''SELECT id, texto, criado_por, criado_em, atualizado_por, atualizado_em
                FROM pintura_observacoes WHERE aeronave_id = ? ORDER BY id''',
@@ -10700,7 +10750,7 @@ def copiar_vistas_pintura(origem_id, destino_id):
 
 def uso_das_legendas_pintura():
     """Quantas áreas usam cada legenda, em todas as aeronaves."""
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute("SELECT areas FROM pintura_vistas WHERE areas <> '[]'").fetchall()
     uso = {}
     for linha in linhas:
@@ -10848,7 +10898,7 @@ def aba_vistas_pintura(modelo, aeronave):
     with c1, st.expander("Legendas"):
         gerenciar_legendas_pintura(legendas)
     with c2, st.expander("Copiar de outro prefixo"):
-        with conectar_banco() as conn:
+        with conectar_banco(leitura=True) as conn:
             com_vistas = {int(l["aeronave_id"]) for l in conn.execute(
                 'SELECT DISTINCT aeronave_id FROM pintura_vistas').fetchall()}
         outros = [
@@ -11015,7 +11065,7 @@ DIAS_SEMANA_CURTOS = ["2ª", "3ª", "4ª", "5ª", "6ª", "Sá", "Do"]
 @st.cache_data(show_spinner=False)
 def carregar_tarefas_pintura(aeronave_id):
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             f'''SELECT {", ".join(COLUNAS_TAREFAS_PINTURA)} FROM pintura_tarefas
                 WHERE aeronave_id = ? ORDER BY ordem, id''',
@@ -11579,7 +11629,7 @@ def aba_planejamento_pintura(aeronave):
 @st.cache_data(show_spinner=False)
 def carregar_atas_pintura(aeronave_id):
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             '''SELECT id, titulo, data, participantes, discutido, criado_por, criado_em, atualizado_por, atualizado_em,
                       bloco_id
@@ -11606,7 +11656,7 @@ def carregar_atas_pintura(aeronave_id):
 @st.cache_data(show_spinner=False)
 def carregar_blocos_atas_pintura(aeronave_id):
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             'SELECT id, nome FROM pintura_atas_blocos WHERE aeronave_id = ? ORDER BY id', (aeronave_id,),
         ).fetchall()
@@ -11911,7 +11961,7 @@ STATUS_PENDENCIA_PINTURA = ["Aberta", "Em andamento", "Concluída"]
 @st.cache_data(show_spinner=False)
 def carregar_pendencias_pintura(aeronave_id):
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             """SELECT p.id, p.titulo, p.descricao, p.responsavel, p.prazo, p.status, p.concluida_em,
                       p.criado_por, p.criado_em, p.atualizado_por, p.atualizado_em,
@@ -11936,7 +11986,7 @@ def carregar_pendencias_pintura(aeronave_id):
 
 @st.cache_data(show_spinner=False)
 def carregar_comentarios_pendencia_pintura(pendencia_id):
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linhas = conn.execute(
             """SELECT id, autor, texto, tipo, criado_em FROM pintura_pendencias_comentarios
                WHERE pendencia_id = ? ORDER BY id""",
@@ -12848,7 +12898,7 @@ CSS_TINTAS_PINTURA = """
 @st.cache_data(show_spinner=False)
 def carregar_liveries_tintas():
     garantir_tabelas_pintura()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         liveries = conn.execute(
             """SELECT id, nome, aeronaves, ano, imagem_mini, imagem IS NOT NULL AS tem_imagem,
                       atualizado_por, atualizado_em
@@ -12872,7 +12922,7 @@ def carregar_liveries_tintas():
 
 @st.cache_data(max_entries=6, show_spinner=False)
 def carregar_imagem_livery_tintas(livery_id, versao):
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         linha = conn.execute("SELECT imagem FROM pintura_tintas_liveries WHERE id = ?", (livery_id,)).fetchone()
     return bytes(linha["imagem"]) if linha and linha["imagem"] is not None else None
 
@@ -14124,7 +14174,7 @@ def garantir_tabela_consulta_srs():
 
 def carregar_info_consulta_srs():
     garantir_tabela_consulta_srs()
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registro = conn.execute(
             '''SELECT nome_arquivo, tamanho, base_anexos, atualizado_em, atualizado_por,
                       html_gz IS NOT NULL AS tem_html
@@ -14137,7 +14187,7 @@ def carregar_info_consulta_srs():
 def carregar_html_consulta_srs(versao):
     """A versão (data da última atualização) entra só para trocar o cache quando muda."""
     import gzip
-    with conectar_banco() as conn:
+    with conectar_banco(leitura=True) as conn:
         registro = conn.execute('SELECT html_gz FROM consulta_srs WHERE id = 1').fetchone()
     if not registro or registro[0] is None:
         return ""
@@ -14861,6 +14911,27 @@ def tela_escolha_area(nivel):
             sair()
 
 
+def preaquecer_dados(com_srs=False):
+    """Deixa no cache os dados das telas principais; uma falha aqui não impede a entrada.
+
+    A Consulta SR's fica para depois do login (com_srs) porque baixa a página
+    inteira de SRs do banco e mostra um aviso de carregamento.
+    """
+    carregadores = [
+        listar_fichas_pendentes, carregar_prefixos_fichas,
+        carregar_escala_plantao, carregar_colaboradores_plantao,
+        carregar_ferias_plantao, carregar_crachas_plantao,
+        carregar_projetos_atividades, carregar_tarefas_atividades,
+    ]
+    if com_srs:
+        carregadores.append(preparar_consulta_srs)
+    for carregar in carregadores:
+        try:
+            carregar()
+        except Exception:
+            pass
+
+
 def sair():
     st.session_state['usuario_logado'] = False
     st.session_state['nivel_acesso'] = 0
@@ -14904,19 +14975,11 @@ if st.session_state['usuario_logado'] and st.session_state.get('boas_vindas'):
         unsafe_allow_html=True,
     )
     inicio = time.monotonic()
-    # Deixa prontos os dados das três partes do site; uma falha aqui não impede a entrada.
-    for carregar in (
-        listar_fichas_pendentes, carregar_prefixos_fichas,
-        carregar_escala_plantao, carregar_colaboradores_plantao,
-        carregar_ferias_plantao, carregar_crachas_plantao,
-        carregar_projetos_atividades, carregar_tarefas_atividades,
-        preparar_consulta_srs,
-    ):
-        try:
-            carregar()
-        except Exception:
-            pass
-    restante = 2.5 - (time.monotonic() - inicio)
+    # Quase tudo já foi carregado enquanto a pessoa digitava a senha
+    # (preaquecer_dados); aqui só confere e carrega o que faltar.
+    preaquecer_dados(com_srs=True)
+    # Tempo mínimo só para a animação não piscar.
+    restante = 0.8 - (time.monotonic() - inicio)
     if restante > 0:
         time.sleep(restante)
     st.session_state.pop('boas_vindas', None)
@@ -14973,9 +15036,9 @@ elif not st.session_state['usuario_logado']:
                     st.rerun()
                 else:
                     st.error("Usuário ou senha inválidos.")
-    # Enquanto a pessoa digita a senha, deixa os dados das telas prontos.
-    listar_fichas_pendentes()
-    carregar_prefixos_fichas()
+    # Enquanto a pessoa digita a senha, deixa os dados das telas prontos
+    # (o formulário já está na tela; isto roda depois dele).
+    preaquecer_dados()
 elif st.session_state.get('area') not in AREAS:
     tela_escolha_area(st.session_state['nivel_acesso'])
 else:
