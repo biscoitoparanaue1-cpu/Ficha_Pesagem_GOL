@@ -30,7 +30,15 @@ jobs:
         if: ${{ vars.STREAMLIT_URL != 'desligado' }}
         run: |
           pip install --quiet playwright
-          python -m playwright install --with-deps chromium > /dev/null
+          # O espelho do Ubuntu às vezes falha por alguns minutos (11/11/2026);
+          # tenta de novo antes de desistir.
+          for tentativa in 1 2 3; do
+            python -m playwright install --with-deps chromium > /dev/null && break
+            if [ "$tentativa" = 3 ]; then exit 1; fi
+            echo "Falhou ao instalar o navegador (tentativa $tentativa); tentando de novo em 60 s."
+            sleep 60
+            sudo apt-get update -q > /dev/null || true
+          done
           python scripts/acordar_streamlit.py "$STREAMLIT_URL"
 
       - name: Acessar o app
