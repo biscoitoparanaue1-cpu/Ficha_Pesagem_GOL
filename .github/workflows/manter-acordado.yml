@@ -7,11 +7,10 @@ on:
   schedule:
     - cron: "17 */4 * * *"
   workflow_dispatch:
+  # Depois de cada atualização do site, abre a tela de login uma vez: o
+  # servidor já deixa os dados no cache e a primeira pessoa a entrar não espera.
   push:
     branches: [main]
-    paths:
-      - .github/workflows/manter-acordado.yml
-      - scripts/acordar_streamlit.py
 
 env:
   STREAMLIT_URL: ${{ vars.STREAMLIT_URL || 'https://fichapesagemgol-hzappr8mhhpubvwfu9hudqj.streamlit.app' }}

@@ -11,7 +11,7 @@ gatherUsageStats = false
 [theme]
 base = "light"
 primaryColor = "#FF6A13"
-backgroundColor = "#F6F7F9"
+backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#FFFFFF"
 textColor = "#1D2433"
 font = "sans serif"
@@ -19,3 +19,9 @@ headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@500;600
 borderColor = "#E3E6EB"
 baseRadius = "0.6rem"
 showWidgetBorder = true
+
+[runner]
+# O app não usa "magic" (expressões soltas viram st.write). Desligado, o
+# Streamlit não precisa reescrever as ~15 mil linhas do app.py a cada vez que
+# o servidor reinicia.
+magicEnabled = false
