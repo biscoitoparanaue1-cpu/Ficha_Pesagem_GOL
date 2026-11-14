@@ -15036,6 +15036,14 @@ elif not st.session_state['usuario_logado']:
                     st.rerun()
                 else:
                     st.error("Usuário ou senha inválidos.")
+    # Celular/PC em modo escuro: o Streamlit abre a página escura até receber o
+    # tema do servidor. Guardando "claro" no navegador, as próximas aberturas já
+    # começam brancas (as cores do tema continuam vindo do config.toml).
+    components.html(
+        "<script>try{var w=window.parent;w.localStorage.setItem("
+        "'stActiveTheme-'+w.location.pathname+'-v2',JSON.stringify('Light'))}catch(e){}</script>",
+        height=0,
+    )
     # Enquanto a pessoa digita a senha, deixa os dados das telas prontos
     # (o formulário já está na tela; isto roda depois dele).
     preaquecer_dados()
