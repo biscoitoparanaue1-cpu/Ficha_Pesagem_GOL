@@ -15,6 +15,7 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+import threading
 import time
 from openpyxl.drawing.image import Image as ExcelImage
 from PIL import Image as PillowImage, UnidentifiedImageError
@@ -2124,6 +2125,79 @@ def avisar_banco_indisponivel(erro):
                 f"{getattr(erro, 'orig', erro)}")
     st.stop()
 
+
+@functools.lru_cache(maxsize=1)
+def logo_html():
+    for caminho in ("assets/logo_gol.svg", "assets/logo_gol.png"):
+        if os.path.exists(caminho):
+            import base64
+            tipo = "svg+xml" if caminho.endswith(".svg") else "png"
+            with open(caminho, "rb") as arquivo:
+                dados = base64.b64encode(arquivo.read()).decode()
+            return (
+                f'<img src="data:image/{tipo};base64,{dados}" '
+                'style="height:34px;width:auto;flex-shrink:0">'
+            )
+    return '<div class="marca-logo">W&B</div>'
+
+
+# Valores do formulário de login desta execução (preenchido por desenhar_tela_login).
+LOGIN_ENVIADO = {}
+
+
+def desenhar_tela_login():
+    """Desenha o login ANTES de conectar ao banco: com o servidor frio, a conexão e a
+    criação das tabelas levam alguns segundos, e a pessoa já pode ir digitando."""
+    _, centro, _ = st.columns([1, 1.2, 1])
+    with centro:
+        st.markdown(
+            f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&display=swap');
+[data-testid="stApp"] {{
+  background:
+    radial-gradient(40rem 28rem at 10% 15%, rgba(255, 106, 19, .07), transparent 70%),
+    radial-gradient(36rem 26rem at 90% 85%, rgba(160, 170, 185, .22), transparent 70%),
+    radial-gradient(30rem 22rem at 75% 10%, rgba(200, 206, 216, .25), transparent 70%),
+    linear-gradient(160deg, #FAFAFB 0%, #EEF0F3 100%);
+  background-attachment: fixed;
+}}
+.st-key-login_caixa {{ border-radius: 20px; padding: 2.2rem 2rem 1.6rem; }}
+.login-topo {{ display: flex; flex-direction: column; align-items: center; gap: .55rem;
+  text-align: center; margin-bottom: .6rem; }}
+.login-topo img {{ height: 40px !important; }}
+.login-titulo {{ font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.35rem;
+  letter-spacing: -.02em; color: #1F2430; margin-top: .35rem; }}
+.login-sub {{ color: #5F6672; font-size: .92rem; }}
+</style>
+<div style='height:14vh'></div>
+""",
+            unsafe_allow_html=True,
+        )
+        with st.container(key="login_caixa"):
+            st.markdown(
+                f'<div class="login-topo">{logo_html()}'
+                '<div class="login-titulo">Central de Engenharia</div>'
+                '<div class="login-sub">Entre com seu usuário para continuar.</div></div>',
+                unsafe_allow_html=True,
+            )
+            with st.form("login_form", border=False):
+                usuario = st.text_input("Usuário")
+                senha = st.text_input("Senha", type="password")
+                entrar = st.form_submit_button("Acessar", type="primary", use_container_width=True)
+            LOGIN_ENVIADO.update(entrar=entrar, usuario=usuario, senha=senha, aviso=st.empty())
+    # Celular/PC em modo escuro: o Streamlit abre a página escura até receber o
+    # tema do servidor. Guardando "claro" no navegador, as próximas aberturas já
+    # começam brancas (as cores do tema continuam vindo do config.toml).
+    components.html(
+        "<script>try{var w=window.parent;w.localStorage.setItem("
+        "'stActiveTheme-'+w.location.pathname+'-v2',JSON.stringify('Light'))}catch(e){}</script>",
+        height=0,
+    )
+
+
+if not st.session_state['usuario_logado']:
+    desenhar_tela_login()
 
 try:
     inicializar_controle_acesso()
@@ -14540,20 +14614,6 @@ def desenhar_consulta_srs():
 
 
 # 5. ROTEAMENTO E BARRA LATERAL
-def logo_html():
-    for caminho in ("assets/logo_gol.svg", "assets/logo_gol.png"):
-        if os.path.exists(caminho):
-            import base64
-            tipo = "svg+xml" if caminho.endswith(".svg") else "png"
-            with open(caminho, "rb") as arquivo:
-                dados = base64.b64encode(arquivo.read()).decode()
-            return (
-                f'<img src="data:image/{tipo};base64,{dados}" '
-                'style="height:34px;width:auto;flex-shrink:0">'
-            )
-    return '<div class="marca-logo">W&B</div>'
-
-
 MARCA_HTML = (
     f'<div class="marca">{logo_html()}<div>'
     '<div class="marca-nome">Pesagem e Balanceamento</div>'
@@ -14932,6 +14992,41 @@ def preaquecer_dados(com_srs=False):
             pass
 
 
+@st.cache_resource
+def _estado_aquecimento():
+    """Um só por servidor (vale para todas as pessoas): a thread que esquenta o cache."""
+    import logging
+
+    class SemAvisoDoAquecimento(logging.Filter):
+        # A thread não tem sessão (ScriptRunContext); o cache funciona igual e o aviso só
+        # encheria o log.
+        def filter(self, registro):
+            return "'aquecer-dados'" not in registro.getMessage()
+
+    logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").addFilter(
+        SemAvisoDoAquecimento())
+    return {"thread": None, "trava": threading.Lock()}
+
+
+def aquecer_em_segundo_plano():
+    """Carrega os dados das telas (inclusive a Consulta SR's) numa thread, sem segurar a
+    execução da tela. Se já tem uma carregando, não abre outra."""
+    estado = _estado_aquecimento()
+    with estado["trava"]:
+        thread = estado["thread"]
+        if thread is None or not thread.is_alive():
+            thread = threading.Thread(target=preaquecer_dados, kwargs={"com_srs": True},
+                                      name="aquecer-dados", daemon=True)
+            estado["thread"] = thread
+            thread.start()
+    return thread
+
+
+def aquecimento_em_andamento():
+    thread = _estado_aquecimento()["thread"]
+    return thread is not None and thread.is_alive()
+
+
 def sair():
     st.session_state['usuario_logado'] = False
     st.session_state['nivel_acesso'] = 0
@@ -14943,8 +15038,13 @@ def sair():
     st.rerun()
 
 
+if st.session_state.get('boas_vindas') and not aquecimento_em_andamento():
+    # Os dados já carregaram enquanto a pessoa digitava: vai direto para a tela inicial,
+    # sem a tela de boas-vindas e sem mais uma ida e volta ao servidor.
+    st.session_state.pop('boas_vindas', None)
+
 if st.session_state['usuario_logado'] and st.session_state.get('boas_vindas'):
-    # Tela curta de boas-vindas enquanto os dados das telas carregam.
+    # Só aparece se a pessoa entrou antes de os dados terminarem de carregar.
     primeiro_nome = safe_str(st.session_state.get('nome_usuario')).split(" ")[0]
     st.markdown(
         f"""
@@ -14974,79 +15074,31 @@ if st.session_state['usuario_logado'] and st.session_state.get('boas_vindas'):
 """,
         unsafe_allow_html=True,
     )
-    inicio = time.monotonic()
-    # Quase tudo já foi carregado enquanto a pessoa digitava a senha
-    # (preaquecer_dados); aqui só confere e carrega o que faltar.
-    preaquecer_dados(com_srs=True)
-    # Tempo mínimo só para a animação não piscar.
-    restante = 0.8 - (time.monotonic() - inicio)
-    if restante > 0:
-        time.sleep(restante)
+    # Espera a thread que já está carregando (no máximo 30 s; o que faltar carrega
+    # quando a tela precisar).
+    aquecer_em_segundo_plano().join(timeout=30)
     st.session_state.pop('boas_vindas', None)
     st.rerun()
 elif not st.session_state['usuario_logado']:
-    _, centro, _ = st.columns([1, 1.2, 1])
-    with centro:
-        st.markdown(
-            f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&display=swap');
-[data-testid="stApp"] {{
-  background:
-    radial-gradient(40rem 28rem at 10% 15%, rgba(255, 106, 19, .07), transparent 70%),
-    radial-gradient(36rem 26rem at 90% 85%, rgba(160, 170, 185, .22), transparent 70%),
-    radial-gradient(30rem 22rem at 75% 10%, rgba(200, 206, 216, .25), transparent 70%),
-    linear-gradient(160deg, #FAFAFB 0%, #EEF0F3 100%);
-  background-attachment: fixed;
-}}
-.st-key-login_caixa {{ border-radius: 20px; padding: 2.2rem 2rem 1.6rem; }}
-.login-topo {{ display: flex; flex-direction: column; align-items: center; gap: .55rem;
-  text-align: center; margin-bottom: .6rem; }}
-.login-topo img {{ height: 40px !important; }}
-.login-titulo {{ font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.35rem;
-  letter-spacing: -.02em; color: #1F2430; margin-top: .35rem; }}
-.login-sub {{ color: #5F6672; font-size: .92rem; }}
-</style>
-<div style='height:14vh'></div>
-""",
-            unsafe_allow_html=True,
-        )
-        with st.container(key="login_caixa"):
-            st.markdown(
-                f'<div class="login-topo">{logo_html()}'
-                '<div class="login-titulo">Central de Engenharia</div>'
-                '<div class="login-sub">Entre com seu usuário para continuar.</div></div>',
-                unsafe_allow_html=True,
-            )
-            with st.form("login_form", border=False):
-                usuario = st.text_input("Usuário")
-                senha = st.text_input("Senha", type="password")
-                entrar = st.form_submit_button("Acessar", type="primary", use_container_width=True)
-            if entrar:
-                registro_usuario = autenticar_usuario(usuario, senha)
-                if registro_usuario:
-                    st.session_state['usuario_logado'] = True
-                    st.session_state['usuario_id'] = registro_usuario['usuario']
-                    st.session_state['nivel_acesso'] = registro_usuario['nivel_acesso']
-                    st.session_state['nome_usuario'] = registro_usuario['nome']
-                    st.session_state['pagina_atual'] = 'consulta'
-                    st.session_state['area'] = None
-                    st.session_state['setor'] = None
-                    st.session_state['boas_vindas'] = True
-                    st.rerun()
-                else:
-                    st.error("Usuário ou senha inválidos.")
-    # Celular/PC em modo escuro: o Streamlit abre a página escura até receber o
-    # tema do servidor. Guardando "claro" no navegador, as próximas aberturas já
-    # começam brancas (as cores do tema continuam vindo do config.toml).
-    components.html(
-        "<script>try{var w=window.parent;w.localStorage.setItem("
-        "'stActiveTheme-'+w.location.pathname+'-v2',JSON.stringify('Light'))}catch(e){}</script>",
-        height=0,
-    )
-    # Enquanto a pessoa digita a senha, deixa os dados das telas prontos
-    # (o formulário já está na tela; isto roda depois dele).
-    preaquecer_dados()
+    # O formulário já foi desenhado no começo (desenhar_tela_login); aqui só confere a senha,
+    # porque autenticar precisa do banco pronto.
+    if LOGIN_ENVIADO.get("entrar"):
+        registro_usuario = autenticar_usuario(LOGIN_ENVIADO["usuario"], LOGIN_ENVIADO["senha"])
+        if registro_usuario:
+            st.session_state['usuario_logado'] = True
+            st.session_state['usuario_id'] = registro_usuario['usuario']
+            st.session_state['nivel_acesso'] = registro_usuario['nivel_acesso']
+            st.session_state['nome_usuario'] = registro_usuario['nome']
+            st.session_state['pagina_atual'] = 'consulta'
+            st.session_state['area'] = None
+            st.session_state['setor'] = None
+            st.session_state['boas_vindas'] = True
+            st.rerun()
+        else:
+            LOGIN_ENVIADO["aviso"].error("Usuário ou senha inválidos.")
+    # Enquanto a pessoa digita a senha, os dados das telas carregam numa thread
+    # separada: a tela de login fica livre e o "Acessar" responde na hora.
+    aquecer_em_segundo_plano()
 elif st.session_state.get('area') not in AREAS:
     tela_escolha_area(st.session_state['nivel_acesso'])
 else:
